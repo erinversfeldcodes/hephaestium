@@ -2,20 +2,19 @@
 # last v<version> tag warrant a new version (see scripts/release.sh).
 #
 # The version is never committed. It is worked out here, exported as
-# HEPHAESTIUM_VERSION so that every build step compiles it in, and becomes the
+# HEPHAESTIUM_VERSION so that every build compiles it in, and becomes the
 # tag. Main takes changes only by pull request, so a release commit pushed
 # from a workflow is not an option, and a version file would be a second copy
 # of what the tags already say.
 #
 # It runs after CI finishes on main, not on the push itself, so nothing is
-# tagged at a commit whose checks did not pass.
+# tagged at a commit whose checks did not pass. And nothing is tagged unless
+# every artifact built and reported the version being released: the tag is
+# created by the last job, which needs all the builds.
 #
-# Adding a buildable component: add a step after "Work out the next version"
-# that builds it with HEPHAESTIUM_VERSION in its environment, proves the
-# result reports that version with `scripts/release.sh check-version`, and
-# writes the packaged result into dist/. Everything in dist/ is attached to
-# the release. There is nothing to build yet, so a release today carries
-# notes only.
+# Adding a buildable component: build it in scripts/build-artifact.sh, or add
+# a script like it and a matching leg below and in ci.yml. Everything a build
+# leg uploads is attached to the release.
 name: release
 
 on:
@@ -33,49 +32,96 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  TARGET: ${{ github.event.workflow_run.head_sha || github.sha }}
+
 jobs:
-  release:
-    name: Build, tag and publish
+  plan:
+    name: Work out the next version
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    env:
-      TARGET: ${{ github.event.workflow_run.head_sha || github.sha }}
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TARGET }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Work out the next version
-        id: plan
+      - id: plan
         run: |
           version=$(scripts/release.sh version)
           if [[ -n $version ]]; then
             echo "next version: $version"
-            echo "HEPHAESTIUM_VERSION=$version" >> "$GITHUB_ENV"
           else
             echo "no releasable changes since the last tag"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          mkdir -p dist
 
+  build:
+    name: Build for ${{ matrix.platform }}
+    needs: plan
+    if: needs.plan.outputs.version != ''
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      HEPHAESTIUM_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET }}
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Build, check the version and package
+        run: scripts/build-artifact.sh "${{ matrix.target }}" "${{ matrix.platform }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: heph-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Tag and publish
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: heph-*
+          path: dist
+          merge-multiple: true
       # The notes cover the commits since the previous tag, so they are
       # written before this release's tag exists.
       - name: Create the tag and the release
-        if: steps.plan.outputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           scripts/release.sh notes > notes.md
-          shopt -s nullglob
-          artifacts=(dist/*)
-          gh release create "v$HEPHAESTIUM_VERSION" "${artifacts[@]}" \
-            --target "$TARGET" --title "v$HEPHAESTIUM_VERSION" --notes-file notes.md
+          gh release create "v$VERSION" dist/*.tar.gz \
+            --target "$TARGET" --title "v$VERSION" --notes-file notes.md
