@@ -34,6 +34,24 @@ impl Scratch {
     pub fn exists(&self, relative: &str) -> bool {
         self.0.join(relative).exists()
     }
+
+    /// Whether anything is at the path, including a link that points nowhere.
+    pub fn is_present(&self, relative: &str) -> bool {
+        self.0.join(relative).symlink_metadata().is_ok()
+    }
+
+    pub fn read(&self, relative: &str) -> String {
+        std::fs::read_to_string(self.0.join(relative))
+            .unwrap_or_else(|error| panic!("{relative} should be readable: {error}"))
+    }
+
+    /// Where a symbolic link points, exactly as written.
+    pub fn link_target(&self, relative: &str) -> String {
+        std::fs::read_link(self.0.join(relative))
+            .unwrap_or_else(|error| panic!("{relative} should be a symbolic link: {error}"))
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 impl Drop for Scratch {
