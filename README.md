@@ -8,11 +8,11 @@ what it cost. Its reason to exist is the part most agent tooling leaves out:
 checking, on the same tickets, whether a change to a prompt, a skill or a model
 made the agents better or worse.
 
-> **Status: design only. Nothing here runs yet.**
+> **Status: early. The command-line tool can check a manifest; nothing dispatches agents yet.**
 > The source is publicly visible under a restrictive licence. You may read it,
 > but may not use, copy or distribute it. See [LICENSE](./LICENSE).
 
-[Why](#why) · [How it fits together](#how-it-fits-together) · [What is different](#what-is-different) · [Planned stack](#planned-stack) · [Roadmap](#roadmap) · [Releases](#releases) · [Prior art](#prior-art) · [Feedback](#feedback) · [Licence](#licence)
+[Why](#why) · [How it fits together](#how-it-fits-together) · [What works today](#what-works-today) · [What is different](#what-is-different) · [Planned stack](#planned-stack) · [Roadmap](#roadmap) · [Releases](#releases) · [Prior art](#prior-art) · [Feedback](#feedback) · [Licence](#licence)
 
 ## Why
 
@@ -60,6 +60,21 @@ flowchart TB
   gate commands, how to bootstrap a workspace and where its documents live.
 
 The vocabulary is defined in [`docs/CONTEXT.md`](./docs/CONTEXT.md).
+
+## What works today
+
+`heph`, the command-line tool, checks a managed repository's manifest against
+the schema published by Athenaeum:
+
+```
+$ heph manifest check
+.athenaeum/manifest.toml: $.gates.regression: Additional properties are not allowed ('when_path' was unexpected)
+```
+
+It exits 0 for a valid manifest, 1 for an invalid or unreadable one, and 2 for
+a command line it cannot understand. The schema is compiled in from a pinned
+Athenaeum release, and that release's conformance cases are run as `heph`'s
+own tests, so the tool cannot disagree with the contract it was built for.
 
 ## What is different
 
@@ -113,7 +128,7 @@ the checks pass on `main` and those commits warrant it, a workflow creates the
 artefact as it is built and attached to that release; it is never committed, so
 there is no version file and no changelog file. The
 [releases](https://github.com/erinversfeldcodes/hephaestium/releases) are the
-changelog. Nothing is built yet, so a release today carries notes only. See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
+changelog. Each release attaches a `heph` binary for Linux and macOS. See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
 
 ## Prior art
 
