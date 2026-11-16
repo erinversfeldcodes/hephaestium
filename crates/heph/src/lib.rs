@@ -10,3 +10,5 @@ compile_error!(
 pub mod gate;
 pub mod lock;
 pub mod manifest;
+pub mod schema;
+pub mod sync;

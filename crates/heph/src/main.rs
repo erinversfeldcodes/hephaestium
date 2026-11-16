@@ -8,7 +8,9 @@
 use std::process::ExitCode;
 
 use heph::gate;
+use heph::lock;
 use heph::manifest::{self, Invalid};
+use heph::sync;
 
 /// What a build reports when no version was compiled in.
 const DEVELOPMENT_VERSION: &str = "0.0.0-dev";
@@ -47,6 +49,16 @@ Commands:
                          Exits 0 if all passed, 1 if any failed or timed out,
                          and 3 if linting could not be run.
 
+  sync [--lock PATH] [--check | --update [TAG]]
+                         Make the skills vendored in .athenaeum/skills match the
+                         lock, which pins an Athenaeum release, and link them
+                         for the agent runtimes it names. Run it from the
+                         repository root. --check changes nothing and exits 1 if
+                         anything differs. --update moves the pin to TAG, or to
+                         the latest release, and then syncs. Exits 3 if the
+                         repository could not be synced, and then it is left
+                         as it was.
+
 Options:
   -V, --version  Print the version and exit
   -h, --help     Print this help and exit
@@ -82,6 +94,9 @@ fn main() -> ExitCode {
             GateRun::parse(rest).map_or_else(gate_usage_error, |request| run_gate(&request))
         }
         ["gate", ..] => gate_usage_error(),
+        ["sync", rest @ ..] => {
+            Sync::parse(rest).map_or_else(sync_usage_error, |request| run_sync(&request))
+        }
         ["lint", rest @ ..] => {
             Lint::parse(rest).map_or_else(lint_usage_error, |request| run_lint(&request))
         }
@@ -362,4 +377,143 @@ fn load_manifest(path: &str) -> Result<manifest::Manifest, ExitCode> {
             Err(could_not_run(&format!("{path}: is not a valid manifest")))
         }
     }
+}
+
+/// The command line after `sync` could not be understood.
+fn sync_usage_error() -> ExitCode {
+    eprintln!("heph: expected 'sync [--lock PATH] [--check | --update [TAG]]'\n\n{USAGE}");
+    ExitCode::from(USAGE_ERROR)
+}
+
+/// What `sync` was asked to do about the repository.
+enum Mode {
+    /// Make the repository match the lock.
+    Sync,
+    /// Change nothing, and say whether the repository matches the lock.
+    Check,
+    /// Move the pin to a release, the latest if none is named, and then sync.
+    Update(Option<String>),
+}
+
+/// What `sync` was asked to do.
+struct Sync {
+    lock: String,
+    mode: Mode,
+}
+
+impl Sync {
+    /// Read the arguments after `sync`, or `None` if they are not the options
+    /// with their values, or if `--check` and `--update` are asked for together.
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut lock = lock::DEFAULT_PATH.to_owned();
+        let mut check = false;
+        let mut update = false;
+        let mut tag = None;
+
+        let mut remaining = arguments.iter().peekable();
+        while let Some(argument) = remaining.next() {
+            match *argument {
+                "--lock" => (*remaining.next()?).clone_into(&mut lock),
+                "--check" => check = true,
+                "--update" if !update => {
+                    update = true;
+                    tag = remaining
+                        .next_if(|next| !next.starts_with('-'))
+                        .map(|tag| (*tag).to_owned());
+                }
+                _ => return None,
+            }
+        }
+
+        let mode = match (check, update) {
+            (true, true) => return None,
+            (true, false) => Mode::Check,
+            (false, true) => Mode::Update(tag),
+            (false, false) => Mode::Sync,
+        };
+        Some(Self { lock, mode })
+    }
+}
+
+/// Sync the repository in the current directory with its lock.
+fn run_sync(request: &Sync) -> ExitCode {
+    match sync_repository(request) {
+        Ok(code) => code,
+        Err(message) => could_not_run(&message),
+    }
+}
+
+/// Everything `sync` does. An error is the message to end with, and the code
+/// for a repository that could not be synced.
+fn sync_repository(request: &Sync) -> Result<ExitCode, String> {
+    let text = std::fs::read_to_string(&request.lock)
+        .map_err(|error| format!("{}: cannot be read: {error}", request.lock))?;
+    let current = match lock::parse(&text) {
+        Ok(current) => current,
+        Err(Invalid::NotToml(reason)) => {
+            return Err(format!("{}: is not TOML: {reason}", request.lock));
+        }
+        Err(Invalid::Violations(violations)) => {
+            for violation in &violations {
+                eprintln!(
+                    "{}: {}: {}",
+                    request.lock, violation.path, violation.message
+                );
+            }
+            return Err(format!("{}: is not a valid lock", request.lock));
+        }
+    };
+
+    let root = std::path::Path::new(".");
+    let message = |error: sync::SyncError| error.to_string();
+
+    let (wanted, upstream, new_text) = if let Mode::Update(tag) = &request.mode {
+        let rev = match tag {
+            Some(tag) => tag.clone(),
+            None => sync::latest_release(&current.source).map_err(message)?,
+        };
+        let upstream = sync::fetch(&current.source, &rev).map_err(message)?;
+        let new_text = lock::pinned_at(&text, &rev, &upstream.commit);
+        let wanted = lock::Lock {
+            rev,
+            commit: upstream.commit.clone(),
+            ..current
+        };
+        (wanted, upstream, Some(new_text))
+    } else {
+        let upstream = sync::fetch(&current.source, &current.rev).map_err(message)?;
+        sync::verify_pin(&current, &upstream).map_err(message)?;
+        (current, upstream, None)
+    };
+
+    let differences = sync::differences(&wanted, &upstream, root).map_err(message)?;
+
+    if matches!(request.mode, Mode::Check) {
+        if differences.is_empty() {
+            println!("up to date");
+            return Ok(ExitCode::SUCCESS);
+        }
+        for difference in &differences {
+            eprintln!("heph: {difference}");
+        }
+        return Ok(ExitCode::from(FAILED));
+    }
+
+    let mut changed = false;
+    sync::apply(&differences, &upstream, root, |line| {
+        changed = true;
+        println!("{line}");
+    })
+    .map_err(message)?;
+
+    if let Some(new_text) = new_text {
+        std::fs::write(&request.lock, new_text)
+            .map_err(|error| format!("{}: cannot be written: {error}", request.lock))?;
+        println!("pinned {} ({})", wanted.rev, wanted.commit);
+        changed = true;
+    }
+    if !changed {
+        println!("up to date");
+    }
+    Ok(ExitCode::SUCCESS)
 }
