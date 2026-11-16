@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every relative link in the documentation resolves
+        run: bash scripts/check-doc-links.sh
+
+  # Releases are versioned from commit messages, so every commit a pull
+  # request could land on main must be a conventional commit: each commit for
+  # a rebase merge, and the pull request title for a squash merge.
+  commits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: scripts/release.sh lint <<<"$TITLE"
+      - name: Pull request commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: git log --no-merges --format=%s "$BASE..$HEAD" | scripts/release.sh lint
+      - name: Pushed commit
+        if: github.event_name == 'push'
+        run: git log -1 --format=%s | scripts/release.sh lint
+
+  ci:
+    if: always()
+    needs: [docs, commits]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every other job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            if [ "$result" != success ]; then
+              echo "a required job ended as: $result" >&2
+              exit 1
+            fi
+          done
