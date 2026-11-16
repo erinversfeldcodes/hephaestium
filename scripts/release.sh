@@ -6,6 +6,8 @@
 #                        since the last release warrants one
 #   release.sh notes     print release notes for those commits
 #   release.sh lint      check the commit subjects read on stdin
+#   release.sh check-version BINARY VERSION
+#                        fail unless BINARY --version reports VERSION
 #
 # A breaking change (`type!:` or a BREAKING CHANGE footer) bumps the major
 # version, feat the minor, fix and perf the patch. Other types (docs, test,
@@ -111,12 +113,33 @@ lint() {
   return $status
 }
 
+# A binary that reports the wrong version is worse than one that reports
+# none, because it will be believed. The version is compiled in from the
+# environment at release, so this is the check that the build step passed it.
+check_version() {
+  local binary=${1:?usage: release.sh check-version BINARY VERSION}
+  local expected=${2:?usage: release.sh check-version BINARY VERSION}
+  local reported word
+  if ! reported=$("$binary" --version 2>&1); then
+    echo "$binary --version failed: $reported" >&2
+    return 1
+  fi
+  for word in $reported; do
+    if [[ ${word#v} == "$expected" ]]; then
+      return 0
+    fi
+  done
+  echo "$binary reports '$reported', not version $expected" >&2
+  return 1
+}
+
 case ${1:-} in
   version) version ;;
   notes) notes ;;
   lint) lint ;;
+  check-version) check_version "${2:-}" "${3:-}" ;;
   *)
-    echo "usage: release.sh version|notes|lint" >&2
+    echo "usage: release.sh version|notes|lint|check-version BINARY VERSION" >&2
     exit 2
     ;;
 esac

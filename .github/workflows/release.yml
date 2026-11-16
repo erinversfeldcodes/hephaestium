@@ -1,10 +1,21 @@
 # Releases the repository when the conventional commits on main since the
-# last v<version> tag warrant a new version (see scripts/release.sh). A
-# release is a tag and a GitHub release with notes; there is nothing to build
-# yet.
+# last v<version> tag warrant a new version (see scripts/release.sh).
+#
+# The version is never committed. It is worked out here, exported as
+# HEPHAESTIUM_VERSION so that every build step compiles it in, and becomes the
+# tag. Main takes changes only by pull request, so a release commit pushed
+# from a workflow is not an option, and a version file would be a second copy
+# of what the tags already say.
 #
 # It runs after CI finishes on main, not on the push itself, so nothing is
 # tagged at a commit whose checks did not pass.
+#
+# Adding a buildable component: add a step after "Work out the next version"
+# that builds it with HEPHAESTIUM_VERSION in its environment, proves the
+# result reports that version with `scripts/release.sh check-version`, and
+# writes the packaged result into dist/. Everything in dist/ is attached to
+# the release. There is nothing to build yet, so a release today carries
+# notes only.
 name: release
 
 on:
@@ -24,14 +35,14 @@ permissions:
 
 jobs:
   release:
-    name: Tag and publish
+    name: Build, tag and publish
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write
     env:
@@ -42,24 +53,29 @@ jobs:
           ref: ${{ env.TARGET }}
           fetch-depth: 0
           persist-credentials: false
+
       - name: Work out the next version
         id: plan
         run: |
           version=$(scripts/release.sh version)
           if [[ -n $version ]]; then
             echo "next version: $version"
+            echo "HEPHAESTIUM_VERSION=$version" >> "$GITHUB_ENV"
           else
             echo "no releasable changes since the last tag"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+
       # The notes cover the commits since the previous tag, so they are
       # written before this release's tag exists.
       - name: Create the tag and the release
         if: steps.plan.outputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           scripts/release.sh notes > notes.md
-          gh release create "v$VERSION" \
-            --target "$TARGET" --title "v$VERSION" --notes-file notes.md
+          shopt -s nullglob
+          artifacts=(dist/*)
+          gh release create "v$HEPHAESTIUM_VERSION" "${artifacts[@]}" \
+            --target "$TARGET" --title "v$HEPHAESTIUM_VERSION" --notes-file notes.md
