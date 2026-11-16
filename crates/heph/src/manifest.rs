@@ -44,9 +44,24 @@ pub enum Invalid {
 pub struct Manifest {
     /// How to enter the repository's pinned toolchain.
     pub toolchain: Option<Toolchain>,
+    /// The buildable parts of the repository, by name.
+    pub components: BTreeMap<String, Component>,
     /// The gates, by name.
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
+}
+
+/// One buildable part of the repository.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Component {
+    /// The directory its commands run in.
+    pub root: String,
+    /// Globs for the files that belong to it.
+    pub paths: Vec<String>,
+    /// Its format and lint checks, each a command that changes nothing and
+    /// fails on a finding.
+    #[serde(default)]
+    pub lint: Vec<Vec<String>>,
 }
 
 /// How to enter the repository's pinned toolchain.

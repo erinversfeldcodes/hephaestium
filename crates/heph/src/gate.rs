@@ -6,6 +6,7 @@
 
 use std::io::Read as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -145,17 +146,25 @@ pub fn command_for(
 ///
 /// Without a list of changed files, every gate applies: not knowing what
 /// changed is no reason to skip a check. With one, a gate that names
-/// `when_paths` applies only if some changed file matches one of them. A `*`
-/// does not cross a directory and a `**` does.
+/// `when_paths` applies only if some changed file matches one of them.
 ///
 /// # Errors
 ///
 /// Returns an error when a pattern in `when_paths` is not a valid glob.
 pub fn applies(gate: &Gate, changed: &[String]) -> Result<bool, CouldNotRun> {
-    let Some(patterns) = gate.when_paths.as_ref().filter(|_| !changed.is_empty()) else {
-        return Ok(true);
-    };
+    match gate.when_paths.as_ref().filter(|_| !changed.is_empty()) {
+        Some(patterns) => matches_any(patterns, changed),
+        None => Ok(true),
+    }
+}
 
+/// Whether any of the changed files matches any of the patterns. A `*` does
+/// not cross a directory and a `**` does, and a leading `./` is ignored.
+///
+/// # Errors
+///
+/// Returns an error when a pattern is not a valid glob.
+pub fn matches_any(patterns: &[String], changed: &[String]) -> Result<bool, CouldNotRun> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
         let glob = GlobBuilder::new(pattern)
@@ -202,7 +211,7 @@ enum Ended {
 
 /// Run a gate's command and report how it ended.
 ///
-/// The command runs from the current directory with no input, in a process
+/// The command runs from `directory` with no input, in a process
 /// group of its own. Its standard error is passed through, and so is its
 /// standard output, to this process's standard error, so that standard
 /// output can carry only the result. When the gate gives a JSON report, its
@@ -219,12 +228,14 @@ pub fn run(
     name: &str,
     gate: &Gate,
     command: Vec<String>,
+    directory: &Path,
     notify: impl Fn(&str),
 ) -> Result<GateResult, CouldNotRun> {
     let wants_report = gate.result == Some(ResultKind::Json);
     let started = Instant::now();
     let (ended, captured) = execute(
         &command,
+        directory,
         Duration::from_secs(gate.timeout_seconds),
         wants_report,
         notify,
@@ -278,6 +289,7 @@ fn report_from(captured: Option<&[u8]>) -> Result<Value, String> {
 /// Start the command, wait for it for at most `timeout`, and clean up.
 fn execute(
     argv: &[String],
+    directory: &Path,
     timeout: Duration,
     capture_stdout: bool,
     notify: impl Fn(&str),
@@ -289,6 +301,7 @@ fn execute(
     let mut command = Command::new(program);
     command
         .args(arguments)
+        .current_dir(directory)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .process_group(0);

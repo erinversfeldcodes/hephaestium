@@ -9,6 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use athenaeum::gate_result::SCHEMA;
+use serde_json::Value;
+
 /// A directory of one test's own, removed when the test ends.
 pub struct Scratch(pub PathBuf);
 
@@ -58,4 +61,20 @@ pub fn stdout(output: &Output) -> String {
 
 pub fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).expect("stderr to be UTF-8")
+}
+
+/// Hold a result to the gate result schema of the Athenaeum tag this tool
+/// pins, so that a result the tool writes is one the contract accepts.
+pub fn conforms(result: &Value) {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("the schema to be JSON");
+    let validator = jsonschema::validator_for(&schema).expect("the schema to compile");
+    let problems: Vec<String> = validator
+        .iter_errors(result)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    assert!(
+        problems.is_empty(),
+        "the result does not conform to the gate result schema:\n{}\nresult: {result}",
+        problems.join("\n")
+    );
 }

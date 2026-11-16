@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 
-use heph::gate::{self, CouldNotRun};
+use heph::gate;
 use heph::manifest::{self, Invalid};
 
 /// What a build reports when no version was compiled in.
@@ -37,6 +37,15 @@ Commands:
                          the files is skipped. Exits 0 if the gate passed or
                          was skipped, 1 if it failed or timed out, and 3 if it
                          could not be run.
+
+  lint [--manifest PATH] [--changed PATH]... [--timeout-seconds N]
+                         Run the lint commands of the components a change
+                         touches, each from its component's root, and print
+                         each result as one line of JSON. Every command runs
+                         even if an earlier one fails. Each is stopped after
+                         900 seconds unless --timeout-seconds says otherwise.
+                         Exits 0 if all passed, 1 if any failed or timed out,
+                         and 3 if linting could not be run.
 
 Options:
   -V, --version  Print the version and exit
@@ -73,6 +82,9 @@ fn main() -> ExitCode {
             GateRun::parse(rest).map_or_else(gate_usage_error, |request| run_gate(&request))
         }
         ["gate", ..] => gate_usage_error(),
+        ["lint", rest @ ..] => {
+            Lint::parse(rest).map_or_else(lint_usage_error, |request| run_lint(&request))
+        }
         ["manifest", "check"] => check_manifest(manifest::DEFAULT_PATH),
         ["manifest", "check", path] => check_manifest(path),
         ["manifest", ..] => {
@@ -161,36 +173,14 @@ impl GateRun {
 
 /// Run one gate and print its result on one line of standard output.
 fn run_gate(request: &GateRun) -> ExitCode {
-    let could_not_run = |message: String| {
-        eprintln!("heph: {message}");
-        ExitCode::from(COULD_NOT_RUN)
-    };
-
-    let text = match std::fs::read_to_string(&request.manifest) {
-        Ok(text) => text,
-        Err(error) => {
-            return could_not_run(format!("{}: cannot be read: {error}", request.manifest));
-        }
-    };
-    let manifest = match manifest::parse(&text) {
+    let manifest = match load_manifest(&request.manifest) {
         Ok(manifest) => manifest,
-        Err(Invalid::NotToml(reason)) => {
-            return could_not_run(format!("{}: is not TOML: {reason}", request.manifest));
-        }
-        Err(Invalid::Violations(violations)) => {
-            for violation in &violations {
-                eprintln!(
-                    "{}: {}: {}",
-                    request.manifest, violation.path, violation.message
-                );
-            }
-            return could_not_run(format!("{}: is not a valid manifest", request.manifest));
-        }
+        Err(code) => return code,
     };
 
     let Some(gate) = manifest.gates.get(&request.name) else {
         let declared: Vec<&str> = manifest.gates.keys().map(String::as_str).collect();
-        return could_not_run(format!(
+        return could_not_run(&format!(
             "{}: has no gate '{}'; it declares: {}",
             request.manifest,
             request.name,
@@ -205,29 +195,171 @@ fn run_gate(request: &GateRun) -> ExitCode {
     let command = gate::command_for(&manifest, gate, |name| std::env::var(name).ok());
 
     let result = match gate::applies(gate, &request.changed) {
-        Ok(true) => gate::run(&request.name, gate, command, |message| {
-            eprintln!("heph: {message}");
-        }),
+        Ok(true) => gate::run(
+            &request.name,
+            gate,
+            command,
+            std::path::Path::new("."),
+            |message| {
+                eprintln!("heph: {message}");
+            },
+        ),
         Ok(false) => Ok(gate::skipped(&request.name, gate, command)),
         Err(error) => Err(error),
     };
 
     match result {
         Ok(result) => {
-            let line = serde_json::to_string(&result).expect("a gate result to serialise");
-            println!("{line}");
-            eprintln!(
-                "heph: gate {} {} in {:.1}s",
-                result.gate,
-                result.outcome,
-                f64::from(u32::try_from(result.duration_ms).unwrap_or(u32::MAX)) / 1000.0
-            );
+            print_result(&result);
             ExitCode::from(result.exit_code_of_heph())
         }
-        Err(
-            error @ (CouldNotRun::BadGlob(_)
-            | CouldNotRun::Wait(_)
-            | CouldNotRun::UnusableReport(_)),
-        ) => could_not_run(format!("gate {}: {error}", request.name)),
+        Err(error) => could_not_run(&format!("gate {}: {error}", request.name)),
+    }
+}
+
+/// The command line after `lint` could not be understood.
+fn lint_usage_error() -> ExitCode {
+    eprintln!(
+        "heph: expected 'lint [--manifest PATH] [--changed PATH]... [--timeout-seconds N]'\n\n{USAGE}"
+    );
+    ExitCode::from(USAGE_ERROR)
+}
+
+/// How long a component's command may run when nothing says otherwise. The
+/// manifest gives a gate a timeout and gives a component's commands none, so
+/// this is the limit until the schema has somewhere to put one.
+const DEFAULT_LINT_TIMEOUT_SECONDS: u64 = 900;
+
+/// What `lint` was asked to do.
+struct Lint {
+    manifest: String,
+    changed: Vec<String>,
+    timeout_seconds: u64,
+}
+
+impl Lint {
+    /// Read the arguments after `lint`, or `None` if they are not any of the
+    /// three options with their values.
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut manifest = manifest::DEFAULT_PATH.to_owned();
+        let mut changed = Vec::new();
+        let mut timeout_seconds = DEFAULT_LINT_TIMEOUT_SECONDS;
+
+        let mut remaining = arguments.iter();
+        while let Some(argument) = remaining.next() {
+            match *argument {
+                "--manifest" => (*remaining.next()?).clone_into(&mut manifest),
+                "--changed" => changed.push((*remaining.next()?).to_owned()),
+                "--timeout-seconds" => {
+                    timeout_seconds = remaining
+                        .next()?
+                        .parse()
+                        .ok()
+                        .filter(|seconds| *seconds > 0)?;
+                }
+                _ => return None,
+            }
+        }
+
+        Some(Self {
+            manifest,
+            changed,
+            timeout_seconds,
+        })
+    }
+}
+
+/// Run the lint commands of the components the change touches, and print each
+/// result on a line of standard output.
+fn run_lint(request: &Lint) -> ExitCode {
+    let manifest = match load_manifest(&request.manifest) {
+        Ok(manifest) => manifest,
+        Err(code) => return code,
+    };
+
+    let mut jobs = Vec::new();
+    for (name, component) in &manifest.components {
+        let touched = request.changed.is_empty()
+            || match gate::matches_any(&component.paths, &request.changed) {
+                Ok(touched) => touched,
+                Err(error) => return could_not_run(&format!("component {name}: {error}")),
+            };
+        if !touched || component.lint.is_empty() {
+            continue;
+        }
+        if !std::path::Path::new(&component.root).is_dir() {
+            return could_not_run(&format!(
+                "component {name}: its root '{}' is not a directory",
+                component.root
+            ));
+        }
+        for (index, command) in component.lint.iter().enumerate() {
+            jobs.push((format!("lint:{name}:{}", index + 1), component, command));
+        }
+    }
+
+    let mut exit = 0;
+    for (name, component, command) in jobs {
+        let as_gate = manifest::Gate {
+            run: command.clone(),
+            when_paths: None,
+            timeout_seconds: request.timeout_seconds,
+            result: None,
+        };
+        let wrapped =
+            gate::command_for(&manifest, &as_gate, |variable| std::env::var(variable).ok());
+        let directory = std::path::Path::new(&component.root);
+
+        match gate::run(&name, &as_gate, wrapped, directory, |message| {
+            eprintln!("heph: {message}");
+        }) {
+            Ok(result) => {
+                print_result(&result);
+                exit = exit.max(result.exit_code_of_heph());
+            }
+            Err(error) => return could_not_run(&format!("{name}: {error}")),
+        }
+    }
+
+    ExitCode::from(exit)
+}
+
+/// Say that something could not be run, and end with the code for it.
+fn could_not_run(message: &str) -> ExitCode {
+    eprintln!("heph: {message}");
+    ExitCode::from(COULD_NOT_RUN)
+}
+
+/// Print a result as one line of standard output, and a summary of it as one
+/// line of standard error.
+fn print_result(result: &gate::GateResult) {
+    let line = serde_json::to_string(result).expect("a gate result to serialise");
+    println!("{line}");
+    eprintln!(
+        "heph: gate {} {} in {:.1}s",
+        result.gate,
+        result.outcome,
+        f64::from(u32::try_from(result.duration_ms).unwrap_or(u32::MAX)) / 1000.0
+    );
+}
+
+/// Read and check the manifest, or print why it cannot be used and give the
+/// code to end with.
+fn load_manifest(path: &str) -> Result<manifest::Manifest, ExitCode> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => return Err(could_not_run(&format!("{path}: cannot be read: {error}"))),
+    };
+    match manifest::parse(&text) {
+        Ok(manifest) => Ok(manifest),
+        Err(Invalid::NotToml(reason)) => {
+            Err(could_not_run(&format!("{path}: is not TOML: {reason}")))
+        }
+        Err(Invalid::Violations(violations)) => {
+            for violation in &violations {
+                eprintln!("{path}: {}: {}", violation.path, violation.message);
+            }
+            Err(could_not_run(&format!("{path}: is not a valid manifest")))
+        }
     }
 }
