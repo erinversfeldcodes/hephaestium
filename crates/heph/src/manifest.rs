@@ -5,10 +5,12 @@
 //! so the rules enforced are the rules published, and a disagreement between
 //! the two fails the build.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use jsonschema::Validator;
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Where a managed repository keeps its manifest, relative to its root.
@@ -32,6 +34,53 @@ pub enum Invalid {
     NotToml(String),
     /// The manifest is TOML and breaks these rules of the schema.
     Violations(Vec<Violation>),
+}
+
+/// A manifest that has passed the schema, read for what the commands need.
+///
+/// This holds only the parts something reads today. The schema is the
+/// definition of a manifest, so a key this does not name is still valid.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Manifest {
+    /// How to enter the repository's pinned toolchain.
+    pub toolchain: Option<Toolchain>,
+    /// The gates, by name.
+    #[serde(default)]
+    pub gates: BTreeMap<String, Gate>,
+}
+
+/// How to enter the repository's pinned toolchain.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Toolchain {
+    /// Put in front of every command.
+    pub wrapper: Vec<String>,
+    /// When this variable is set, the caller is already inside the toolchain
+    /// and the wrapper is left off.
+    pub inside_env: Option<String>,
+}
+
+/// A command that decides whether a change may proceed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Gate {
+    /// The program and its arguments.
+    pub run: Vec<String>,
+    /// The gate applies only to a change that touches a matching file.
+    pub when_paths: Option<Vec<String>>,
+    /// How long it may run before it is stopped.
+    pub timeout_seconds: u64,
+    /// How it reports.
+    pub result: Option<ResultKind>,
+}
+
+/// How a gate reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ResultKind {
+    /// Zero is a pass.
+    #[serde(rename = "exit-code")]
+    ExitCode,
+    /// The command also writes a JSON object to its standard output.
+    #[serde(rename = "json")]
+    Json,
 }
 
 /// The pinned schema, compiled once.
@@ -97,4 +146,20 @@ fn path_in(manifest: &Value, pointer: &str) -> String {
     }
 
     path
+}
+
+/// Check the text of a manifest against the schema and read it.
+///
+/// # Errors
+///
+/// Returns why the manifest is not valid.
+///
+/// # Panics
+///
+/// Only if the schema accepts a manifest that [`Manifest`] cannot read, which
+/// is a defect in this crate and is ruled out by a test that reads every
+/// accepted case.
+pub fn parse(text: &str) -> Result<Manifest, Invalid> {
+    check(text)?;
+    Ok(toml::from_str(text).expect("a manifest the schema accepts to be readable as a Manifest"))
 }

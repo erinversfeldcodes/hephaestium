@@ -68,3 +68,18 @@ fn text_that_is_not_toml_is_told_apart_from_a_manifest_that_breaks_a_rule() {
         "expected NotToml, but: {verdict:?}"
     );
 }
+
+#[test]
+fn every_manifest_the_schema_accepts_can_be_read_for_what_the_commands_need() {
+    for case in CASES
+        .iter()
+        .filter(|case| matches!(case.expectation, Expectation::Accepted))
+    {
+        let parsed = heph::manifest::parse(case.toml);
+        assert!(
+            parsed.is_ok(),
+            "{} is accepted by the schema but cannot be read: {parsed:?}",
+            case.name
+        );
+    }
+}
