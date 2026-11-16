@@ -1,6 +1,11 @@
 //! What the command-line tests share: a directory of their own to run in, and
 //! the binary run from it.
 
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different part of what the tests share"
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

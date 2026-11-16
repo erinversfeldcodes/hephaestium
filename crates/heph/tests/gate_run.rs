@@ -29,6 +29,28 @@ fn shell(script: &str) -> String {
     format!("[\"sh\", \"-c\", {script:?}]")
 }
 
+/// Wait, briefly, for a process to be gone. A killed process is gone as soon
+/// as it has been reaped, which is not quite instant.
+fn assert_gone(pid: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .output()
+            .expect("kill to run")
+            .status
+            .success();
+        if !alive {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process {pid}, started by the gate, is still running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn result_of(output: &Output) -> Value {
     let text = stdout(output);
     assert_eq!(
@@ -134,6 +156,9 @@ fn a_gate_that_runs_too_long_timed_out_and_has_no_exit_code() {
 
 #[test]
 fn a_timed_out_gate_leaves_nothing_it_started_running() {
+    // The background command's output is sent away so that the test measures
+    // whether it is still running, and not whether the pipe it would share
+    // with this process has closed, which is not the same thing.
     let scratch = Scratch::new("grandchild");
     scratch.write(
         ".athenaeum/manifest.toml",
@@ -141,37 +166,26 @@ fn a_timed_out_gate_leaves_nothing_it_started_running() {
             "",
             &gate(
                 "slow",
-                &shell("sleep 60 & echo $! > child.pid; wait"),
+                &shell("sleep 60 >/dev/null 2>&1 & echo $! > child.pid; wait"),
                 1,
                 "",
             ),
         ),
     );
 
+    let started = Instant::now();
     let result = result_of(&heph_in(&scratch.0, &["gate", "run", "slow"]));
     assert_eq!(result["outcome"], "timed_out");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "it waited for what the gate had started instead of stopping it"
+    );
 
     let pid = std::fs::read_to_string(scratch.0.join("child.pid"))
         .expect("the gate to have recorded what it started")
         .trim()
         .to_owned();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let alive = std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .output()
-            .expect("kill to run")
-            .status
-            .success();
-        if !alive {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "process {pid}, started by the gate, is still running"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_gone(&pid);
 }
 
 #[test]
@@ -387,7 +401,7 @@ fn what_the_gate_prints_goes_to_stderr_and_stdout_carries_only_the_result() {
             "",
             &gate(
                 "regression",
-                &shell("echo noise-on-stdout; echo noise-on-stderr >&2"),
+                &shell("printf 'zz%sqq\\n' 7; printf 'yy%sww\\n' 8 >&2"),
                 30,
                 "",
             ),
@@ -398,24 +412,69 @@ fn what_the_gate_prints_goes_to_stderr_and_stdout_carries_only_the_result() {
     let result = result_of(&output);
 
     assert_eq!(result["outcome"], "passed");
-    assert!(!stdout(&output).contains("noise"));
-    assert!(stderr(&output).contains("noise-on-stdout"));
-    assert!(stderr(&output).contains("noise-on-stderr"));
+    assert!(
+        !stdout(&output).contains("zz7qq"),
+        "what the gate printed leaked into the result: {}",
+        stdout(&output)
+    );
+    assert!(stderr(&output).contains("zz7qq"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("yy8ww"), "{}", stderr(&output));
 }
 
 #[test]
-fn a_gate_that_reads_its_input_is_given_none() {
+fn a_gate_that_reads_its_input_is_given_none_even_when_the_caller_holds_stdin_open() {
     let scratch = Scratch::new("stdin");
     scratch.write(
         ".athenaeum/manifest.toml",
-        &manifest("", &gate("regression", &shell("cat > /dev/null"), 30, "")),
+        &manifest("", &gate("regression", &shell("cat > /dev/null"), 8, "")),
     );
 
-    let started = Instant::now();
-    let result = result_of(&heph_in(&scratch.0, &["gate", "run", "regression"]));
+    let mut heph = std::process::Command::new(env!("CARGO_BIN_EXE_heph"))
+        .current_dir(&scratch.0)
+        .args(["gate", "run", "regression"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("heph to start");
+    let held_open = heph.stdin.take().expect("a pipe to hold open");
 
+    let started = Instant::now();
+    let output = heph.wait_with_output().expect("heph to finish");
+    drop(held_open);
+
+    let result = result_of(&output);
+    assert_eq!(
+        result["outcome"], "passed",
+        "the gate was handed the caller's open stdin and waited on it: {result}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(6));
+}
+
+#[test]
+fn a_gate_that_ends_leaves_nothing_it_started_running() {
+    let scratch = Scratch::new("left-behind");
+    scratch.write(
+        ".athenaeum/manifest.toml",
+        &manifest(
+            "",
+            &gate(
+                "regression",
+                &shell("sleep 60 >/dev/null 2>&1 & echo $! > child.pid"),
+                30,
+                "",
+            ),
+        ),
+    );
+
+    let result = result_of(&heph_in(&scratch.0, &["gate", "run", "regression"]));
     assert_eq!(result["outcome"], "passed");
-    assert!(started.elapsed() < Duration::from_secs(10));
+
+    let pid = std::fs::read_to_string(scratch.0.join("child.pid"))
+        .expect("the gate to have recorded what it started")
+        .trim()
+        .to_owned();
+    assert_gone(&pid);
 }
 
 #[test]
