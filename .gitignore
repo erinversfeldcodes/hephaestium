@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.direnv/
+.DS_Store
+result
+result-*
+target/
+_build/
+deps/
+node_modules/

@@ -1,0 +1,141 @@
+# Hephaestium
+
+> A software factory that measures its own agents.
+
+Hephaestium dispatches coding agents against the tickets of the repositories it
+manages, runs each one as an isolated workload, and records what it did and
+what it cost. Its reason to exist is the part most agent tooling leaves out:
+checking, on the same tickets, whether a change to a prompt, a skill or a model
+made the agents better or worse.
+
+> **Status: design only. Nothing here runs yet.**
+> The source is publicly visible under a restrictive licence. You may read it,
+> but may not use, copy or distribute it. See [LICENSE](./LICENSE).
+
+[Why](#why) · [How it fits together](#how-it-fits-together) · [What is different](#what-is-different) · [Planned stack](#planned-stack) · [Roadmap](#roadmap) · [Releases](#releases) · [Prior art](#prior-art) · [Feedback](#feedback) · [Licence](#licence)
+
+## Why
+
+Hephaestium grew out of the agent harness inside
+[The Stacks](https://github.com/erinversfeldcodes/thestacks): about 17,500
+lines of role specifications, skills, hooks and scripts that drive Claude Code
+through planning, test-first implementation, review and completion. It was inspired by [Rameez Khan's presentation of Forge](https://github.com/rameezk/forge), but built according to my preferred tool-chain and to focus on things I care about.
+
+The original harness works but like all software projects has areas for growth. For example, every rule in
+it is an instruction to an agent, and an instruction can be skipped:
+
+- An audit of one campaign found 42 of 43 tickets had a design review and only
+  1 had the stack review the design review deferred to.
+- Waves of work were reported complete when they were not.
+- A feedback log every failed review was meant to append to has ten files and
+  no entries.
+
+The harness's value was demonstrated but never measured. There is no baseline
+and no way to tell which of its instructions carry weight. Hephaestium is the
+runtime that enforces those rules itself and measures the result.
+
+## How it fits together
+
+```mermaid
+flowchart TB
+    maintainer["<b>Maintainer</b><br/>[Human]<br/>Approves tickets, reviews pull requests"]
+    repo["<b>Managed repository</b><br/>[GitHub]<br/>Tickets, code, a manifest"]
+    athenaeum["<b>Athenaeum</b><br/>[Content]<br/>Skills, contracts, stack packs"]
+    heph["<b>Hephaestium</b><br/>[Runtime]<br/>Dispatches workloads, enforces gates, records runs"]
+    runtime["<b>Agent runtime</b><br/>[pi, Claude Code, Cortex Code]<br/>Runs the model loop inside a workload"]
+
+    maintainer -- "approves and reviews" --> repo
+    repo -- "pins a revision of" --> athenaeum
+    heph -- "polls tickets, opens pull requests" --> repo
+    heph -- "loads skills from the pinned revision" --> athenaeum
+    heph -- "runs, sandboxed" --> runtime
+```
+
+- **[Athenaeum](https://github.com/erinversfeldcodes/athenaeum) is content.**
+  It holds the skills, the specialist and reviewer contracts, and a pack per
+  stack. It contains no code.
+- **Hephaestium is code.** It reads tickets, creates workspaces, runs agents,
+  runs gates, fans out reviews and keeps the record.
+- **A managed repository describes itself in a manifest:** its components, its
+  gate commands, how to bootstrap a workspace and where its documents live.
+
+The vocabulary is defined in [`docs/CONTEXT.md`](./docs/CONTEXT.md).
+
+## What is different
+
+1. **Gates are run by the runtime, not requested in a prompt.** A workload is
+   done when Hephaestium has seen the evidence, not when the agent says so.
+2. **Test custody.** The tests for a ticket are written by one workload and
+   mounted read-only into the workload that implements it, so an agent cannot
+   go green by weakening a test.
+3. **Reviews are selected by the diff.** Hephaestium works out which review
+   lenses a change needs from the paths it touches, pins each review to a
+   commit, and refuses to call the work done while a required verdict is
+   missing.
+4. **Controlled comparison.** A frozen corpus of past tickets, each pinned to
+   its base commit, is replayed under two configurations so that a change to
+   the harness is compared on the same work.
+5. **Three agent runtimes.** `pi` through OpenRouter, Claude Code, and
+   Snowflake Cortex Code, each behind one adapter contract and one event
+   schema.
+
+## Planned stack
+
+| Part | Choice | Why |
+|---|---|---|
+| Control plane | Elixir, OTP, Oban, Postgres | A workload is a supervised process; dispatch, revision and settlement are durable jobs. |
+| Executor and command-line tool | Rust | One small binary that sets up the sandbox, runs gates and streams events. |
+| Replay and evaluation | Python | Replays the corpus and reports paired results with cost. |
+| Contracts | Protobuf and buf | One schema for transcript events, gate results and the adapter contract, generated into every language. |
+| Dashboard | TypeScript and React | A read-only client of the same API, with a generated client and a streaming transcript. |
+| Tracing | OpenTelemetry | A workload is a span. |
+
+Multilanguage projects are the bane of some, but not me :) I personally enjoy using the right tool for the job and projects like this and tech like LLMs make it easier to work in. The decisions behind each language choice is in [`docs/adr/`](./docs/adr).
+
+## Roadmap
+
+| Phase | Outcome |
+|---|---|
+| 0 | The Stacks' tickets and plans are backed up and a replay corpus is frozen, before the harness changes. |
+| 1 | Athenaeum's layout, the manifest schema, and a command-line tool that validates a manifest and runs a gate. The Stacks consumes the first portable skills. |
+| 2 | The specialist and reviewer contracts are stated once, and each stack becomes a pack. |
+| 3 | The long role specifications are split into a short persona, its instruments and its modes. |
+| 4 | The Stacks is cut over: tickets move to GitHub issues and the original harness is deleted from it. |
+| 5 | The runtime takes the gates, one at a time, each proved against the replay corpus. |
+| 6 | The harness itself is measured: which skills a run loaded, and what happens when one is changed. |
+
+## Releases
+
+A version is derived from the conventional commits on `main`: a breaking change
+bumps the major version, `feat` the minor, and `fix` or `perf` the patch. When
+the checks pass on `main` and those commits warrant it, a workflow creates the
+`v<version>` tag and a GitHub release. The version is compiled into each
+artefact as it is built and attached to that release; it is never committed, so
+there is no version file and no changelog file. The
+[releases](https://github.com/erinversfeldcodes/hephaestium/releases) are the
+changelog. Nothing is built yet, so a release today carries notes only. See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
+
+## Prior art
+
+[Forge](https://github.com/rameezk/forge) by Rameez Khan is the closest
+existing system and the reason this one has the shape it does. Hephaestium
+takes several ideas from it: workloads in a sandbox, a per-run configuration
+fingerprint, skills held in their own repository and synced with a lock file,
+and reviews pinned to a commit. No Forge code is included here.
+
+## Feedback
+
+Bug reports and ideas are welcome as issues. Pull requests from outside are not
+accepted. See [CONTRIBUTING.md](./CONTRIBUTING.md) and
+[SECURITY.md](./SECURITY.md).
+
+## Licence
+
+Source-available, all rights reserved. See [LICENSE](./LICENSE).
+
+## Why the name
+
+Hephaestus was the Greek god of the forge and of craftsmen, and a Hephaestium
+is a place dedicated to him. The skills it works from live in an
+[athenaeum](https://github.com/erinversfeldcodes/athenaeum), a place dedicated
+to Athena, with whom he shared a temple in Athens.
