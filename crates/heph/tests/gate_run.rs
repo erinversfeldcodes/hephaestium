@@ -9,8 +9,7 @@ mod common;
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use athenaeum::gate_result::SCHEMA;
-use common::{Scratch, heph_in, heph_with_env, stderr, stdout};
+use common::{Scratch, conforms, heph_in, heph_with_env, stderr, stdout};
 use serde_json::Value;
 
 /// A manifest with one component, which the schema requires, and these
@@ -62,22 +61,6 @@ fn result_of(output: &Output) -> Value {
     let result: Value = serde_json::from_str(&text).expect("stdout to be JSON");
     conforms(&result);
     result
-}
-
-/// Hold a result to the gate result schema of the Athenaeum tag this tool
-/// pins, so that a result the tool writes is one the contract accepts.
-fn conforms(result: &Value) {
-    let schema: Value = serde_json::from_str(SCHEMA).expect("the schema to be JSON");
-    let validator = jsonschema::validator_for(&schema).expect("the schema to compile");
-    let problems: Vec<String> = validator
-        .iter_errors(result)
-        .map(|error| format!("{}: {error}", error.instance_path()))
-        .collect();
-    assert!(
-        problems.is_empty(),
-        "the result does not conform to the gate result schema:\n{}\nresult: {result}",
-        problems.join("\n")
-    );
 }
 
 #[test]
