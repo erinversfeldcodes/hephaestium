@@ -138,4 +138,4 @@ Source-available, all rights reserved. See [LICENSE](./LICENSE).
 Hephaestus was the Greek god of the forge and of craftsmen, and a Hephaestium
 is a place dedicated to him. The skills it works from live in an
 [athenaeum](https://github.com/erinversfeldcodes/athenaeum), a place dedicated
-to Athena, with whom he shared a temple in Athens.
+to Athena, with whom he shared a temple in Athens. And of course as a god of the forge, Hephaestus knew how to bliksem his tools into shape.
