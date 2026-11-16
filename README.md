@@ -8,7 +8,7 @@ what it cost. Its reason to exist is the part most agent tooling leaves out:
 checking, on the same tickets, whether a change to a prompt, a skill or a model
 made the agents better or worse.
 
-> **Status: early. The command-line tool can check a manifest; nothing dispatches agents yet.**
+> **Status: early. The command-line tool can check a manifest and run a gate; nothing dispatches agents yet.**
 > The source is publicly visible under a restrictive licence. You may read it,
 > but may not use, copy or distribute it. See [LICENSE](./LICENSE).
 
@@ -64,7 +64,7 @@ The vocabulary is defined in [`docs/CONTEXT.md`](./docs/CONTEXT.md).
 ## What works today
 
 `heph`, the command-line tool, checks a managed repository's manifest against
-the schema published by Athenaeum:
+the schema published by Athenaeum, and runs the gates it declares:
 
 ```
 $ heph manifest check
@@ -75,6 +75,20 @@ It exits 0 for a valid manifest, 1 for an invalid or unreadable one, and 2 for
 a command line it cannot understand. The schema is compiled in from a pinned
 Athenaeum release, and that release's conformance cases are run as `heph`'s
 own tests, so the tool cannot disagree with the contract it was built for.
+
+`heph gate run` runs a gate the manifest declares and prints what happened as one
+line of JSON that follows Athenaeum's gate result contract:
+
+```
+$ heph gate run regression
+{"schema_version":0,"gate":"regression","outcome":"passed","command":["just","ci"],"exit_code":0,"duration_ms":412803}
+```
+
+It puts the manifest's toolchain wrapper in front of the command, stops the gate
+and everything it started if it runs past its timeout, and skips a gate that does
+not apply to the files named with `--changed`. It exits 0 if the gate passed or
+was skipped, 1 if it failed or timed out, and 3 if it could not be run. See
+[ADR-0011](./docs/adr/0011-a-gate-run-reports-one-line-on-stdout-and-stops-everything-it-started.md).
 
 ## What is different
 
