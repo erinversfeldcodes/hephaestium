@@ -1,0 +1,13 @@
+[package]
+name = "heph"
+description = "The Hephaestium command-line tool"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+version.workspace = true
+
+# Nothing yet. Reporting a version needs only the standard library.
+[dependencies]
+
+[lints]
+workspace = true
