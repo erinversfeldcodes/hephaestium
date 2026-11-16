@@ -109,9 +109,11 @@ Multilanguage projects are the bane of some, but not me :) I personally enjoy us
 A version is derived from the conventional commits on `main`: a breaking change
 bumps the major version, `feat` the minor, and `fix` or `perf` the patch. When
 the checks pass on `main` and those commits warrant it, a workflow creates the
-`v<version>` tag and a GitHub release with notes. There is no version file and
-no changelog file; the [releases](https://github.com/erinversfeldcodes/hephaestium/releases)
-are the changelog. See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
+`v<version>` tag and a GitHub release. The version is compiled into each
+artefact as it is built and attached to that release; it is never committed, so
+there is no version file and no changelog file. The
+[releases](https://github.com/erinversfeldcodes/hephaestium/releases) are the
+changelog. Nothing is built yet, so a release today carries notes only. See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
 
 ## Prior art
 
