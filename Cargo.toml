@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/heph"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+publish = false
+# Never bumped. The version a binary reports is compiled in at release from
+# the tag it was built for, so a number here would be a second copy of what
+# the tags already say. See docs/adr/0008.
+version = "0.0.0"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+strip = true
