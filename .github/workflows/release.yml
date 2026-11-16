@@ -1,0 +1,65 @@
+# Releases the repository when the conventional commits on main since the
+# last v<version> tag warrant a new version (see scripts/release.sh). A
+# release is a tag and a GitHub release with notes; there is nothing to build
+# yet.
+#
+# It runs after CI finishes on main, not on the push itself, so nothing is
+# tagged at a commit whose checks did not pass.
+name: release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Serialised, so a second run waits for the first's tag to exist.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Tag and publish
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TARGET: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Work out the next version
+        id: plan
+        run: |
+          version=$(scripts/release.sh version)
+          if [[ -n $version ]]; then
+            echo "next version: $version"
+          else
+            echo "no releasable changes since the last tag"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The notes cover the commits since the previous tag, so they are
+      # written before this release's tag exists.
+      - name: Create the tag and the release
+        if: steps.plan.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          scripts/release.sh notes > notes.md
+          gh release create "v$VERSION" \
+            --target "$TARGET" --title "v$VERSION" --notes-file notes.md
