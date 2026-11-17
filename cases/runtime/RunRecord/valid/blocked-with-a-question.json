@@ -1,0 +1,11 @@
+{
+  "workloadId": "5b1f0e52-9c4d-4f7a-8e0b-7a2d3c1e9f66",
+  "workload": { "id": "0d7a1c3e-6f2b-4b8a-9a31-2f6c9e1d4b55", "ticket": { "number": "12", "title": "A fix", "body": "Do it.", "url": "https://github.com/o/r/issues/12" }, "repository": { "owner": "o", "name": "r", "baseBranch": "main", "baseCommit": "0123456789abcdef0123456789abcdef01234567" }, "runtime": { "kind": "KIND_CLAUDE_CODE", "provider": "PROVIDER_ANTHROPIC_SUBSCRIPTION", "model": "claude-opus-4" }, "limits": { "timeout": "1800s", "budget": { "unit": "COST_UNIT_USD", "amount": 5 } }, "approval": { "approvedBy": "erin", "approvedAt": "2026-11-17T12:00:00Z" } },
+  "outcome": "OUTCOME_BLOCKED",
+  "reason": "The ticket does not say which of two behaviours is wanted.",
+  "question": "Should a reset link work once or until it expires?",
+  "startedAt": "2026-11-17T13:00:00Z",
+  "finishedAt": "2026-11-17T13:04:30Z",
+  "eventCount": "52",
+  "executorVersion": "0.14.0"
+}
