@@ -103,6 +103,14 @@ did not create. `--check` reports drift and changes nothing, and `--update` move
 the pin to a newer release. See
 [ADR-0013](./docs/adr/0013-sync-vendors-the-pinned-skills-and-never-overwrites-what-it-did-not-create.md).
 
+`heph baseline check` checks a repository's working tree against the baseline, the
+list of what every repository must have, and prints a gate result named `baseline`
+with an outcome for each item: satisfied, unsatisfied, excepted with a reason, not
+applicable, or not checked. It answers the items that files and workflows can, and
+says plainly which ones need GitHub. A `required` item that is unsatisfied fails the
+check. See
+[ADR-0015](./docs/adr/0015-the-baseline-check-reads-the-tree-and-says-what-it-did-not-check.md).
+
 ## What is different
 
 1. **Gates are run by the runtime, not requested in a prompt.** A workload is
