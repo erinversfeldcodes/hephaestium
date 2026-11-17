@@ -6,6 +6,8 @@
     reason = "each test binary uses a different part of what the tests share"
 )]
 
+pub mod github;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
