@@ -1,0 +1,14 @@
+{
+  "id": "5b1f0e52-9c4d-4f7a-8e0b-7a2d3c1e9f66",
+  "ticket": { "number": "40", "title": "A fix", "body": "Do it.", "url": "https://github.com/o/r/issues/40" },
+  "repository": {
+    "owner": "o",
+    "name": "r",
+    "baseBranch": "main",
+    "baseCommit": "fedcba9876543210fedcba9876543210fedcba98",
+    "manifestPath": "tools/.athenaeum/manifest.toml"
+  },
+  "runtime": { "kind": "KIND_PI", "provider": "PROVIDER_OPENROUTER", "model": "anthropic/claude-sonnet-4" },
+  "limits": { "timeout": "900s", "budget": { "unit": "COST_UNIT_TOKENS", "amount": 2000000 } },
+  "approval": { "approvedBy": "someone", "approvedAt": "2026-11-17T08:30:15.250Z" }
+}

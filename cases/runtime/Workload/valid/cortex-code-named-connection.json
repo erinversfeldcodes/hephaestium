@@ -1,0 +1,13 @@
+{
+  "id": "9c2e7d41-1a0b-4d63-b5f8-3e4a6b7c8d77",
+  "ticket": { "number": "7", "title": "A model change", "body": "Change it.", "url": "https://github.com/o/r/issues/7" },
+  "repository": { "owner": "o", "name": "r", "baseBranch": "main", "baseCommit": "00112233445566778899aabbccddeeff00112233" },
+  "runtime": {
+    "kind": "KIND_CORTEX_CODE",
+    "provider": "PROVIDER_SNOWFLAKE",
+    "model": "a-model",
+    "connection": "a-named-connection"
+  },
+  "limits": { "timeout": "3600s", "budget": { "unit": "COST_UNIT_CREDITS", "amount": 1.5 } },
+  "approval": { "approvedBy": "someone", "approvedAt": "2026-11-17T09:00:00Z" }
+}
