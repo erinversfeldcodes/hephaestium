@@ -38,7 +38,8 @@ Commands:
                          With --changed, a gate whose when_paths match none of
                          the files is skipped. Exits 0 if the gate passed or
                          was skipped, 1 if it failed or timed out, and 3 if it
-                         could not be run.
+                         could not be run, which includes a variable or secret
+                         the gate declares in requires being unset or empty.
 
   lint [--manifest PATH] [--changed PATH]... [--timeout-seconds N]
                          Run the lint commands of the components a change
@@ -210,15 +211,25 @@ fn run_gate(request: &GateRun) -> ExitCode {
     let command = gate::command_for(&manifest, gate, |name| std::env::var(name).ok());
 
     let result = match gate::applies(gate, &request.changed) {
-        Ok(true) => gate::run(
-            &request.name,
-            gate,
-            command,
-            std::path::Path::new("."),
-            |message| {
-                eprintln!("heph: {message}");
-            },
-        ),
+        Ok(true) => {
+            let missing = gate::missing_requirements(gate, |name| std::env::var(name).ok());
+            if !missing.is_empty() {
+                return could_not_run(&format!(
+                    "gate {}: not run, because what it needs is not set: {}",
+                    request.name,
+                    gate::describe_missing(&missing)
+                ));
+            }
+            gate::run(
+                &request.name,
+                gate,
+                command,
+                std::path::Path::new("."),
+                |message| {
+                    eprintln!("heph: {message}");
+                },
+            )
+        }
         Ok(false) => Ok(gate::skipped(&request.name, gate, command)),
         Err(error) => Err(error),
     };
@@ -320,6 +331,7 @@ fn run_lint(request: &Lint) -> ExitCode {
             when_paths: None,
             timeout_seconds: request.timeout_seconds,
             result: None,
+            requires: std::collections::BTreeMap::new(),
         };
         let wrapped =
             gate::command_for(&manifest, &as_gate, |variable| std::env::var(variable).ok());
