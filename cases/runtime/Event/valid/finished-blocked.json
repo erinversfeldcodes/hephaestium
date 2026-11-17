@@ -1,0 +1,1 @@
+{ "workloadId": "5b1f0e52-9c4d-4f7a-8e0b-7a2d3c1e9f66", "sequence": "40", "time": "2026-11-17T13:00:00Z", "finished": { "outcome": "OUTCOME_BLOCKED", "reason": "The ticket does not say which of two behaviours is wanted.", "question": "Should a reset link work once or until it expires?" } }

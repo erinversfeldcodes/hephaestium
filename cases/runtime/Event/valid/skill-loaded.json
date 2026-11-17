@@ -1,0 +1,1 @@
+{ "workloadId": "0d7a1c3e-6f2b-4b8a-9a31-2f6c9e1d4b55", "sequence": "6", "time": "2026-11-17T12:00:23Z", "skillLoaded": { "name": "scope-request", "path": ".athenaeum/skills/scope-request/SKILL.md", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" } }
