@@ -1,0 +1,1 @@
+{ "workloadId": "0d7a1c3e-6f2b-4b8a-9a31-2f6c9e1d4b55", "sequence": "8", "time": "2026-11-17T12:09:01Z", "gateFinished": { "name": "format", "result": { "schema_version": 0, "gate": "format", "outcome": "passed", "command": ["just", "fmt-check"], "exit_code": 0, "duration_ms": 158 } } }
