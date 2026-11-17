@@ -71,6 +71,7 @@ struct ItemApply {
 
 #[derive(Debug, Deserialize)]
 struct Apply {
+    #[serde(default)]
     files: Vec<FileSpec>,
 }
 

@@ -57,6 +57,7 @@ enum Kind {
     Workflow,
     Setting,
     Ruleset,
+    Config,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +383,10 @@ fn evaluate(
                 (Outcome::Unsatisfied, Some(describe(&violations)))
             }
         }
+        Kind::Config => (
+            Outcome::NotChecked,
+            Some("this tool does not read this kind of check yet".to_owned()),
+        ),
         Kind::Setting | Kind::Ruleset => {
             let Some(github) = github else {
                 return (
