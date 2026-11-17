@@ -32,6 +32,10 @@ used it.
   cases. It exists because `buf convert` discards unknown fields and unknown enum
   names, so it would accept a misspelt field. A reader in any other language is
   graded by the same cases.
+- [`crates/contracts`](../crates/contracts) holds the Rust types, generated from
+  these files at build time so the contract has one home, and its conformance
+  test grades them by the same cases. Each reader words its own errors, so the
+  test has its own table of how it recognises each kind of violation.
 
 Locally:
 
