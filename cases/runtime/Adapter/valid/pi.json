@@ -1,0 +1,13 @@
+{
+  "runtime": "KIND_PI",
+  "name": "pi",
+  "version": "0.1.0",
+  "providers": ["PROVIDER_OPENROUTER"],
+  "produces": [
+    "PRODUCED_EVENT_AGENT_MESSAGE",
+    "PRODUCED_EVENT_TOOL_CALL",
+    "PRODUCED_EVENT_TOOL_RESULT",
+    "PRODUCED_EVENT_COST"
+  ],
+  "costUnits": ["COST_UNIT_USD", "COST_UNIT_TOKENS"]
+}

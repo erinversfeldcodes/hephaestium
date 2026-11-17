@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package hephaestium.v1alpha1;
+
+import "hephaestium/v1alpha1/common.proto";
+import "hephaestium/v1alpha1/workload.proto";
+
+// What an adapter says about itself. Hephaestium supports several agent
+// runtimes, each with its own way of being started and its own output format.
+// An adapter is the one place that knows a runtime's, and it normalises what the
+// runtime prints to the event contract, so nothing downstream reads a runtime's
+// own format (ADR 0005).
+//
+// An adapter does two things, in code, and not as messages:
+//
+//   plan:      from a Workload and the path of its workspace, decide how to start
+//              the runtime, as a LaunchPlan.
+//   translate: from what the runtime prints, produce events.
+//
+// The set of these descriptions is the explicit table of which runtimes work
+// with which providers. It is data, so it can be read, checked and shown, and a
+// combination that is not in it does not work.
+message Adapter {
+  // The runtime this adapter drives.
+  AgentRuntime.Kind runtime = 1;
+  string name = 2;
+  // The adapter's own version, which is not the runtime's.
+  string version = 3;
+  // The providers this runtime works with: this adapter's row of the table.
+  repeated AgentRuntime.Provider providers = 4;
+  // The events this adapter can produce.
+  repeated ProducedEvent produces = 5;
+  // The units of cost it can report. A cost is recorded in the unit the source
+  // reports it in and never converted (ADR 0005).
+  repeated CostUnit cost_units = 6;
+  // Whether a connection must be named. A Snowflake connection must be named and
+  // an adapter never falls back to a default (ADR 0005); the other runtimes need
+  // none.
+  bool requires_connection = 7;
+}
+
+// The events an adapter can produce. An adapter reports what the agent did and
+// says; the executor produces the rest: starting, the workspace, gates, the pull
+// request and the end.
+enum ProducedEvent {
+  PRODUCED_EVENT_UNSPECIFIED = 0;
+  PRODUCED_EVENT_AGENT_MESSAGE = 1;
+  PRODUCED_EVENT_TOOL_CALL = 2;
+  PRODUCED_EVENT_TOOL_RESULT = 3;
+  PRODUCED_EVENT_SKILL_LOADED = 4;
+  PRODUCED_EVENT_COST = 5;
+}
+
+// How an adapter has decided to start a runtime for one workload. It is a
+// message so that it can be recorded and reviewed, so it holds the names of the
+// environment variables it passes and never their values: a plan with a secret
+// in it could not be kept.
+message LaunchPlan {
+  // The program and its arguments, as a list. Never a single string: a string
+  // needs a shell to split it, and then quoting decides what runs.
+  repeated string command = 1;
+  repeated string env_names = 2;
+  // Where the runtime runs, an absolute path inside the workspace.
+  string working_directory = 3;
+}

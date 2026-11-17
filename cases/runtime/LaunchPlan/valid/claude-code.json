@@ -1,0 +1,5 @@
+{
+  "command": ["claude", "-p", "--output-format", "stream-json"],
+  "envNames": ["ANTHROPIC_API_KEY", "PATH", "HOME"],
+  "workingDirectory": "/work/0d7a1c3e"
+}

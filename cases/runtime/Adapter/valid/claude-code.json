@@ -1,0 +1,14 @@
+{
+  "runtime": "KIND_CLAUDE_CODE",
+  "name": "claude-code",
+  "version": "0.1.0",
+  "providers": ["PROVIDER_ANTHROPIC_SUBSCRIPTION"],
+  "produces": [
+    "PRODUCED_EVENT_AGENT_MESSAGE",
+    "PRODUCED_EVENT_TOOL_CALL",
+    "PRODUCED_EVENT_TOOL_RESULT",
+    "PRODUCED_EVENT_SKILL_LOADED",
+    "PRODUCED_EVENT_COST"
+  ],
+  "costUnits": ["COST_UNIT_USD"]
+}
