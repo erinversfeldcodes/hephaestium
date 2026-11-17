@@ -1,9 +1,8 @@
 //! Reading a repository's settings and rulesets from GitHub.
 //!
-//! Everything here is a read. GitHub is reached by running `gh api` with an
-//! endpoint and nothing else, so the credentials are the ones `gh` already
-//! has and this tool never holds one, and a request cannot be anything but a
-//! `GET`.
+//! GitHub is reached by running `gh api`, so the credentials are the ones `gh`
+//! already has and this tool never holds one. Everything here is a read except
+//! [`write`], which only a command that was told to change things calls.
 
 use std::path::Path;
 use std::process::Command;
@@ -84,6 +83,64 @@ fn get(endpoint: &str) -> Result<Fetched, CouldNotRead> {
     }
     Ok(Fetched::Failed(if said.is_empty() {
         format!("{endpoint}: gh failed")
+    } else {
+        said
+    }))
+}
+
+/// Make one change to GitHub, with `gh api -X METHOD ENDPOINT`, and the body, if
+/// there is one, on standard input. This is the only place a request is
+/// anything but a read, and it is reached only by a command that was told to
+/// change things.
+///
+/// # Errors
+///
+/// Returns why `gh` could not be run at all. A request that GitHub refuses is
+/// `Ok(Err(message))`, with what `gh` said, so a caller can go on to the rest.
+pub fn write(
+    method: &str,
+    endpoint: &str,
+    body: Option<&Value>,
+) -> Result<Result<(), String>, CouldNotRead> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let mut command = Command::new("gh");
+    command.args(["api", "-X", method, endpoint]);
+    if body.is_some() {
+        command.args(["--input", "-"]);
+    }
+    let mut child = command
+        .stdin(if body.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CouldNotRead(
+                    "the GitHub command-line tool, gh, is not installed or not on the path"
+                        .to_owned(),
+                )
+            } else {
+                CouldNotRead(format!("gh could not be run: {error}"))
+            }
+        })?;
+    if let (Some(body), Some(mut stdin)) = (body, child.stdin.take()) {
+        let _ = stdin.write_all(body.to_string().as_bytes());
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| CouldNotRead(format!("gh could not be waited for: {error}")))?;
+    if output.status.success() {
+        return Ok(Ok(()));
+    }
+    let said = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Ok(Err(if said.is_empty() {
+        format!("{method} {endpoint}: gh failed")
     } else {
         said
     }))

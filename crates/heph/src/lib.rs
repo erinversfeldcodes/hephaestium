@@ -8,6 +8,7 @@ compile_error!(
 );
 
 pub mod apply;
+pub mod apply_settings;
 pub mod baseline;
 pub mod gate;
 pub mod github;
