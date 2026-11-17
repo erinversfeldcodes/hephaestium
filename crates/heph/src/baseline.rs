@@ -57,6 +57,7 @@ enum Kind {
     Workflow,
     Setting,
     Ruleset,
+    Config,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +74,14 @@ struct Check {
     path_any: Option<Vec<String>>,
     rule: Option<String>,
     setting: Option<String>,
+    ecosystems: Option<BTreeMap<String, Ecosystem>>,
+}
+
+/// How an ecosystem is recognised, and where its updates are configured.
+#[derive(Debug, Deserialize)]
+struct Ecosystem {
+    markers: Vec<String>,
+    directory: String,
 }
 
 /// A repository's answers, read for what this command needs: its exceptions,
@@ -136,14 +145,17 @@ pub enum CouldNotCheck {
     Unreadable(String),
     /// A workflow is not YAML.
     Workflow(String),
+    /// A configuration file is not YAML.
+    Config(String),
 }
 
 impl std::fmt::Display for CouldNotCheck {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Answers(message) | Self::Unreadable(message) | Self::Workflow(message) => {
-                formatter.write_str(message)
-            }
+            Self::Answers(message)
+            | Self::Unreadable(message)
+            | Self::Workflow(message)
+            | Self::Config(message) => formatter.write_str(message),
             Self::UnknownException(ids) => write!(
                 formatter,
                 "the answers except an item the baseline does not have: {}",
@@ -192,11 +204,21 @@ pub fn check(
 
     let files = files_in(root)?;
     let workflows = read_workflows(root, &files)?;
+    let dependabot = read_dependabot(root, &files)?;
 
     let mut items = BTreeMap::new();
     let mut failed = false;
     for (id, item) in &baseline.items {
-        let (mut outcome, mut detail) = evaluate(item, &files, &workflows, github, &answers);
+        let (mut outcome, mut detail) = evaluate(
+            item,
+            &Tree {
+                files: &files,
+                workflows: &workflows,
+                dependabot: dependabot.as_ref(),
+            },
+            github,
+            &answers,
+        );
         let mut reason = None;
         if let Some(exception) = answers.exceptions.get(id) {
             if outcome == Outcome::Unsatisfied {
@@ -339,13 +361,21 @@ fn read_workflows(root: &Path, files: &[String]) -> Result<Vec<(String, Yaml)>, 
     Ok(workflows)
 }
 
+/// What was read from the working tree, for the items that need it.
+struct Tree<'a> {
+    files: &'a [String],
+    workflows: &'a [(String, Yaml)],
+    /// The repository's `dependabot.yml`, by its path, if it has one.
+    dependabot: Option<&'a (String, Yaml)>,
+}
+
 fn evaluate(
     item: &Item,
-    files: &[String],
-    workflows: &[(String, Yaml)],
+    tree: &Tree,
     github: Option<&State>,
     answers: &Answers,
 ) -> (Outcome, Option<String>) {
+    let (files, workflows) = (tree.files, tree.workflows);
     match item.kind {
         Kind::File => {
             let paths = item.check.path_any.as_deref().unwrap_or_default();
@@ -382,6 +412,15 @@ fn evaluate(
                 (Outcome::Unsatisfied, Some(describe(&violations)))
             }
         }
+        Kind::Config => match (item.check.rule.as_deref(), &item.check.ecosystems) {
+            (Some("dependabot-covers-ecosystems"), Some(ecosystems)) => {
+                dependabot_coverage(ecosystems, tree)
+            }
+            (other, _) => (
+                Outcome::NotChecked,
+                Some(format!("this tool does not know the rule {other:?}")),
+            ),
+        },
         Kind::Setting | Kind::Ruleset => {
             let Some(github) = github else {
                 return (
@@ -651,6 +690,155 @@ fn needs_answers() -> (Outcome, Option<String>) {
         Outcome::NotChecked,
         Some("needs the repository's answers, and there is no answers file".to_owned()),
     )
+}
+
+/// The ecosystems the repository uses, each with the directory its updates
+/// are configured in, from the files in the tree.
+fn detect(ecosystems: &BTreeMap<String, Ecosystem>, files: &[String]) -> Vec<(String, String)> {
+    let mut found = std::collections::BTreeSet::new();
+    for (name, ecosystem) in ecosystems {
+        let mut builder = globset::GlobSetBuilder::new();
+        for marker in &ecosystem.markers {
+            if let Ok(glob) = globset::GlobBuilder::new(marker)
+                .literal_separator(true)
+                .build()
+            {
+                builder.add(glob);
+            }
+        }
+        let Ok(set) = builder.build() else { continue };
+        for file in files.iter().filter(|file| set.is_match(file.as_str())) {
+            let directory = if ecosystem.directory == "root" {
+                "/".to_owned()
+            } else {
+                match Path::new(file).parent().and_then(Path::to_str) {
+                    Some(parent) if !parent.is_empty() => format!("/{parent}"),
+                    _ => "/".to_owned(),
+                }
+            };
+            found.insert((name.clone(), directory));
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// The ecosystems the pinned baseline names, as its coverage item gives them.
+fn pinned_ecosystems() -> BTreeMap<String, Ecosystem> {
+    let baseline: Baseline = toml::from_str(athenaeum::baseline::ITEMS)
+        .expect("the pinned baseline to be readable as a Baseline");
+    baseline
+        .items
+        .into_values()
+        .find(|item| item.check.rule.as_deref() == Some("dependabot-covers-ecosystems"))
+        .and_then(|item| item.check.ecosystems)
+        .unwrap_or_default()
+}
+
+/// Every ecosystem the repository at `root` uses and the directory it is used
+/// in, in order, for the ecosystems the pinned baseline names.
+///
+/// # Errors
+///
+/// Returns why the tree could not be read.
+pub fn ecosystems_found(root: &Path) -> Result<Vec<(String, String)>, CouldNotCheck> {
+    Ok(detect(&pinned_ecosystems(), &files_in(root)?))
+}
+
+/// A directory as Dependabot compares it: with a leading slash, and none at the end.
+fn normalised(directory: &str) -> String {
+    let trimmed = directory.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_owned()
+    } else if trimmed.starts_with('/') {
+        trimmed.to_owned()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+/// Whether a directory the file names, which may be a pattern, covers `wanted`.
+fn covers_directory(named: &str, wanted: &str) -> bool {
+    let named = normalised(named);
+    if named.contains('*') {
+        return globset::Glob::new(&named)
+            .is_ok_and(|glob| glob.compile_matcher().is_match(wanted));
+    }
+    named == wanted
+}
+
+fn dependabot_coverage(
+    ecosystems: &BTreeMap<String, Ecosystem>,
+    tree: &Tree,
+) -> (Outcome, Option<String>) {
+    let wanted = detect(ecosystems, tree.files);
+    if wanted.is_empty() {
+        return (
+            Outcome::NotApplicable,
+            Some("the repository uses no ecosystem the baseline names".to_owned()),
+        );
+    }
+    let list = |entries: &[(String, String)]| {
+        entries
+            .iter()
+            .map(|(ecosystem, directory)| format!("{ecosystem} {directory}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let Some((file, document)) = tree.dependabot else {
+        return (
+            Outcome::Unsatisfied,
+            Some(format!(
+                "no dependabot.yml; it needs entries for: {}",
+                list(&wanted)
+            )),
+        );
+    };
+    let updates = document["updates"].as_vec().cloned().unwrap_or_default();
+    let missing: Vec<(String, String)> = wanted
+        .into_iter()
+        .filter(|(ecosystem, directory)| {
+            !updates.iter().any(|update| {
+                if update["package-ecosystem"].as_str() != Some(ecosystem.as_str()) {
+                    return false;
+                }
+                let single = update["directory"].as_str().into_iter();
+                let several = update["directories"]
+                    .as_vec()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Yaml::as_str);
+                single
+                    .chain(several)
+                    .any(|named| covers_directory(named, directory))
+            })
+        })
+        .collect();
+    if missing.is_empty() {
+        (Outcome::Satisfied, None)
+    } else {
+        (
+            Outcome::Unsatisfied,
+            Some(format!("{file} has no entry for: {}", list(&missing))),
+        )
+    }
+}
+
+/// The repository's `dependabot.yml` or `.yaml`, parsed, if it has one.
+fn read_dependabot(root: &Path, files: &[String]) -> Result<Option<(String, Yaml)>, CouldNotCheck> {
+    let Some(file) = [".github/dependabot.yml", ".github/dependabot.yaml"]
+        .into_iter()
+        .find(|name| files.iter().any(|file| file == name))
+    else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(root.join(file))
+        .map_err(|error| CouldNotCheck::Config(format!("{file}: cannot be read: {error}")))?;
+    let mut documents = YamlLoader::load_from_str(&text)
+        .map_err(|error| CouldNotCheck::Config(format!("{file}: is not YAML: {error}")))?;
+    if documents.is_empty() {
+        return Err(CouldNotCheck::Config(format!("{file}: is empty")));
+    }
+    Ok(Some((file.to_owned(), documents.swap_remove(0))))
 }
 
 fn describe(violations: &[String]) -> String {

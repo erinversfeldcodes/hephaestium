@@ -116,6 +116,9 @@ and
 
 `heph baseline apply` writes the files a repository is missing, from the baseline's
 templates with the repository's name, owner, licence holder and contact filled in. It
+also writes a `dependabot.yml` for a repository that has none, with an entry for each
+ecosystem and directory it finds; one that exists is never edited, and `heph baseline
+check` names the entries it lacks. It
 never overwrites a file and never writes through a link, writes nothing unless it can
 write everything, and ends by saying what is still unsatisfied. `--dry-run` shows what
 it would write. See

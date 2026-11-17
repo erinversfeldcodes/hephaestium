@@ -123,10 +123,20 @@ pub fn compliant(name: &str) -> Scratch {
         ".github/ISSUE_TEMPLATE/bug.yml",
         ".github/pull_request_template.md",
         ".github/CODEOWNERS",
-        ".github/dependabot.yml",
     ] {
         scratch.write(file, "x\n");
     }
+    scratch.write(".github/dependabot.yml", COVERS_ACTIONS);
     scratch.write(".github/workflows/ci.yml", CLEAN_WORKFLOW);
     scratch
 }
+
+/// A `dependabot.yml` that covers GitHub Actions, the only ecosystem a
+/// repository with just a workflow uses.
+pub const COVERS_ACTIONS: &str = "version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+";

@@ -67,11 +67,27 @@ struct Items {
 #[derive(Debug, Deserialize)]
 struct ItemApply {
     apply: Option<Apply>,
+    check: Option<CheckRule>,
+}
+
+/// The rule of a check, which is all that is needed to find the items a
+/// generated file also satisfies.
+#[derive(Debug, Deserialize)]
+struct CheckRule {
+    rule: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Apply {
+    #[serde(default)]
     files: Vec<FileSpec>,
+    generate: Option<Generate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Generate {
+    generator: String,
+    destination: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,29 +146,7 @@ pub fn apply(
 
     let variables = variables_for(repository, year, &answers);
 
-    let mut planned = Vec::new();
-    let mut skipped = Vec::new();
-    for (id, item) in &items.items {
-        let Some(apply) = &item.apply else { continue };
-        if before.report["items"][id]["outcome"] != "unsatisfied" {
-            continue;
-        }
-        for file in &apply.files {
-            let contents = render_file(id, file, &variables, &answers.licence)?;
-            match destination_state(root, &file.destination)? {
-                Destination::Free => planned.push(Planned {
-                    item: id.clone(),
-                    destination: file.destination.clone(),
-                    contents,
-                }),
-                Destination::Taken(reason) => skipped.push(Skipped {
-                    item: id.clone(),
-                    destination: file.destination.clone(),
-                    reason,
-                }),
-            }
-        }
-    }
+    let (planned, skipped) = plan(root, &before.report, &items, &variables, &answers.licence)?;
 
     if !dry_run {
         for plan in &planned {
@@ -171,7 +165,23 @@ pub fn apply(
     // What is left, after the files are written or, for a dry run, as they
     // would be once written.
     let after = baseline::check(root, answers_path, None)?;
-    let covered: Vec<&str> = written.iter().map(|w| w.item.as_str()).collect();
+    let mut covered: Vec<&str> = written.iter().map(|w| w.item.as_str()).collect();
+    // A generated Dependabot file satisfies the coverage item as well as the
+    // item that names it, so for a dry run that one is not left over either.
+    let wrote_dependabot = written.iter().any(|w| {
+        items
+            .items
+            .get(&w.item)
+            .and_then(|item| item.apply.as_ref())
+            .and_then(|apply| apply.generate.as_ref())
+            .is_some_and(|generate| generate.generator == "dependabot")
+    });
+    if wrote_dependabot {
+        covered.extend(items.items.iter().filter_map(|(id, item)| {
+            let rule = item.check.as_ref()?.rule.as_deref()?;
+            (rule == "dependabot-covers-ecosystems").then_some(id.as_str())
+        }));
+    }
     let remaining: Vec<Value> = after.report["items"]
         .as_object()
         .into_iter()
@@ -216,6 +226,57 @@ fn variables_for(
         ("holder", answers.holder.clone()),
         ("contact", Some(answers.contact.clone())),
     ])
+}
+
+/// Work out every file to write, and every one that cannot be, before any is
+/// written.
+fn plan(
+    root: &Path,
+    before: &Value,
+    items: &Items,
+    variables: &BTreeMap<&'static str, Option<String>>,
+    licence: &str,
+) -> Result<(Vec<Planned>, Vec<Skipped>), CouldNotApply> {
+    let mut planned = Vec::new();
+    let mut skipped = Vec::new();
+    for (id, item) in &items.items {
+        let Some(apply) = &item.apply else { continue };
+        if before["items"][id]["outcome"] != "unsatisfied" {
+            continue;
+        }
+        for file in &apply.files {
+            let contents = render_file(id, file, variables, licence)?;
+            place(
+                root,
+                id,
+                &file.destination,
+                contents,
+                &mut planned,
+                &mut skipped,
+            )?;
+        }
+        if let Some(generate) = &apply.generate {
+            match generated(id, generate, variables, root)? {
+                Generated::Contents(contents) => {
+                    place(
+                        root,
+                        id,
+                        &generate.destination,
+                        contents,
+                        &mut planned,
+                        &mut skipped,
+                    )?;
+                }
+                Generated::Nothing(reason) => skipped.push(Skipped {
+                    item: id.clone(),
+                    destination: generate.destination.clone(),
+                    reason,
+                }),
+            }
+        }
+    }
+
+    Ok((planned, skipped))
 }
 
 /// The text of one file, from its template.
@@ -272,6 +333,80 @@ fn fill(
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// Plan one file, or skip it if something is already at its destination.
+fn place(
+    root: &Path,
+    item: &str,
+    destination: &str,
+    contents: String,
+    planned: &mut Vec<Planned>,
+    skipped: &mut Vec<Skipped>,
+) -> Result<(), CouldNotApply> {
+    match destination_state(root, destination)? {
+        Destination::Free => planned.push(Planned {
+            item: item.to_owned(),
+            destination: destination.to_owned(),
+            contents,
+        }),
+        Destination::Taken(reason) => skipped.push(Skipped {
+            item: item.to_owned(),
+            destination: destination.to_owned(),
+            reason,
+        }),
+    }
+    Ok(())
+}
+
+enum Generated {
+    /// The file's text.
+    Contents(String),
+    /// Nothing to write, and why.
+    Nothing(String),
+}
+
+/// Compose a generated file. The `dependabot` generator writes its header and
+/// then its entry once for each ecosystem and directory the repository uses.
+fn generated(
+    item: &str,
+    generate: &Generate,
+    variables: &BTreeMap<&'static str, Option<String>>,
+    root: &Path,
+) -> Result<Generated, CouldNotApply> {
+    if generate.generator != "dependabot" {
+        return Err(CouldNotApply(format!(
+            "{item}: this tool does not know the generator {}",
+            generate.generator
+        )));
+    }
+    let found = baseline::ecosystems_found(root)?;
+    if found.is_empty() {
+        return Ok(Generated::Nothing(
+            "the repository uses no ecosystem the baseline names, so there is nothing for Dependabot to watch"
+                .to_owned(),
+        ));
+    }
+    let template = |path: &str| {
+        athenaeum::baseline::TEMPLATES
+            .iter()
+            .find(|template| template.path == path)
+            .ok_or_else(|| CouldNotApply(format!("{item}: there is no template {path}")))
+    };
+    let mut text = fill(
+        template("dependabot/header.yml")?.text,
+        variables,
+        item,
+        "dependabot/header.yml",
+    )?;
+    let entry = template("dependabot/entry.yml")?;
+    for (ecosystem, directory) in found {
+        let mut with = variables.clone();
+        with.insert("ecosystem", Some(ecosystem));
+        with.insert("directory", Some(directory));
+        text.push_str(&fill(entry.text, &with, item, "dependabot/entry.yml")?);
+    }
+    Ok(Generated::Contents(text))
 }
 
 enum Destination {
