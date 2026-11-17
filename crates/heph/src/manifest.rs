@@ -30,6 +30,22 @@ pub struct Manifest {
     /// The gates, by name.
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
+    /// The steps that prepare a fresh workspace so the gates can run in it,
+    /// in the order they run.
+    #[serde(default)]
+    pub bootstrap: Vec<BootstrapStep>,
+}
+
+/// One step of preparing a fresh workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BootstrapStep {
+    /// The program and its arguments.
+    pub run: Vec<String>,
+    /// The directory it runs in, relative to the repository root. Absent
+    /// means the root.
+    pub root: Option<String>,
+    /// How long it may run before it is stopped.
+    pub timeout_seconds: u64,
 }
 
 /// One buildable part of the repository.
