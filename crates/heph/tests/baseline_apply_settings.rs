@@ -117,7 +117,7 @@ fn nothing_is_changed_without_yes_and_the_plan_shows_the_requests() {
     assert_eq!(result["gate"], "baseline-apply-settings");
     assert_eq!(result["report"]["dry_run"], true);
     let all = changes(&result);
-    assert!(!all.is_empty());
+    assert_ne!(all.len(), 0);
     for change in &all {
         assert_eq!(change["outcome"], "planned", "{change}");
         assert!(change["method"].is_string() && change["endpoint"].is_string());
@@ -337,7 +337,7 @@ fn code_scanning_and_the_description_are_not_applied_and_say_why() {
             .iter()
             .find(|entry| entry["item"] == item)
             .unwrap_or_else(|| panic!("{item} is not reported: {result}"));
-        assert!(!entry["reason"].as_str().unwrap_or_default().is_empty());
+        assert_ne!(entry["reason"].as_str().unwrap_or_default(), "");
     }
     assert!(write_of(&gh, "PATCH", "/code-scanning/default-setup").is_none());
 }
@@ -412,7 +412,7 @@ fn every_request_goes_to_the_named_repository_and_the_working_tree_is_untouched(
 
     apply_settings(&scratch, &gh, &["--yes"]);
 
-    assert!(!gh.writes().is_empty());
+    assert_ne!(gh.writes().len(), 0);
     for (_, endpoint_path, _) in gh.writes() {
         assert!(
             endpoint_path.starts_with("repos/owner/name"),

@@ -543,7 +543,7 @@ fn setting(name: Option<&str>, github: &State) -> (Outcome, Option<String>) {
 }
 
 /// Whether a ruleset's conditions cover the default branch.
-fn covers(ruleset: &Value, default_branch: &str) -> bool {
+pub(crate) fn covers(ruleset: &Value, default_branch: &str) -> bool {
     let names = |key: &str| -> Vec<&str> {
         ruleset["conditions"]["ref_name"][key]
             .as_array()

@@ -8,6 +8,7 @@
 use std::process::ExitCode;
 
 use heph::apply;
+use heph::apply_settings;
 use heph::baseline;
 use heph::gate;
 use heph::github;
@@ -79,6 +80,17 @@ Commands:
                          gate result named baseline-apply. Exits 0 if no
                          required item is still unsatisfied, 1 if one is, and 3
                          if nothing could be applied. --dry-run writes nothing.
+
+  baseline apply --settings [--root PATH] [--answers PATH] [--repo OWNER/NAME] [--yes]
+                         Change the repository's GitHub settings, and create its
+                         default-branch ruleset, so that the baseline's setting
+                         and ruleset items are satisfied. This changes GitHub,
+                         not the working tree, and only with --yes: without it
+                         the requests that would be made are printed and none is.
+                         An existing ruleset is never modified. Prints a gate
+                         result named baseline-apply-settings. Exits 0 if no
+                         request failed, 1 if one did, and 3 if nothing could be
+                         applied.
 
   sync [--lock PATH] [--check | --update [TAG]]
                          Make the skills vendored in .athenaeum/skills match the
@@ -357,6 +369,10 @@ struct BaselineApply {
     answers: Option<String>,
     repo: Option<String>,
     dry_run: bool,
+    /// Change GitHub, and not the working tree.
+    settings: bool,
+    /// Make the changes, and not only say what they would be.
+    yes: bool,
 }
 
 impl BaselineApply {
@@ -365,6 +381,8 @@ impl BaselineApply {
         let mut answers = None;
         let mut repo = None;
         let mut dry_run = false;
+        let mut settings = false;
+        let mut yes = false;
         let mut rest = arguments.iter();
         while let Some(&flag) = rest.next() {
             match flag {
@@ -372,14 +390,23 @@ impl BaselineApply {
                 "--answers" => answers = Some((*rest.next()?).to_owned()),
                 "--repo" => repo = Some((*rest.next()?).to_owned()),
                 "--dry-run" => dry_run = true,
+                "--settings" => settings = true,
+                "--yes" => yes = true,
                 _ => return None,
             }
+        }
+        // Changing GitHub is a different thing from writing files, and --yes
+        // means the first, so it means nothing without --settings.
+        if (yes && !settings) || (settings && dry_run) {
+            return None;
         }
         Some(Self {
             root,
             answers,
             repo,
             dry_run,
+            settings,
+            yes,
         })
     }
 }
@@ -388,6 +415,9 @@ impl BaselineApply {
 /// what was done as a gate result on one line of standard output, and as a
 /// table on standard error.
 fn run_baseline_apply(request: &BaselineApply) -> ExitCode {
+    if request.settings {
+        return run_baseline_apply_settings(request);
+    }
     let root = std::path::Path::new(&request.root);
     let answers = request.answers.as_ref().map_or_else(
         || root.join(baseline::DEFAULT_ANSWERS),
@@ -423,10 +453,48 @@ fn run_baseline_apply(request: &BaselineApply) -> ExitCode {
     ExitCode::from(result.exit_code_of_heph())
 }
 
+/// Change a repository's GitHub settings, and create its ruleset, if told to,
+/// and print what was done, or would be, as a gate result on one line of
+/// standard output and a table on standard error.
+fn run_baseline_apply_settings(request: &BaselineApply) -> ExitCode {
+    let root = std::path::Path::new(&request.root);
+    let answers = request.answers.as_ref().map_or_else(
+        || root.join(baseline::DEFAULT_ANSWERS),
+        std::path::PathBuf::from,
+    );
+    let repository = match github::repository_of(root, request.repo.as_deref()) {
+        Ok(repository) => repository,
+        Err(error) => return could_not_run(&format!("baseline apply: {error}")),
+    };
+
+    let started = std::time::Instant::now();
+    let applied = match apply_settings::apply(root, &answers, &repository, request.yes) {
+        Ok(applied) => applied,
+        Err(error) => return could_not_run(&format!("baseline apply: {error}")),
+    };
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let result = gate::reported(
+        "baseline-apply-settings",
+        applied.failed,
+        vec![
+            "heph".to_owned(),
+            "baseline".to_owned(),
+            "apply".to_owned(),
+            "--settings".to_owned(),
+        ],
+        duration_ms,
+        applied.report,
+    );
+    eprint!("{}", applied.table);
+    print_result(&result);
+    ExitCode::from(result.exit_code_of_heph())
+}
+
 /// The command line after `baseline apply` could not be understood.
 fn baseline_apply_usage_error() -> ExitCode {
     eprintln!(
-        "heph: expected 'baseline apply [--root PATH] [--answers PATH] [--repo OWNER/NAME] [--dry-run]'\n\n{USAGE}"
+        "heph: expected 'baseline apply [--root PATH] [--answers PATH] [--repo OWNER/NAME] [--dry-run]' or 'baseline apply --settings [--repo OWNER/NAME] [--yes]'\n\n{USAGE}"
     );
     ExitCode::from(USAGE_ERROR)
 }
