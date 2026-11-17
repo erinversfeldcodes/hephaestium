@@ -375,6 +375,16 @@ fn a_dry_run_lists_the_generated_file_and_writes_nothing() {
     let (_, result) = apply(&scratch, &["--dry-run"]);
 
     assert!(!scratch.exists(".github/dependabot.yml"));
+    let leftover: Vec<&str> = result["report"]["remaining"]
+        .as_array()
+        .expect("remaining")
+        .iter()
+        .filter_map(|entry| entry["item"].as_str())
+        .collect();
+    assert!(
+        !leftover.contains(&COVERAGE) && !leftover.contains(&"dependencies-dependabot-config"),
+        "a dry run should not leave over what the written file would satisfy: {leftover:?}"
+    );
     assert!(
         result["report"]["written"]
             .as_array()

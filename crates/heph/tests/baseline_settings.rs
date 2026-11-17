@@ -287,12 +287,7 @@ fn a_repository_that_satisfies_every_setting_and_ruleset_item_passes_with_nothin
     for item in SETTINGS.iter().chain(RULESET_ITEMS.iter()) {
         assert_eq!(outcome(&result, item), "satisfied", "{item}: {result}");
     }
-    // The one item this tool does not yet read is the dependabot coverage.
-    assert_eq!(result["report"]["summary"]["not_checked"], 1);
-    assert_eq!(
-        outcome(&result, "dependencies-dependabot-coverage"),
-        "not_checked"
-    );
+    assert_eq!(result["report"]["summary"]["not_checked"], 0);
 }
 
 #[test]
