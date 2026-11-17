@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use heph::baseline;
 use heph::gate;
+use heph::github;
 use heph::lock;
 use heph::manifest::{self, Invalid};
 use heph::sync;
@@ -51,12 +52,15 @@ Commands:
                          Exits 0 if all passed, 1 if any failed or timed out,
                          and 3 if linting could not be run.
 
-  baseline check [--root PATH] [--answers PATH]
+  baseline check [--root PATH] [--answers PATH] [--settings [--repo OWNER/NAME]]
                          Check the repository at PATH [default: .] against the
                          baseline: the files and workflow rules every repository
                          must have. Prints a gate result named baseline, and a
                          table of what it found. Items that need GitHub are
-                         reported as not checked. The repository's answers and
+                         reported as not checked unless --settings is given,
+                         which reads the repository's settings and rulesets
+                         from GitHub, read-only, by running gh. The repository
+                         is --repo, or the github.com origin remote of PATH. The repository's answers and
                          exceptions are read from --answers [default:
                          .athenaeum/baseline.toml under the root], if it exists.
                          Exits 0 if no required item is unsatisfied, 1 if one
@@ -262,21 +266,32 @@ fn run_gate(request: &GateRun) -> ExitCode {
 struct BaselineCheck {
     root: String,
     answers: Option<String>,
+    settings: bool,
+    repo: Option<String>,
 }
 
 impl BaselineCheck {
     fn parse(arguments: &[&str]) -> Option<Self> {
         let mut root = ".".to_owned();
         let mut answers = None;
+        let mut settings = false;
+        let mut repo = None;
         let mut rest = arguments.iter();
         while let Some(&flag) = rest.next() {
             match flag {
                 "--root" => (*rest.next()?).clone_into(&mut root),
                 "--answers" => answers = Some((*rest.next()?).to_owned()),
+                "--repo" => repo = Some((*rest.next()?).to_owned()),
+                "--settings" => settings = true,
                 _ => return None,
             }
         }
-        Some(Self { root, answers })
+        Some(Self {
+            root,
+            answers,
+            settings,
+            repo,
+        })
     }
 }
 
@@ -290,7 +305,17 @@ fn run_baseline_check(request: &BaselineCheck) -> ExitCode {
     );
 
     let started = std::time::Instant::now();
-    let checked = match baseline::check(root, &answers) {
+    let github = if request.settings {
+        let read = github::repository_of(root, request.repo.as_deref())
+            .and_then(|repository| github::read(&repository));
+        match read {
+            Ok(state) => Some(state),
+            Err(error) => return could_not_run(&format!("baseline: {error}")),
+        }
+    } else {
+        None
+    };
+    let checked = match baseline::check(root, &answers, github.as_ref()) {
         Ok(checked) => checked,
         Err(error) => return could_not_run(&format!("baseline: {error}")),
     };
@@ -310,7 +335,9 @@ fn run_baseline_check(request: &BaselineCheck) -> ExitCode {
 
 /// The command line after `baseline` could not be understood.
 fn baseline_usage_error() -> ExitCode {
-    eprintln!("heph: expected 'baseline check [--root PATH] [--answers PATH]'\n\n{USAGE}");
+    eprintln!(
+        "heph: expected 'baseline check [--root PATH] [--answers PATH] [--settings [--repo OWNER/NAME]]'\n\n{USAGE}"
+    );
     ExitCode::from(USAGE_ERROR)
 }
 

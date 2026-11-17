@@ -107,9 +107,12 @@ the pin to a newer release. See
 list of what every repository must have, and prints a gate result named `baseline`
 with an outcome for each item: satisfied, unsatisfied, excepted with a reason, not
 applicable, or not checked. It answers the items that files and workflows can, and
-says plainly which ones need GitHub. A `required` item that is unsatisfied fails the
-check. See
-[ADR-0015](./docs/adr/0015-the-baseline-check-reads-the-tree-and-says-what-it-did-not-check.md).
+says plainly which ones need GitHub. With `--settings` it also reads the repository's
+settings and default-branch rulesets from GitHub, read-only, by running `gh`. A
+`required` item that is unsatisfied fails the check. See
+[ADR-0015](./docs/adr/0015-the-baseline-check-reads-the-tree-and-says-what-it-did-not-check.md)
+and
+[ADR-0016](./docs/adr/0016-github-is-read-through-gh-and-what-it-does-not-say-is-not-a-finding.md).
 
 ## What is different
 

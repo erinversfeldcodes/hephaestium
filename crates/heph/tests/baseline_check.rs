@@ -8,42 +8,8 @@ mod common;
 
 use std::process::Output;
 
-use common::{Scratch, conforms, heph_in, stderr, stdout};
+use common::{Scratch, compliant, conforms, heph_in, stderr, stdout};
 use serde_json::Value;
-
-/// A clean workflow: every action pinned, permissions declared, a timeout.
-const CLEAN_WORKFLOW: &str = "name: ci
-on: [push]
-permissions:
-  contents: read
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - run: echo ok
-";
-
-/// A repository that satisfies every item a working tree can answer.
-fn compliant(name: &str) -> Scratch {
-    let scratch = Scratch::new(name);
-    for file in [
-        "README.md",
-        "LICENSE",
-        "SECURITY.md",
-        "CONTRIBUTING.md",
-        "CODE_OF_CONDUCT.md",
-        ".github/ISSUE_TEMPLATE/bug.yml",
-        ".github/pull_request_template.md",
-        ".github/CODEOWNERS",
-        ".github/dependabot.yml",
-    ] {
-        scratch.write(file, "x\n");
-    }
-    scratch.write(".github/workflows/ci.yml", CLEAN_WORKFLOW);
-    scratch
-}
 
 fn check(scratch: &Scratch, extra: &[&str]) -> (Output, Value) {
     let mut args = vec!["baseline", "check"];

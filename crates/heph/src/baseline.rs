@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::gate;
+use crate::github::{Fetched, Rulesets, State};
 use crate::schema::{self, Invalid};
 
 /// Where a repository keeps its answers, relative to its root.
@@ -40,7 +41,13 @@ struct Item {
     title: String,
     kind: Kind,
     severity: Severity,
+    applies: Option<Applies>,
     check: Check,
+}
+
+#[derive(Debug, Deserialize)]
+struct Applies {
+    visibility: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,13 +72,17 @@ enum Severity {
 struct Check {
     path_any: Option<Vec<String>>,
     rule: Option<String>,
+    setting: Option<String>,
 }
 
-/// A repository's answers, read for what this command needs: its exceptions.
+/// A repository's answers, read for what this command needs: its exceptions,
+/// the checks its default branch requires and who may bypass it.
 #[derive(Debug, Default, Deserialize)]
 struct Answers {
     #[serde(default)]
     exceptions: BTreeMap<String, Exception>,
+    required_checks: Option<Vec<String>>,
+    default_branch_bypass: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,7 +157,8 @@ static ANSWERS_VALIDATOR: LazyLock<Validator> =
     LazyLock::new(|| schema::compile(athenaeum::baseline_answers::SCHEMA));
 
 /// Check the repository at `root` against the baseline, with the answers in
-/// `answers` if the file exists.
+/// `answers` if the file exists, and with what was read from GitHub if it was.
+/// Without it the settings and ruleset items are not checked.
 ///
 /// # Errors
 ///
@@ -158,7 +170,11 @@ static ANSWERS_VALIDATOR: LazyLock<Validator> =
 ///
 /// Only if the pinned baseline cannot be read, which is a defect in this crate
 /// and is ruled out by a test that reads it.
-pub fn check(root: &Path, answers: &Path) -> Result<Checked, CouldNotCheck> {
+pub fn check(
+    root: &Path,
+    answers: &Path,
+    github: Option<&State>,
+) -> Result<Checked, CouldNotCheck> {
     let baseline: Baseline = toml::from_str(athenaeum::baseline::ITEMS)
         .expect("the pinned baseline to be readable as a Baseline");
 
@@ -180,7 +196,7 @@ pub fn check(root: &Path, answers: &Path) -> Result<Checked, CouldNotCheck> {
     let mut items = BTreeMap::new();
     let mut failed = false;
     for (id, item) in &baseline.items {
-        let (mut outcome, mut detail) = evaluate(item, &files, &workflows);
+        let (mut outcome, mut detail) = evaluate(item, &files, &workflows, github, &answers);
         let mut reason = None;
         if let Some(exception) = answers.exceptions.get(id) {
             if outcome == Outcome::Unsatisfied {
@@ -327,6 +343,8 @@ fn evaluate(
     item: &Item,
     files: &[String],
     workflows: &[(String, Yaml)],
+    github: Option<&State>,
+    answers: &Answers,
 ) -> (Outcome, Option<String>) {
     match item.kind {
         Kind::File => {
@@ -364,11 +382,275 @@ fn evaluate(
                 (Outcome::Unsatisfied, Some(describe(&violations)))
             }
         }
-        Kind::Setting | Kind::Ruleset => (
+        Kind::Setting | Kind::Ruleset => {
+            let Some(github) = github else {
+                return (
+                    Outcome::NotChecked,
+                    Some("needs GitHub; run with --settings to read it".to_owned()),
+                );
+            };
+            if let Some(visibilities) = item.applies.as_ref().and_then(|a| a.visibility.as_ref()) {
+                let visibility = github.repository["visibility"]
+                    .as_str()
+                    .unwrap_or("private");
+                if !visibilities.iter().any(|wanted| wanted == visibility) {
+                    return (
+                        Outcome::NotApplicable,
+                        Some(format!(
+                            "applies to {} repositories only",
+                            visibilities.join(" or ")
+                        )),
+                    );
+                }
+            }
+            if item.kind == Kind::Setting {
+                setting(item.check.setting.as_deref(), github)
+            } else {
+                ruleset(item.check.rule.as_deref(), github, answers)
+            }
+        }
+    }
+}
+
+fn unreported(what: &str) -> (Outcome, Option<String>) {
+    (
+        Outcome::NotChecked,
+        Some(format!(
+            "GitHub did not report {what}; reading it may need admin access to the repository"
+        )),
+    )
+}
+
+fn on_or_off(on: bool, what: &str) -> (Outcome, Option<String>) {
+    if on {
+        (Outcome::Satisfied, None)
+    } else {
+        (Outcome::Unsatisfied, Some(format!("{what}: not enabled")))
+    }
+}
+
+fn setting(name: Option<&str>, github: &State) -> (Outcome, Option<String>) {
+    let repository = &github.repository;
+    let analysis = |key: &str| repository["security_and_analysis"][key]["status"].as_str();
+    match name {
+        Some("secret-scanning") => analysis("secret_scanning").map_or_else(
+            || unreported("whether secret scanning is on"),
+            |status| on_or_off(status == "enabled", "secret scanning"),
+        ),
+        Some("secret-scanning-push-protection") => analysis("secret_scanning_push_protection")
+            .map_or_else(
+                || unreported("whether push protection is on"),
+                |status| on_or_off(status == "enabled", "push protection"),
+            ),
+        Some("dependabot-alerts") => match &github.alerts {
+            Fetched::Found(_) => (Outcome::Satisfied, None),
+            Fetched::NotFound => (
+                Outcome::Unsatisfied,
+                Some("Dependabot alerts are off".to_owned()),
+            ),
+            Fetched::Failed(said) => (Outcome::NotChecked, Some(said.clone())),
+        },
+        Some("dependabot-security-updates") => match &github.security_fixes {
+            Fetched::Found(found) => found["enabled"].as_bool().map_or_else(
+                || unreported("whether Dependabot security updates are on"),
+                |enabled| on_or_off(enabled, "Dependabot security updates"),
+            ),
+            Fetched::NotFound => (
+                Outcome::Unsatisfied,
+                Some("Dependabot security updates are off".to_owned()),
+            ),
+            Fetched::Failed(said) => (Outcome::NotChecked, Some(said.clone())),
+        },
+        Some("code-scanning") => {
+            let configured = matches!(&github.default_setup, Fetched::Found(found) if found["state"] == "configured");
+            let analysed = matches!(&github.analyses, Fetched::Found(Value::Array(found)) if !found.is_empty());
+            if configured || analysed {
+                (Outcome::Satisfied, None)
+            } else if let (Fetched::Failed(said), _) | (_, Fetched::Failed(said)) =
+                (&github.default_setup, &github.analyses)
+            {
+                (Outcome::NotChecked, Some(said.clone()))
+            } else {
+                (
+                    Outcome::Unsatisfied,
+                    Some("default setup is not configured and there is no analysis".to_owned()),
+                )
+            }
+        }
+        Some("delete-branch-on-merge") => {
+            repository["delete_branch_on_merge"].as_bool().map_or_else(
+                || unreported("whether merged branches are deleted"),
+                |on| on_or_off(on, "deleting merged branches"),
+            )
+        }
+        Some("description") => {
+            let described = repository["description"]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty());
+            if described {
+                (Outcome::Satisfied, None)
+            } else {
+                (
+                    Outcome::Unsatisfied,
+                    Some("the repository has no description".to_owned()),
+                )
+            }
+        }
+        other => (
             Outcome::NotChecked,
-            Some("needs GitHub, which this check does not read".to_owned()),
+            Some(format!("this tool does not know the setting {other:?}")),
         ),
     }
+}
+
+/// Whether a ruleset's conditions cover the default branch.
+fn covers(ruleset: &Value, default_branch: &str) -> bool {
+    let names = |key: &str| -> Vec<&str> {
+        ruleset["conditions"]["ref_name"][key]
+            .as_array()
+            .map(|list| list.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    };
+    let full = format!("refs/heads/{default_branch}");
+    let matches = |list: &[&str]| {
+        list.iter()
+            .any(|entry| *entry == "~DEFAULT_BRANCH" || *entry == "~ALL" || *entry == full)
+    };
+    matches(&names("include")) && !matches(&names("exclude"))
+}
+
+fn ruleset(rule: Option<&str>, github: &State, answers: &Answers) -> (Outcome, Option<String>) {
+    let all = match &github.rulesets {
+        Rulesets::Known(all) => all,
+        Rulesets::Unknown(why) => return (Outcome::NotChecked, Some(why.clone())),
+    };
+    let default_branch = github.repository["default_branch"]
+        .as_str()
+        .unwrap_or("main");
+    let covering: Vec<&Value> = all.iter().filter(|r| covers(r, default_branch)).collect();
+    if covering.is_empty() {
+        return (
+            Outcome::Unsatisfied,
+            Some("no active ruleset covers the default branch".to_owned()),
+        );
+    }
+    let rules: Vec<&Value> = covering
+        .iter()
+        .flat_map(|r| r["rules"].as_array().into_iter().flatten())
+        .collect();
+    let present = |kind: &str, label: &str| {
+        if rules.iter().any(|r| r["type"] == kind) {
+            (Outcome::Satisfied, None)
+        } else {
+            (
+                Outcome::Unsatisfied,
+                Some(format!("the ruleset has no {label} rule")),
+            )
+        }
+    };
+    match rule {
+        Some("pull-request-required") => present("pull_request", "pull request"),
+        Some("linear-history") => present("required_linear_history", "linear history"),
+        Some("no-force-push") => present("non_fast_forward", "force push"),
+        Some("no-deletion") => present("deletion", "deletion"),
+        Some("approval-required") => approval_required(&rules),
+        Some("required-checks-match-answers") => checks_match_answers(&rules, answers),
+        Some("bypass-matches-answers") => bypass_matches_answers(&covering, answers),
+        other => (
+            Outcome::NotChecked,
+            Some(format!("this tool does not know the rule {other:?}")),
+        ),
+    }
+}
+
+fn approval_required(rules: &[&Value]) -> (Outcome, Option<String>) {
+    let approvals = rules
+        .iter()
+        .filter(|r| r["type"] == "pull_request")
+        .filter_map(|r| r["parameters"]["required_approving_review_count"].as_u64())
+        .max()
+        .unwrap_or(0);
+    if approvals >= 1 {
+        (Outcome::Satisfied, None)
+    } else {
+        (
+            Outcome::Unsatisfied,
+            Some("no pull request rule asks for an approving review".to_owned()),
+        )
+    }
+}
+
+fn checks_match_answers(rules: &[&Value], answers: &Answers) -> (Outcome, Option<String>) {
+    let Some(wanted) = &answers.required_checks else {
+        return needs_answers();
+    };
+    let required: Vec<&str> = rules
+        .iter()
+        .filter(|r| r["type"] == "required_status_checks")
+        .flat_map(|r| {
+            r["parameters"]["required_status_checks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|check| check["context"].as_str())
+        .collect();
+    let missing: Vec<&str> = wanted
+        .iter()
+        .map(String::as_str)
+        .filter(|check| !required.contains(check))
+        .collect();
+    if missing.is_empty() {
+        (Outcome::Satisfied, None)
+    } else {
+        (
+            Outcome::Unsatisfied,
+            Some(format!(
+                "not required by the ruleset: {}",
+                missing.join(", ")
+            )),
+        )
+    }
+}
+
+fn bypass_matches_answers(covering: &[&Value], answers: &Answers) -> (Outcome, Option<String>) {
+    let Some(wanted) = answers.default_branch_bypass.as_deref() else {
+        return needs_answers();
+    };
+    let actors: Vec<&Value> = covering
+        .iter()
+        .flat_map(|r| r["bypass_actors"].as_array().into_iter().flatten())
+        .collect();
+    let admin_by_pull_request = |actor: &&Value| {
+        actor["actor_type"] == "RepositoryRole"
+            && actor["actor_id"] == 5
+            && actor["bypass_mode"] == "pull_request"
+    };
+    let matches = match wanted {
+        "none" => actors.is_empty(),
+        _ => !actors.is_empty() && actors.iter().all(admin_by_pull_request),
+    };
+    if matches {
+        return (Outcome::Satisfied, None);
+    }
+    let who = if actors.is_empty() {
+        "nobody".to_owned()
+    } else {
+        format!("{} actor(s)", actors.len())
+    };
+    (
+        Outcome::Unsatisfied,
+        Some(format!(
+            "the ruleset lets {who} bypass, and the answers say {wanted}"
+        )),
+    )
+}
+
+fn needs_answers() -> (Outcome, Option<String>) {
+    (
+        Outcome::NotChecked,
+        Some("needs the repository's answers, and there is no answers file".to_owned()),
+    )
 }
 
 fn describe(violations: &[String]) -> String {
