@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package hephaestium.v1alpha1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "hephaestium/v1alpha1/common.proto";
+import "hephaestium/v1alpha1/event.proto";
+import "hephaestium/v1alpha1/workload.proto";
+
+// What the control plane keeps of a finished workload. The events are the
+// transcript; this is the answer to the questions asked afterwards: how did it
+// end, what did its gates say, what did it cost, which skills did it load, and
+// what configuration did it run under, so two runs can be compared.
+//
+// It is the only source of "is it done" (ADR 0004). Nothing reads an agent's own
+// claim of completion.
+message RunRecord {
+  string workload_id = 1;
+  // The workload as it ran. The record carries its own configuration, so it
+  // can be understood, and the workload run again, without anything else.
+  Workload workload = 2;
+
+  // How it ended. The outcome is the one the event contract defines, so it means
+  // one thing everywhere.
+  Finished.Outcome outcome = 3;
+  string reason = 4;
+  // For a blocked workload: what it needs answered.
+  string question = 5;
+
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp finished_at = 7;
+
+  repeated GateRun gates = 8;
+  // Totals kept for each unit and each source, never summed across them.
+  repeated CostTotal costs = 9;
+  // The skills it loaded, with the SHA-256 of each one's text.
+  repeated SkillLoaded skills = 10;
+  // Set if a pull request was opened.
+  PullRequestOpened pull_request = 11;
+
+  // How many events the workload produced. The events are the transcript and
+  // are kept apart from this record.
+  uint64 event_count = 12;
+  string executor_version = 13;
+  // A hash of everything about the configuration that could change what the
+  // agent does: the runtime, the model, the pinned Athenaeum commit and the
+  // skills it loaded. Two runs with the same hash ran under the same harness.
+  string configuration_sha256 = 14;
+}
+
+// A gate that ran, and what it said.
+message GateRun {
+  string name = 1;
+  // Athenaeum's gate result exactly as the gate produced it.
+  google.protobuf.Struct result = 2;
+}
+
+// An amount spent in one unit, from one source. Dollars, tokens and credits are
+// kept apart, and so are what a runtime reported and what Hephaestium estimated
+// (ADR 0005).
+message CostTotal {
+  CostUnit unit = 1;
+  double amount = 2;
+  Cost.Source source = 3;
+}

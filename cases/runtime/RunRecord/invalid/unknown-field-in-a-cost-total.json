@@ -1,0 +1,1 @@
+{ "workloadId": "w", "costs": [ { "unit": "COST_UNIT_USD", "amount": 1, "currency": "USD" } ] }
