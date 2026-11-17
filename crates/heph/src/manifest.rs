@@ -66,6 +66,20 @@ pub struct Gate {
     pub timeout_seconds: u64,
     /// How it reports.
     pub result: Option<ResultKind>,
+    /// The environment variables it needs, by name.
+    #[serde(default)]
+    pub requires: BTreeMap<String, Requirement>,
+}
+
+/// What a gate needs from its environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Requirement {
+    /// A variable that must be set and non-empty.
+    #[serde(rename = "env")]
+    Env,
+    /// The same, and its value must never be printed or logged.
+    #[serde(rename = "secret")]
+    Secret,
 }
 
 /// How a gate reports.

@@ -15,7 +15,7 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::manifest::{Gate, Manifest, ResultKind};
+use crate::manifest::{Gate, Manifest, Requirement, ResultKind};
 
 /// The exit code a shell reports for a program that does not exist.
 const NOT_FOUND: i32 = 127;
@@ -140,6 +140,39 @@ pub fn command_for(
         .chain(gate.run.iter())
         .cloned()
         .collect()
+}
+
+/// The variables a gate declares that are not set, or are set and empty, as
+/// `(name, kind)` in name order.
+///
+/// Only names are returned and nothing here reads a value into the result, so
+/// a caller that reports them cannot print a secret.
+///
+/// `lookup` reads an environment variable, as for [`command_for`].
+#[must_use]
+pub fn missing_requirements(
+    gate: &Gate,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, Requirement)> {
+    gate.requires
+        .iter()
+        .filter(|(name, _)| lookup(name).is_none_or(|value| value.is_empty()))
+        .map(|(name, kind)| (name.clone(), *kind))
+        .collect()
+}
+
+/// Say what is missing, in words for a person: each name, and whether it is a
+/// secret. A value is never part of it.
+#[must_use]
+pub fn describe_missing(missing: &[(String, Requirement)]) -> String {
+    missing
+        .iter()
+        .map(|(name, kind)| match kind {
+            Requirement::Env => format!("{name} (environment variable)"),
+            Requirement::Secret => format!("{name} (secret)"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Whether a gate applies to a change.
