@@ -20,16 +20,24 @@ const ANSWERS: &str = "schema_version = 0\n\
 
 const COVERAGE: &str = "dependencies-dependabot-coverage";
 
-/// A repository that uses Cargo (at the root and in a crate), npm (at the root
-/// and in `e2e`), Docker and GitHub Actions, and nothing else the baseline
-/// names. Its `dependabot.yml` is set by each test.
+/// A repository that uses Cargo (a workspace at the root, whose member has no
+/// lockfile of its own, and a standalone crate with one), npm (at the root and
+/// in `e2e`, and a `scripts` package with no lockfile), Docker and GitHub
+/// Actions, and nothing else the baseline names. Its `dependabot.yml` is set by
+/// each test.
 fn polyglot(name: &str, dependabot: Option<&str>) -> Scratch {
     let scratch = Scratch::new(name);
     scratch.write(".athenaeum/baseline.toml", ANSWERS);
     scratch.write("Cargo.toml", "[workspace]\n");
+    scratch.write("Cargo.lock", "# lock\n");
     scratch.write("crates/web/Cargo.toml", "[package]\n");
+    scratch.write("tools/x/Cargo.toml", "[package]\n");
+    scratch.write("tools/x/Cargo.lock", "# lock\n");
     scratch.write("package.json", "{}\n");
+    scratch.write("package-lock.json", "{}\n");
     scratch.write("e2e/package.json", "{}\n");
+    scratch.write("e2e/package-lock.json", "{}\n");
+    scratch.write("scripts/package.json", "{}\n");
     scratch.write("Dockerfile", "FROM scratch\n");
     scratch.write(".github/workflows/ci.yml", CLEAN_WORKFLOW);
     if let Some(text) = dependabot {
@@ -54,7 +62,7 @@ fn file(entries: &[(&str, &str)]) -> String {
 
 const ALL: [(&str, &str); 6] = [
     ("cargo", "/"),
-    ("cargo", "/crates/web"),
+    ("cargo", "/tools/x"),
     ("npm", "/"),
     ("npm", "/e2e"),
     ("docker", "/"),
@@ -118,13 +126,7 @@ fn each_missing_entry_is_named_with_its_directory() {
     assert_eq!(output.status.code(), Some(1), "required, so it fails");
     assert_eq!(outcome(&result, COVERAGE), "unsatisfied");
     let message = detail(&result, COVERAGE);
-    for missing in [
-        "cargo /",
-        "cargo /crates/web",
-        "npm /",
-        "npm /e2e",
-        "docker /",
-    ] {
+    for missing in ["cargo /", "cargo /tools/x", "npm /", "npm /e2e", "docker /"] {
         assert!(
             message.contains(missing),
             "{missing} is not named: {message}"
@@ -134,6 +136,12 @@ fn each_missing_entry_is_named_with_its_directory() {
         !message.contains("github-actions"),
         "a covered entry is named as missing: {message}"
     );
+    for not_an_ecosystem in ["/crates/web", "/scripts"] {
+        assert!(
+            !message.contains(not_an_ecosystem),
+            "{not_an_ecosystem} is not an ecosystem of its own: {message}"
+        );
+    }
 }
 
 #[test]
@@ -145,7 +153,7 @@ fn an_entry_for_the_wrong_directory_or_the_wrong_ecosystem_does_not_cover() {
         Some(&file(&[
             ("npm", "/"),
             ("cargoo", "/"),
-            ("cargo", "/crates/web"),
+            ("cargo", "/tools/x"),
             ("docker", "/"),
             ("github-actions", "/"),
         ])),
@@ -156,7 +164,7 @@ fn an_entry_for_the_wrong_directory_or_the_wrong_ecosystem_does_not_cover() {
     let message = detail(&result, COVERAGE);
     assert!(message.contains("npm /e2e"), "{message}");
     assert!(message.contains("cargo /"), "{message}");
-    assert!(!message.contains("cargo /crates/web"), "{message}");
+    assert!(!message.contains("cargo /tools/x"), "{message}");
 }
 
 #[test]
@@ -176,7 +184,7 @@ fn directories_yaml_extension_trailing_slash_and_patterns_all_cover() {
     let text = "version: 2
 updates:
   - package-ecosystem: cargo
-    directories: [\"/\", \"/crates/web\"]
+    directories: [\"/\", \"/tools/x\"]
     schedule:
       interval: weekly
   - package-ecosystem: npm
@@ -206,6 +214,7 @@ updates:
 fn a_manifest_in_a_subdirectory_is_a_subdirectory_entry() {
     let scratch = Scratch::new("dp-nested");
     scratch.write("services/api/deep/Cargo.toml", "[package]\n");
+    scratch.write("services/api/deep/Cargo.lock", "# lock\n");
     scratch.write(
         ".github/dependabot.yml",
         &file(&[("cargo", "/services/api/deep")]),
@@ -223,13 +232,47 @@ fn a_manifest_in_a_subdirectory_is_a_subdirectory_entry() {
 #[test]
 fn manifests_inside_directories_a_build_leaves_are_not_ecosystems() {
     let scratch = Scratch::new("dp-skipped");
-    scratch.write("node_modules/pkg/package.json", "{}\n");
-    scratch.write("target/debug/build/x/Cargo.toml", "[package]\n");
+    scratch.write("node_modules/pkg/package-lock.json", "{}\n");
+    scratch.write("target/debug/build/x/Cargo.lock", "# lock\n");
     scratch.write(".git/hooks/Dockerfile", "FROM scratch\n");
 
     let (_, result) = check(&scratch);
 
     assert_eq!(outcome(&result, COVERAGE), "not_applicable", "{result}");
+}
+
+#[test]
+fn a_workspace_member_or_a_package_without_a_lockfile_is_not_an_ecosystem_of_its_own() {
+    let scratch = Scratch::new("dp-workspace");
+    scratch.write(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+    );
+    scratch.write("Cargo.lock", "# lock\n");
+    scratch.write("crates/a/Cargo.toml", "[package]\n");
+    scratch.write("crates/b/Cargo.toml", "[package]\n");
+    scratch.write("tools/package.json", "{}\n");
+    scratch.write(".github/dependabot.yml", &file(&[("cargo", "/")]));
+
+    let (_, result) = check(&scratch);
+
+    assert_eq!(outcome(&result, COVERAGE), "satisfied", "{result}");
+}
+
+#[test]
+fn a_repository_with_only_its_root_manifest_is_still_an_ecosystem() {
+    let scratch = Scratch::new("dp-root-manifest");
+    scratch.write("Cargo.toml", "[package]\n");
+    scratch.write("package.json", "{}\n");
+
+    let (_, result) = check(&scratch);
+
+    assert_eq!(outcome(&result, COVERAGE), "unsatisfied", "{result}");
+    let message = detail(&result, COVERAGE);
+    assert!(
+        message.contains("cargo /") && message.contains("npm /"),
+        "{message}"
+    );
 }
 
 #[test]
