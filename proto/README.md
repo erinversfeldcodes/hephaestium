@@ -14,6 +14,7 @@ The files, in `hephaestium/v1alpha1/`:
 | `common.proto` | the cost unit, shared by the others |
 | `workload.proto` | `Workload`: what a run is told |
 | `event.proto` | `Event`: one thing that happened, one of twelve kinds |
+| `run_record.proto` | `RunRecord`: what is kept of a finished workload |
 
 The package is `hephaestium.v1alpha1`. `buf` requires a version suffix, and
 `v1alpha1` says plainly that a contract may still change until the skeleton has
