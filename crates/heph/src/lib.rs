@@ -7,6 +7,7 @@ compile_error!(
      started, and so supports only Unix"
 );
 
+pub mod apply;
 pub mod baseline;
 pub mod gate;
 pub mod github;

@@ -7,6 +7,7 @@
 
 use std::process::ExitCode;
 
+use heph::apply;
 use heph::baseline;
 use heph::gate;
 use heph::github;
@@ -66,6 +67,19 @@ Commands:
                          Exits 0 if no required item is unsatisfied, 1 if one
                          is, and 3 if the check could not be made.
 
+  baseline apply [--root PATH] [--answers PATH] [--repo OWNER/NAME] [--dry-run]
+                         Write the files the repository is missing from the
+                         baseline pack: for each file item that is unsatisfied,
+                         not excepted and has a template, the template with the
+                         repository's values filled in. A file that exists is
+                         never written over, and nothing is written through a
+                         link. Nothing is written unless everything can be. The
+                         values come from --repo or the github.com origin remote
+                         and from the answers file, which is required. Prints a
+                         gate result named baseline-apply. Exits 0 if no
+                         required item is still unsatisfied, 1 if one is, and 3
+                         if nothing could be applied. --dry-run writes nothing.
+
   sync [--lock PATH] [--check | --update [TAG]]
                          Make the skills vendored in .athenaeum/skills match the
                          lock, which pins an Athenaeum release, and link them
@@ -113,6 +127,10 @@ fn main() -> ExitCode {
         ["gate", ..] => gate_usage_error(),
         ["baseline", "check", rest @ ..] => BaselineCheck::parse(rest)
             .map_or_else(baseline_usage_error, |request| run_baseline_check(&request)),
+        ["baseline", "apply", rest @ ..] => BaselineApply::parse(rest)
+            .map_or_else(baseline_apply_usage_error, |request| {
+                run_baseline_apply(&request)
+            }),
         ["baseline", ..] => baseline_usage_error(),
         ["sync", rest @ ..] => {
             Sync::parse(rest).map_or_else(sync_usage_error, |request| run_sync(&request))
@@ -331,6 +349,86 @@ fn run_baseline_check(request: &BaselineCheck) -> ExitCode {
     eprint!("{}", checked.table);
     print_result(&result);
     ExitCode::from(result.exit_code_of_heph())
+}
+
+/// What `baseline apply` was asked.
+struct BaselineApply {
+    root: String,
+    answers: Option<String>,
+    repo: Option<String>,
+    dry_run: bool,
+}
+
+impl BaselineApply {
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut root = ".".to_owned();
+        let mut answers = None;
+        let mut repo = None;
+        let mut dry_run = false;
+        let mut rest = arguments.iter();
+        while let Some(&flag) = rest.next() {
+            match flag {
+                "--root" => (*rest.next()?).clone_into(&mut root),
+                "--answers" => answers = Some((*rest.next()?).to_owned()),
+                "--repo" => repo = Some((*rest.next()?).to_owned()),
+                "--dry-run" => dry_run = true,
+                _ => return None,
+            }
+        }
+        Some(Self {
+            root,
+            answers,
+            repo,
+            dry_run,
+        })
+    }
+}
+
+/// Write the files a repository is missing from the baseline pack, and print
+/// what was done as a gate result on one line of standard output, and as a
+/// table on standard error.
+fn run_baseline_apply(request: &BaselineApply) -> ExitCode {
+    let root = std::path::Path::new(&request.root);
+    let answers = request.answers.as_ref().map_or_else(
+        || root.join(baseline::DEFAULT_ANSWERS),
+        std::path::PathBuf::from,
+    );
+    let repository = match github::repository_of(root, request.repo.as_deref()) {
+        Ok(repository) => repository,
+        Err(error) => return could_not_run(&format!("baseline apply: {error}")),
+    };
+
+    let started = std::time::Instant::now();
+    let applied = match apply::apply(
+        root,
+        &answers,
+        &repository,
+        apply::current_year(),
+        request.dry_run,
+    ) {
+        Ok(applied) => applied,
+        Err(error) => return could_not_run(&format!("baseline apply: {error}")),
+    };
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let result = gate::reported(
+        "baseline-apply",
+        applied.failed,
+        vec!["heph".to_owned(), "baseline".to_owned(), "apply".to_owned()],
+        duration_ms,
+        applied.report,
+    );
+    eprint!("{}", applied.table);
+    print_result(&result);
+    ExitCode::from(result.exit_code_of_heph())
+}
+
+/// The command line after `baseline apply` could not be understood.
+fn baseline_apply_usage_error() -> ExitCode {
+    eprintln!(
+        "heph: expected 'baseline apply [--root PATH] [--answers PATH] [--repo OWNER/NAME] [--dry-run]'\n\n{USAGE}"
+    );
+    ExitCode::from(USAGE_ERROR)
 }
 
 /// The command line after `baseline` could not be understood.
