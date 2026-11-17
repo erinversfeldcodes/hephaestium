@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package hephaestium.v1alpha1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "hephaestium/v1alpha1/common.proto";
+
+// What a workload is told: one isolated run of an agent runtime against one
+// ticket. The control plane writes it, and the executor reads it and nothing
+// else, so a workload can be run again from this message alone.
+message Workload {
+  // Assigned by the control plane. Every event of the workload carries it.
+  string id = 1;
+  Ticket ticket = 2;
+  Repository repository = 3;
+  AgentRuntime runtime = 4;
+  Limits limits = 5;
+  // Documents mounted into the workspace read-only: the ticket's spec and the
+  // repository's goals.
+  repeated GoalDocument goal_documents = 6;
+  Approval approval = 7;
+}
+
+// The ticket, as a maintainer approved it. The executor builds the agent's
+// instruction from these fields and does not read the ticket again, so an edit
+// after approval cannot reach the agent.
+message Ticket {
+  int64 number = 1;
+  string title = 2;
+  string body = 3;
+  // The ticket's address on GitHub.
+  string url = 4;
+}
+
+// The managed repository, and the exact state of it the workload starts from.
+message Repository {
+  string owner = 1;
+  string name = 2;
+  string base_branch = 3;
+  // Forty lower-case hexadecimal digits: the commit the workspace is cloned at.
+  string base_commit = 4;
+  // Where the manifest is, relative to the repository root. Empty means
+  // .athenaeum/manifest.toml.
+  string manifest_path = 5;
+  // What the repository's lock pinned, so a run records the harness it ran under.
+  string athenaeum_rev = 6;
+  string athenaeum_commit = 7;
+}
+
+// Which agent runtime runs the model loop, and where its model is served from.
+message AgentRuntime {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CLAUDE_CODE = 1;
+    KIND_PI = 2;
+    KIND_CORTEX_CODE = 3;
+  }
+
+  enum Provider {
+    PROVIDER_UNSPECIFIED = 0;
+    PROVIDER_ANTHROPIC_SUBSCRIPTION = 1;
+    PROVIDER_OPENROUTER = 2;
+    PROVIDER_SNOWFLAKE = 3;
+  }
+
+  Kind kind = 1;
+  Provider provider = 2;
+  string model = 3;
+  // A Snowflake connection, which must be named. An adapter never falls back
+  // to a default connection. Empty for the other runtimes.
+  string connection = 4;
+}
+
+// What bounds a workload. Both are enforced by the executor, so a workload
+// never waits for a person and never runs without an end.
+message Limits {
+  google.protobuf.Duration timeout = 1;
+  Budget budget = 2;
+}
+
+message Budget {
+  CostUnit unit = 1;
+  double amount = 2;
+}
+
+message GoalDocument {
+  // Relative to the workspace root.
+  string path = 1;
+  string text = 2;
+}
+
+// Who approved the ticket, and when. The control plane has already checked
+// that the approver has write access; the executor records it.
+message Approval {
+  string approved_by = 1;
+  google.protobuf.Timestamp approved_at = 2;
+}

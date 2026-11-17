@@ -119,9 +119,47 @@ jobs:
       - name: The files and workflows satisfy the baseline
         run: cargo run --locked --quiet -p heph -- baseline check
 
+  # The runtime's contracts are Protobuf. They are held to buf's lint, on a pull
+  # request to buf's check that nothing breaks against the base branch, and to
+  # the cases every reader of them is graded by. The reader here is strict, which
+  # buf convert is not: it discards a misspelt field.
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BUF_VERSION: v1.70.0
+      BUF_SHA256: e2bbcdd324da09c16a15963dc2dae0525c955c05dc118223cf732f4f7509c5e6
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install buf
+        run: |
+          curl -fsSL -o buf "https://github.com/bufbuild/buf/releases/download/${BUF_VERSION}/buf-Linux-x86_64"
+          echo "${BUF_SHA256}  buf" | sha256sum --check --strict
+          sudo install -m 0755 buf /usr/local/bin/buf
+      - name: Lint
+        run: buf lint
+      - name: Nothing breaks against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          if git cat-file -e "origin/${BASE_REF}:buf.yaml" 2>/dev/null; then
+            buf breaking --against ".git#branch=origin/${BASE_REF}"
+          else
+            echo "the base branch has no contracts yet, so nothing can break"
+          fi
+      - name: The strict reader accepts and rejects what the cases say
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet 'protobuf==5.29.5'
+          buf build -o /tmp/runtime.binpb
+          /tmp/venv/bin/python scripts/check-contract-cases.py /tmp/runtime.binpb cases/runtime
+
   ci:
     if: always()
-    needs: [docs, commits, rust, baseline, artifacts]
+    needs: [docs, commits, rust, baseline, contracts, artifacts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

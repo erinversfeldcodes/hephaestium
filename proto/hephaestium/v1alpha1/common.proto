@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package hephaestium.v1alpha1;
+
+// The unit a cost is measured in. A cost is recorded in the unit its source
+// reports and is never converted into another: a subscription is not a price
+// per token, and credits are not dollars.
+enum CostUnit {
+  COST_UNIT_UNSPECIFIED = 0;
+  // United States dollars, as a provider bills per generation, or as a runtime
+  // reports a notional figure for a subscription.
+  COST_UNIT_USD = 1;
+  // Model tokens, input and output together.
+  COST_UNIT_TOKENS = 2;
+  // Credits, as a Snowflake account is charged.
+  COST_UNIT_CREDITS = 3;
+}
