@@ -134,10 +134,7 @@ fn a_missing_recommended_file_is_reported_and_does_not_fail() {
 
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     assert_eq!(result["outcome"], "passed");
-    assert_eq!(
-        outcome(&result, "community-code-of-conduct"),
-        "unsatisfied"
-    );
+    assert_eq!(outcome(&result, "community-code-of-conduct"), "unsatisfied");
 }
 
 #[test]
@@ -284,7 +281,9 @@ jobs:
         );
         let message = detail(&result, "ci-actions-pinned");
         assert!(
-            message.contains("deploy.yml") && message.contains("owner/tool@") && message.contains(reference),
+            message.contains("deploy.yml")
+                && message.contains("owner/tool@")
+                && message.contains(reference),
             "the detail should name the file and the action: {message}"
         );
     }
@@ -387,7 +386,11 @@ jobs:
 ",
     );
     let (output, result) = check(&scratch, &[]);
-    assert_eq!(output.status.code(), Some(0), "recommended, so it does not fail");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "recommended, so it does not fail"
+    );
     assert_eq!(outcome(&result, "ci-job-timeouts"), "unsatisfied");
 
     workflow(
@@ -474,4 +477,23 @@ fn an_unknown_flag_is_a_usage_error() {
     let output = heph_in(&scratch.0, &["baseline", "check", "--nope"]);
 
     assert_eq!(output.status.code(), Some(2), "stderr: {}", stderr(&output));
+}
+
+#[test]
+fn a_directory_that_holds_what_a_build_left_is_not_walked() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = compliant("bl-skipped-directories");
+    // A directory that cannot be read is an error if the walk enters it, so a
+    // check that passes shows it did not.
+    let locked = scratch.0.join("node_modules/pkg");
+    std::fs::create_dir_all(&locked).expect("to create the directory");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+        .expect("to lock the directory");
+
+    let output = heph_in(&scratch.0, &["baseline", "check"]);
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+        .expect("to unlock the directory");
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
 }
