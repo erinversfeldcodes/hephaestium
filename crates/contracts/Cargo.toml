@@ -1,0 +1,14 @@
+[package]
+name = "contracts"
+description = "The Hephaestium runtime contracts as Rust types, read and written in the Protobuf JSON mapping"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dev-dependencies]
+serde = "1.0.229"
+serde_json = "1.0.154"
+
+[lints]
+workspace = true
