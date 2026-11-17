@@ -7,6 +7,7 @@
 
 use std::process::ExitCode;
 
+use heph::baseline;
 use heph::gate;
 use heph::lock;
 use heph::manifest::{self, Invalid};
@@ -49,6 +50,17 @@ Commands:
                          900 seconds unless --timeout-seconds says otherwise.
                          Exits 0 if all passed, 1 if any failed or timed out,
                          and 3 if linting could not be run.
+
+  baseline check [--root PATH] [--answers PATH]
+                         Check the repository at PATH [default: .] against the
+                         baseline: the files and workflow rules every repository
+                         must have. Prints a gate result named baseline, and a
+                         table of what it found. Items that need GitHub are
+                         reported as not checked. The repository's answers and
+                         exceptions are read from --answers [default:
+                         .athenaeum/baseline.toml under the root], if it exists.
+                         Exits 0 if no required item is unsatisfied, 1 if one
+                         is, and 3 if the check could not be made.
 
   sync [--lock PATH] [--check | --update [TAG]]
                          Make the skills vendored in .athenaeum/skills match the
@@ -95,6 +107,9 @@ fn main() -> ExitCode {
             GateRun::parse(rest).map_or_else(gate_usage_error, |request| run_gate(&request))
         }
         ["gate", ..] => gate_usage_error(),
+        ["baseline", "check", rest @ ..] => BaselineCheck::parse(rest)
+            .map_or_else(baseline_usage_error, |request| run_baseline_check(&request)),
+        ["baseline", ..] => baseline_usage_error(),
         ["sync", rest @ ..] => {
             Sync::parse(rest).map_or_else(sync_usage_error, |request| run_sync(&request))
         }
@@ -241,6 +256,62 @@ fn run_gate(request: &GateRun) -> ExitCode {
         }
         Err(error) => could_not_run(&format!("gate {}: {error}", request.name)),
     }
+}
+
+/// What `baseline check` was asked.
+struct BaselineCheck {
+    root: String,
+    answers: Option<String>,
+}
+
+impl BaselineCheck {
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut root = ".".to_owned();
+        let mut answers = None;
+        let mut rest = arguments.iter();
+        while let Some(&flag) = rest.next() {
+            match flag {
+                "--root" => (*rest.next()?).clone_into(&mut root),
+                "--answers" => answers = Some((*rest.next()?).to_owned()),
+                _ => return None,
+            }
+        }
+        Some(Self { root, answers })
+    }
+}
+
+/// Check a repository against the baseline and print the result on one line of
+/// standard output, and what it found as a table on standard error.
+fn run_baseline_check(request: &BaselineCheck) -> ExitCode {
+    let root = std::path::Path::new(&request.root);
+    let answers = request.answers.as_ref().map_or_else(
+        || root.join(baseline::DEFAULT_ANSWERS),
+        std::path::PathBuf::from,
+    );
+
+    let started = std::time::Instant::now();
+    let checked = match baseline::check(root, &answers) {
+        Ok(checked) => checked,
+        Err(error) => return could_not_run(&format!("baseline: {error}")),
+    };
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let result = gate::reported(
+        "baseline",
+        checked.failed,
+        vec!["heph".to_owned(), "baseline".to_owned(), "check".to_owned()],
+        duration_ms,
+        checked.report,
+    );
+    eprint!("{}", checked.table);
+    print_result(&result);
+    ExitCode::from(result.exit_code_of_heph())
+}
+
+/// The command line after `baseline` could not be understood.
+fn baseline_usage_error() -> ExitCode {
+    eprintln!("heph: expected 'baseline check [--root PATH] [--answers PATH]'\n\n{USAGE}");
+    ExitCode::from(USAGE_ERROR)
 }
 
 /// The command line after `lint` could not be understood.

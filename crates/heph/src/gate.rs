@@ -215,6 +215,33 @@ pub fn matches_any(patterns: &[String], changed: &[String]) -> Result<bool, Coul
         .any(|path| set.is_match(path.strip_prefix("./").unwrap_or(path))))
 }
 
+/// The result of a check that reads a repository and does not run a command,
+/// such as the baseline check. It is passed or failed, and carries what it
+/// found as its report.
+#[must_use]
+pub fn reported(
+    name: &str,
+    failed: bool,
+    command: Vec<String>,
+    duration_ms: u64,
+    report: Value,
+) -> GateResult {
+    GateResult {
+        schema_version: 0,
+        gate: name.to_owned(),
+        outcome: if failed {
+            Outcome::Failed
+        } else {
+            Outcome::Passed
+        },
+        command,
+        exit_code: Some(i32::from(failed)),
+        duration_ms,
+        reason: None,
+        report: Some(report),
+    }
+}
+
 /// The result for a gate that was not run because the change does not touch
 /// anything it applies to.
 #[must_use]
