@@ -38,8 +38,9 @@ WORDING = {
     "bad-enum": r"Invalid enum value|Failed to parse .* enum|invalid enum",
     "bad-duration": r"duration|Duration",
     "bad-timestamp": r"time data|Timestamp|timestamp",
-    "bad-number": r"invalid literal for int|Couldn't parse (integer|float)|could not convert",
-    "wrong-type": r"Failed to parse|expected|Expected|has type",
+    "bad-number": r"invalid literal for int|Couldn.t parse (integer|float)|could not convert|out of range",
+    "wrong-type": r"Failed to parse|expected|Expected|has type|not a|Struct",
+    "multiple-oneof": r"oneof",
 }
 
 

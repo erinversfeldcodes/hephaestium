@@ -13,6 +13,7 @@ The files, in `hephaestium/v1alpha1/`:
 |---|---|
 | `common.proto` | the cost unit, shared by the others |
 | `workload.proto` | `Workload`: what a run is told |
+| `event.proto` | `Event`: one thing that happened, one of twelve kinds |
 
 The package is `hephaestium.v1alpha1`. `buf` requires a version suffix, and
 `v1alpha1` says plainly that a contract may still change until the skeleton has
@@ -37,6 +38,13 @@ buf lint
 buf build -o /tmp/runtime.binpb
 python3 scripts/check-contract-cases.py /tmp/runtime.binpb cases/runtime   # needs the protobuf package
 ```
+
+## Rules about a stream of events
+
+A single `Event` is checked by the cases. A sequence of them has rules that are
+properties of the sequence: it starts at 1 and has no gaps, `finished` is the
+last event and appears once, and times do not go backwards. They are enforced
+where a stream is read, with their own cases when that exists.
 
 ## What the schema does not say
 

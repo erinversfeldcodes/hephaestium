@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package hephaestium.v1alpha1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "hephaestium/v1alpha1/common.proto";
+
+// One thing that happened during a workload. The executor relays events as the
+// workload runs, the control plane records them, and the dashboard and the
+// replay code read them back. Every agent runtime has a format of its own, and
+// its adapter normalises it to this one, so nothing downstream reads a runtime's
+// own.
+//
+// The record of events is the only source of "is it done" (ADR 0004). Rules
+// about a whole stream are not in this schema, because they are properties of a
+// sequence and not of one message, and are enforced where a stream is read: the
+// sequence starts at 1 and has no gaps, `finished` is the last event and
+// appears once, and times do not go backwards.
+message Event {
+  // The workload this belongs to.
+  string workload_id = 1;
+  // Counted from 1, with no gaps, in the order the events happened.
+  uint64 sequence = 2;
+  google.protobuf.Timestamp time = 3;
+
+  oneof kind {
+    Started started = 10;
+    WorkspaceReady workspace_ready = 11;
+    AgentMessage agent_message = 12;
+    ToolCall tool_call = 13;
+    ToolResult tool_result = 14;
+    SkillLoaded skill_loaded = 15;
+    GateStarted gate_started = 16;
+    GateFinished gate_finished = 17;
+    Cost cost = 18;
+    Heartbeat heartbeat = 19;
+    PullRequestOpened pull_request_opened = 20;
+    Finished finished = 21;
+  }
+}
+
+// The executor began.
+message Started {
+  string executor_version = 1;
+}
+
+// The workspace exists and is ready for the agent.
+message WorkspaceReady {
+  string path = 1;
+  // The commit it is checked out at.
+  string commit = 2;
+}
+
+// Something the agent said, in words.
+message AgentMessage {
+  string text = 1;
+}
+
+// The agent asked for a tool to be run.
+message ToolCall {
+  // Identifies the call, so its result can be matched to it.
+  string id = 1;
+  string name = 2;
+  google.protobuf.Struct input = 3;
+}
+
+// What came back from a tool call.
+message ToolResult {
+  string call_id = 1;
+  string output = 2;
+  bool is_error = 3;
+}
+
+// The agent loaded a skill. The hash of its text goes into the run record, so
+// two runs can be told apart by the skills they had.
+message SkillLoaded {
+  string name = 1;
+  string path = 2;
+  // The SHA-256 of the skill's text, as lower-case hexadecimal.
+  string sha256 = 3;
+}
+
+message GateStarted {
+  string name = 1;
+}
+
+// A gate ended. The result is Athenaeum's gate result exactly as the gate
+// produced it, so the two contracts never disagree.
+message GateFinished {
+  string name = 1;
+  google.protobuf.Struct result = 2;
+}
+
+// An amount spent, in the unit the source reports it in. It is never converted
+// into another unit.
+message Cost {
+  enum Source {
+    SOURCE_UNSPECIFIED = 0;
+    // The agent runtime or its provider said so.
+    SOURCE_REPORTED_BY_RUNTIME = 1;
+    // Hephaestium worked it out, for a runtime that reports nothing.
+    SOURCE_ESTIMATED_BY_HEPHAESTIUM = 2;
+  }
+
+  CostUnit unit = 1;
+  double amount = 2;
+  Source source = 3;
+}
+
+// The executor is alive. It carries nothing; its arrival is the message.
+message Heartbeat {}
+
+// The executor opened the pull request.
+message PullRequestOpened {
+  string url = 1;
+  int64 number = 2;
+  string head_branch = 3;
+}
+
+// The workload is over. It is the last event, and there is one.
+message Finished {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_COMPLETED = 1;
+    OUTCOME_FAILED = 2;
+    // It could not go on without a decision it cannot make, so it ended with a
+    // question. It did not wait (ADR 0020).
+    OUTCOME_BLOCKED = 3;
+    OUTCOME_TIMED_OUT = 4;
+    OUTCOME_CANCELLED = 5;
+  }
+
+  Outcome outcome = 1;
+  string reason = 2;
+  // For a blocked workload: what it needs answered.
+  string question = 3;
+}
