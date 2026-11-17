@@ -34,7 +34,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "athenaeum"
 version = "0.0.0"
-source = "git+https://github.com/erinversfeldcodes/athenaeum?tag=v0.8.0#5db3c721fbe2211d5ce6d042d142a93a87ec43c2"
+source = "git+https://github.com/erinversfeldcodes/athenaeum?tag=v0.11.0#45a847959e1f678a27d346c2f8cff8e1915e6940"
 
 [[package]]
 name = "autocfg"
