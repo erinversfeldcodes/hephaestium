@@ -114,6 +114,13 @@ settings and default-branch rulesets from GitHub, read-only, by running `gh`. A
 and
 [ADR-0016](./docs/adr/0016-github-is-read-through-gh-and-what-it-does-not-say-is-not-a-finding.md).
 
+`heph baseline apply` writes the files a repository is missing, from the baseline's
+templates with the repository's name, owner, licence holder and contact filled in. It
+never overwrites a file and never writes through a link, writes nothing unless it can
+write everything, and ends by saying what is still unsatisfied. `--dry-run` shows what
+it would write. See
+[ADR-0017](./docs/adr/0017-the-baseline-apply-writes-only-what-is-missing-and-only-when-it-can-write-all-of-it.md).
+
 ## What is different
 
 1. **Gates are run by the runtime, not requested in a prompt.** A workload is
