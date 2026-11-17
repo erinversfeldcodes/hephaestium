@@ -1,0 +1,13 @@
+{
+  "runtime": "KIND_CORTEX_CODE",
+  "name": "cortex-code",
+  "version": "0.1.0",
+  "providers": ["PROVIDER_SNOWFLAKE"],
+  "produces": [
+    "PRODUCED_EVENT_AGENT_MESSAGE",
+    "PRODUCED_EVENT_TOOL_CALL",
+    "PRODUCED_EVENT_TOOL_RESULT"
+  ],
+  "costUnits": ["COST_UNIT_CREDITS"],
+  "requiresConnection": true
+}
