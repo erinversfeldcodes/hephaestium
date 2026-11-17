@@ -101,11 +101,19 @@ as it is, so the two never disagree.
 Each is its own ticket, with tests first, and each leaves the repository
 working.
 
-## Questions for the maintainer
+## Decisions the maintainer made
 
-1. Is a directory and a process group enough isolation for the first version,
-   given that it runs only trusted tickets?
-2. What should the approval label be called, and should the runtime also accept
-   a maintainer's comment?
-3. Should the executor open the pull request, or should the control plane?
-   I propose the executor, so that a workload is complete when it ends.
+1. **Isolation.** A directory, a process group and a trimmed environment are
+   enough for the first version, which runs only the maintainer's own trusted
+   tickets. A container comes before the runtime runs unattended or reads
+   anything the maintainer did not write, and the workload gets a narrow token of
+   its own and never the maintainer's login.
+2. **Approval.** A label applied by a maintainer, with the label as the only way
+   to approve and no approval by comment. The labels are `heph:ready`,
+   `heph:running`, `heph:done`, `heph:failed` and `heph:blocked`. As in Forge, an
+   approval stands only while no one without write access has edited the ticket
+   after it. The rule is built with the control plane's intake.
+3. **The pull request.** The executor opens it, after the gates pass, so the
+   agent never holds a token that can push. Watching the pull request's required
+   checks, and treating a ticket as done only once they are green, is a later
+   piece of the runtime.
