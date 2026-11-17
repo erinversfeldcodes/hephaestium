@@ -14,5 +14,6 @@ pub mod gate;
 pub mod github;
 pub mod lock;
 pub mod manifest;
+pub mod process;
 pub mod schema;
 pub mod sync;

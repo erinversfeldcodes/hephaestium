@@ -4,30 +4,15 @@
 //! result, whose shape is the contract in Athenaeum's `gate-result` schema,
 //! pinned at the tag this crate builds against.
 
-use std::io::Read as _;
-use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use globset::{GlobBuilder, GlobSetBuilder};
-use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::manifest::{Gate, Manifest, Requirement, ResultKind};
-
-/// The exit code a shell reports for a program that does not exist.
-const NOT_FOUND: i32 = 127;
-
-/// The exit code a shell reports for a file that cannot be executed.
-const NOT_EXECUTABLE: i32 = 126;
-
-/// What a shell reports for a command killed by a signal, plus the signal.
-const KILLED_BY_SIGNAL: i32 = 128;
-
-/// How often a running gate is asked whether it has finished.
-const POLL: Duration = Duration::from_millis(10);
+use crate::process::{Ended, execute};
 
 /// How a gate ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -261,14 +246,6 @@ pub fn skipped(name: &str, gate: &Gate, command: Vec<String>) -> GateResult {
     }
 }
 
-/// How the command ended, before it is turned into a result.
-enum Ended {
-    Exited(i32),
-    TimedOut,
-    /// It never started. The code is the one a shell would report.
-    NotRun(i32),
-}
-
 /// Run a gate's command and report how it ended.
 ///
 /// The command runs from `directory` with no input, in a process
@@ -299,7 +276,8 @@ pub fn run(
         Duration::from_secs(gate.timeout_seconds),
         wants_report,
         notify,
-    )?;
+    )
+    .map_err(CouldNotRun::Wait)?;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     let (outcome, exit_code) = match &ended {
@@ -343,94 +321,5 @@ fn report_from(captured: Option<&[u8]>) -> Result<Value, String> {
         Err(error) => Err(format!(
             "its standard output is not a JSON object, because it is not JSON: {error}"
         )),
-    }
-}
-
-/// Start the command, wait for it for at most `timeout`, and clean up.
-fn execute(
-    argv: &[String],
-    directory: &Path,
-    timeout: Duration,
-    capture_stdout: bool,
-    notify: impl Fn(&str),
-) -> Result<(Ended, Option<Vec<u8>>), CouldNotRun> {
-    let (program, arguments) = argv
-        .split_first()
-        .expect("a command to have a program: the schema requires at least one element");
-
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
-        .process_group(0);
-    if capture_stdout {
-        command.stdout(Stdio::piped());
-    } else {
-        command.stdout(Stdio::from(std::io::stderr()));
-    }
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let code = if error.kind() == std::io::ErrorKind::NotFound {
-                NOT_FOUND
-            } else {
-                NOT_EXECUTABLE
-            };
-            notify(&format!("{program}: {error}"));
-            return Ok((Ended::NotRun(code), None));
-        }
-    };
-
-    let reader = child.stdout.take().map(|mut standard_output| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = standard_output.read_to_end(&mut bytes);
-            bytes
-        })
-    });
-
-    let deadline = Instant::now() + timeout;
-    let ended = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ended::Exited(code_of(status)),
-            Ok(None) => {}
-            Err(error) => {
-                stop_everything_started_by(&child);
-                let _ = child.wait();
-                return Err(CouldNotRun::Wait(error));
-            }
-        }
-        if Instant::now() >= deadline {
-            stop_everything_started_by(&child);
-            let _ = child.wait();
-            break Ended::TimedOut;
-        }
-        std::thread::sleep(POLL);
-    };
-
-    stop_everything_started_by(&child);
-    let captured = reader.map(|reader| reader.join().unwrap_or_default());
-
-    Ok((ended, captured))
-}
-
-/// The exit code of a command that has ended: its own, or the one a shell
-/// reports for a command killed by a signal.
-fn code_of(status: ExitStatus) -> i32 {
-    status
-        .code()
-        .or_else(|| status.signal().map(|signal| KILLED_BY_SIGNAL + signal))
-        .unwrap_or(KILLED_BY_SIGNAL)
-}
-
-/// Send a kill to the command's process group, which holds the command and
-/// everything it started. Failure means the group is already gone, which is
-/// what was wanted.
-fn stop_everything_started_by(child: &std::process::Child) {
-    if let Some(group) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
-        let _ = kill_process_group(group, Signal::KILL);
     }
 }
