@@ -124,6 +124,12 @@ write everything, and ends by saying what is still unsatisfied. `--dry-run` show
 it would write. See
 [ADR-0017](./docs/adr/0017-the-baseline-apply-writes-only-what-is-missing-and-only-when-it-can-write-all-of-it.md).
 
+`heph baseline apply --settings` is the one command that changes GitHub: it turns on
+the settings the baseline asks for and creates a default-branch ruleset where none
+covers the branch. It changes nothing unless given `--yes`, prints the exact requests
+first, and never modifies a ruleset that exists. See
+[ADR-0018](./docs/adr/0018-changing-github-is-an-explicit-act-and-never-modifies-what-exists.md).
+
 ## What is different
 
 1. **Gates are run by the runtime, not requested in a prompt.** A workload is
