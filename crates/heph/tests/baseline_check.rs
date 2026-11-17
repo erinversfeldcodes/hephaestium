@@ -8,7 +8,7 @@ mod common;
 
 use std::process::Output;
 
-use common::{CLEAN_WORKFLOW, Scratch, compliant, conforms, heph_in, stderr, stdout};
+use common::{Scratch, compliant, conforms, heph_in, stderr, stdout};
 use serde_json::Value;
 
 fn check(scratch: &Scratch, extra: &[&str]) -> (Output, Value) {

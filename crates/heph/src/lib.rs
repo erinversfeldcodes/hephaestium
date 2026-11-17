@@ -9,6 +9,7 @@ compile_error!(
 
 pub mod baseline;
 pub mod gate;
+pub mod github;
 pub mod lock;
 pub mod manifest;
 pub mod schema;

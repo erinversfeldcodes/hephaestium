@@ -71,17 +71,6 @@ impl Gh {
         self
     }
 
-    fn forget(&self, endpoint: &str) -> &Self {
-        for extension in ["json", "err"] {
-            let _ = std::fs::remove_file(
-                self.scratch
-                    .0
-                    .join(format!("{}.{extension}", Self::file_for(endpoint))),
-            );
-        }
-        self
-    }
-
     fn calls(&self) -> String {
         std::fs::read_to_string(self.scratch.0.join("calls.log")).unwrap_or_default()
     }
@@ -804,7 +793,7 @@ fn the_repository_named_by_repo_is_the_one_asked_about() {
     run(&scratch, &gh, &[]);
 
     let calls = gh.calls();
-    assert!(!calls.is_empty());
+    assert_ne!(calls, "");
     for line in calls.lines() {
         assert!(
             line.contains("repos/owner/name"),
