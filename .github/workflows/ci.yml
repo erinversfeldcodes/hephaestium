@@ -103,9 +103,25 @@ jobs:
       - name: Build, check the version and package
         run: scripts/build-artifact.sh "${{ matrix.target }}" "${{ matrix.platform }}"
 
+  # The repository must pass the baseline it defines. The check is run from this
+  # branch's own source, so a change to the check is held to it at once. It runs
+  # without --settings: the workflow token cannot read the security settings or
+  # the rulesets, so a person with admin access checks those.
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: The files and workflows satisfy the baseline
+        run: cargo run --locked --quiet -p heph -- baseline check
+
   ci:
     if: always()
-    needs: [docs, commits, rust, artifacts]
+    needs: [docs, commits, rust, baseline, artifacts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
