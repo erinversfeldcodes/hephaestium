@@ -1,0 +1,14 @@
+{
+  "workloadId": "9c2e7d41-1a0b-4d63-b5f8-3e4a6b7c8d77",
+  "workload": { "id": "0d7a1c3e-6f2b-4b8a-9a31-2f6c9e1d4b55", "ticket": { "number": "12", "title": "A fix", "body": "Do it.", "url": "https://github.com/o/r/issues/12" }, "repository": { "owner": "o", "name": "r", "baseBranch": "main", "baseCommit": "0123456789abcdef0123456789abcdef01234567" }, "runtime": { "kind": "KIND_CLAUDE_CODE", "provider": "PROVIDER_ANTHROPIC_SUBSCRIPTION", "model": "claude-opus-4" }, "limits": { "timeout": "1800s", "budget": { "unit": "COST_UNIT_USD", "amount": 5 } }, "approval": { "approvedBy": "erin", "approvedAt": "2026-11-17T12:00:00Z" } },
+  "outcome": "OUTCOME_FAILED",
+  "reason": "The test gate failed and the revision limit was reached.",
+  "startedAt": "2026-11-17T14:00:00Z",
+  "finishedAt": "2026-11-17T14:40:00Z",
+  "gates": [
+    { "name": "test", "result": { "schema_version": 0, "gate": "test", "outcome": "failed", "command": ["just", "test"], "exit_code": 100, "duration_ms": 28598 } }
+  ],
+  "costs": [ { "unit": "COST_UNIT_USD", "amount": 4.8, "source": "SOURCE_ESTIMATED_BY_HEPHAESTIUM" } ],
+  "eventCount": "311",
+  "executorVersion": "0.14.0"
+}
