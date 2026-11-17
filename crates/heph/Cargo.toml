@@ -8,7 +8,7 @@ version.workspace = true
 
 # Nothing yet. Reporting a version needs only the standard library.
 [dependencies]
-athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.13.0", version = "0.0.0" }
+athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.13.1", version = "0.0.0" }
 globset = "0.4.21"
 jsonschema = { version = "0.61.2", default-features = false }
 rustix = { version = "1.1.6", features = ["process"] }
