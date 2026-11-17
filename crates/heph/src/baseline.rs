@@ -298,10 +298,82 @@ fn read_answers(path: &Path) -> Result<(Answers, bool), CouldNotCheck> {
     Ok((answers, true))
 }
 
-/// Every file under `root`, as a path relative to it with forward slashes, in
-/// order. Directories in [`SKIPPED_DIRECTORIES`] are not entered and a symbolic
-/// link is not followed, so the walk stays inside the repository.
+/// Every file of the repository at `root`, as a path relative to it with
+/// forward slashes, in order.
+///
+/// A working tree holds more than the repository: another checkout of it, a
+/// vendored copy, anything git ignores. Where git can say what the repository
+/// contains, it is asked, and that is the list. Where it cannot, because the
+/// directory is not a git repository or git is not there, the tree is walked,
+/// and the walk does not enter a directory that is another checkout.
 fn files_in(root: &Path) -> Result<Vec<String>, CouldNotCheck> {
+    if let Some(listed) = files_git_knows(root) {
+        return Ok(listed);
+    }
+    walk(root)
+}
+
+/// The files git tracks or would track, that exist: not what is ignored, not
+/// what is inside another repository, and not what was deleted from the disk.
+/// `None` when git cannot say.
+fn files_git_knows(root: &Path) -> Option<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut found: Vec<String> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .filter_map(|path| std::str::from_utf8(path).ok())
+        // A directory git lists without its files is another repository.
+        .filter(|path| !path.ends_with('/'))
+        .filter(|path| {
+            root.join(path)
+                .symlink_metadata()
+                .is_ok_and(|found| !found.is_dir())
+        })
+        .map(str::to_owned)
+        .collect();
+    // A directory with a `.git` of its own is another checkout, whether or not
+    // git recognises it as one, so nothing under it is the repository's.
+    let mut another_checkout: std::collections::HashMap<PathBuf, bool> =
+        std::collections::HashMap::new();
+    found.retain(|path| {
+        let mut directory = Path::new(path).parent();
+        while let Some(parent) = directory.filter(|parent| !parent.as_os_str().is_empty()) {
+            let is_checkout = *another_checkout
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| root.join(parent).join(".git").symlink_metadata().is_ok());
+            if is_checkout {
+                return false;
+            }
+            directory = parent.parent();
+        }
+        true
+    });
+    found.sort();
+    found.dedup();
+    Some(found)
+}
+
+/// Every file under `root`. Directories in [`SKIPPED_DIRECTORIES`] are not
+/// entered, nor is a directory with a `.git` of its own, which is another
+/// checkout, and a symbolic link is not followed, so the walk stays inside the
+/// repository.
+fn walk(root: &Path) -> Result<Vec<String>, CouldNotCheck> {
     let mut found = Vec::new();
     let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -324,7 +396,9 @@ fn files_in(root: &Path) -> Result<Vec<String>, CouldNotCheck> {
             let path = entry.path();
             if kind.is_dir() {
                 let name = entry.file_name();
-                if !SKIPPED_DIRECTORIES.iter().any(|skipped| name == *skipped) {
+                let skipped = SKIPPED_DIRECTORIES.iter().any(|skipped| name == *skipped);
+                let another_checkout = path.join(".git").symlink_metadata().is_ok();
+                if !skipped && !another_checkout {
                     pending.push(path);
                 }
             } else if let Ok(relative) = path.strip_prefix(root) {
