@@ -8,7 +8,7 @@ what it cost. Its reason to exist is the part most agent tooling leaves out:
 checking, on the same tickets, whether a change to a prompt, a skill or a model
 made the agents better or worse.
 
-> **Status: early. The command-line tool can check a manifest, run a gate and lint a change; nothing dispatches agents yet.**
+> **Status: early. The command-line tool can check a manifest, run a gate, lint a change and sync skills; nothing dispatches agents yet.**
 > The source is publicly visible under a restrictive licence. You may read it,
 > but may not use, copy or distribute it. See [LICENSE](./LICENSE).
 
@@ -95,6 +95,13 @@ its component's root and under the same wrapper, and prints each as a gate resul
 named `lint:<component>:<n>`. Every command runs even if an earlier one fails, so
 one run reports every finding. See
 [ADR-0012](./docs/adr/0012-lint-commands-run-as-gates-named-for-their-component.md).
+
+`heph sync` makes the skills a repository vendors in `.athenaeum/skills/` match its
+lock, which pins an Athenaeum release by tag and commit, and links them where an
+agent runtime looks. It refuses a tag that has moved and never overwrites what it
+did not create. `--check` reports drift and changes nothing, and `--update` moves
+the pin to a newer release. See
+[ADR-0013](./docs/adr/0013-sync-vendors-the-pinned-skills-and-never-overwrites-what-it-did-not-create.md).
 
 ## What is different
 
