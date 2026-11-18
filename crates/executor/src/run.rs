@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use contracts::v1alpha1::agent_runtime::Kind as AgentKind;
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::{
@@ -16,6 +17,7 @@ use heph::process::{Ended, execute};
 
 use crate::adapter::{Adapter, Stub};
 use crate::agent::{self, End};
+use crate::claude_code::ClaudeCode;
 use crate::cli::Options;
 use crate::stream::Stream;
 use crate::{transcript, workload};
@@ -56,7 +58,7 @@ pub fn run(options: &Options, executor_version: &str, out: &mut impl Write) -> R
     let workload = workload::read(&text)
         .map_err(|e| Refused(format!("{}: {e}", options.workload.display())))?;
 
-    let adapter = adapter_for(options)?;
+    let adapter = adapter_for(options, &workload)?;
 
     let workspace = options.work_dir.join(&workload.id);
     if workspace.exists() {
@@ -301,7 +303,7 @@ fn write_record(path: &Path, record: &RunRecord) -> Result<(), Refused> {
 
 /// The adapter the options select. A transcript is checked before anything
 /// runs, and played by printing it.
-fn adapter_for(options: &Options) -> Result<Box<dyn Adapter>, Refused> {
+fn adapter_for(options: &Options, workload: &Workload) -> Result<Box<dyn Adapter>, Refused> {
     if let Some(path) = &options.transcript {
         let text =
             fs::read_to_string(path).map_err(|e| Refused(format!("{}: {e}", path.display())))?;
@@ -311,14 +313,18 @@ fn adapter_for(options: &Options) -> Result<Box<dyn Adapter>, Refused> {
             env_names: vec!["PATH".to_owned()],
         }));
     }
-    match &options.agent_command {
-        Some(command) => Ok(Box::new(Stub {
+    if let Some(command) = &options.agent_command {
+        return Ok(Box::new(Stub {
             command: command.clone(),
             env_names: options.agent_env.clone(),
-        })),
-        None => Err(Refused(
-            "no agent is selected: pass --transcript or --agent-command (no agent runtime has an adapter yet)"
-                .to_owned(),
-        )),
+        }));
+    }
+    let kind = workload.runtime.as_ref().map_or(0, |runtime| runtime.kind);
+    match AgentKind::try_from(kind) {
+        Ok(AgentKind::ClaudeCode) => Ok(Box::new(ClaudeCode)),
+        Ok(other) => Err(Refused(format!(
+            "no adapter exists yet for the {other:?} runtime: pass --transcript or --agent-command for development"
+        ))),
+        Err(_) => Err(Refused("the workload names no agent runtime".to_owned())),
     }
 }

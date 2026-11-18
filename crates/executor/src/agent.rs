@@ -47,6 +47,11 @@ pub fn run<W: Write>(
     heartbeat: Duration,
     stream_out: &mut Stream<'_, W>,
 ) -> Result<End, Refused> {
+    if let Err(error) = adapter.prepare(workload, workspace) {
+        return Ok(End::Failed(format!(
+            "the agent could not be prepared: {error}"
+        )));
+    }
     let plan = adapter.plan(workload, workspace);
     let environment: Vec<(String, String)> = plan
         .env_names

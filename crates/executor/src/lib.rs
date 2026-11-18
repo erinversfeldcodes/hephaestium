@@ -3,6 +3,7 @@
 
 pub mod adapter;
 pub mod agent;
+pub mod claude_code;
 pub mod cli;
 pub mod run;
 pub mod stream;
