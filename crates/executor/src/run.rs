@@ -109,9 +109,24 @@ pub fn run(
                 },
                 End::Failed(reason) => (Outcome::Failed, reason),
                 End::TimedOut(reason) => (Outcome::TimedOut, reason),
+                End::Cancelled => (Outcome::Failed, String::new()),
             }
         }
         Err(reason) => (Outcome::Failed, reason),
+    };
+
+    // Told to stop while it was still working: whatever else went wrong in the
+    // stopping, this is how it ended. A workload that had already completed
+    // stays completed.
+    let (outcome, reason) = if heph::process::cancelled() && outcome != Outcome::Completed {
+        let reason = if reason.is_empty() {
+            "cancelled by a signal".to_owned()
+        } else {
+            format!("cancelled by a signal: {reason}")
+        };
+        (Outcome::Cancelled, reason)
+    } else {
+        (outcome, reason)
     };
 
     let record = stream.finish(&workload, outcome, &reason, executor_version)?;
@@ -186,6 +201,9 @@ fn run_gates<W: Write>(
 
     let mut failures = Vec::new();
     for name in manifest.gates.keys() {
+        if heph::process::cancelled() {
+            break;
+        }
         stream.emit(Kind::GateStarted(GateStarted { name: name.clone() }))?;
         match gate::run_named(manifest, name, Some(&changed), workspace, environment, say) {
             Ok(result) => {
@@ -202,8 +220,12 @@ fn run_gates<W: Write>(
                     result: Some(result),
                 }))?;
             }
+            Err(gate::NotRun::Could(gate::CouldNotRun::Cancelled)) => break,
             Err(error) => failures.push(format!("gate {name} could not be run: {error}")),
         }
+    }
+    if heph::process::cancelled() {
+        failures.push("cancelled while the gates ran".to_owned());
     }
     Ok(if failures.is_empty() {
         Ok(())
@@ -291,6 +313,7 @@ fn git(args: &[&str], directory: &Path, what: &str) -> Result<(), String> {
         Ok((Ended::Exited(0), _)) => Ok(()),
         Ok((Ended::Exited(code), _)) => Err(format!("{what}: git exited with code {code}")),
         Ok((Ended::TimedOut, _)) => Err(format!("{what}: git timed out")),
+        Ok((Ended::Cancelled, _)) => Err(format!("{what}: cancelled")),
         Ok((Ended::NotRun(_), _)) => Err(format!(
             "{what}: git could not be started: {}",
             said.into_inner()
@@ -327,6 +350,7 @@ fn bootstrap(
             "{described} timed out after {} seconds",
             step.timeout_seconds
         )),
+        Ok((Ended::Cancelled, _)) => Err(format!("{described} was cancelled")),
         Ok((Ended::NotRun(_), _)) => Err(format!(
             "{described} could not be started: {}",
             said.into_inner()

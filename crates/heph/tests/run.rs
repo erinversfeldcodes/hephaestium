@@ -524,3 +524,111 @@ fn the_summary_names_the_pull_request_from_the_record_and_not_only_from_the_even
         stdout(&output)
     );
 }
+
+impl Rig {
+    /// A stand-in executor that says it has started, and when it is told to stop
+    /// (terminate or interrupt) records that it was, writes a cancelled
+    /// workload's events and record, and exits as the real one does.
+    fn write_executor_that_waits_to_be_stopped(&self) {
+        let dir = self.home.0.join("executor-dir");
+        std::fs::create_dir_all(dir.join("seen")).expect("a directory");
+        let cancelled_events = events().replace(
+            r#""finished":{"outcome":"OUTCOME_COMPLETED"}"#,
+            r#""finished":{"outcome":"OUTCOME_CANCELLED","reason":"cancelled by a signal"}"#,
+        );
+        std::fs::write(dir.join("events.canned"), cancelled_events).expect("events");
+        std::fs::write(
+            dir.join("record.canned"),
+            record("OUTCOME_CANCELLED", "cancelled by a signal"),
+        )
+        .expect("a record");
+        let script = format!(
+            "#!/bin/sh\n\
+             d={dir}\n\
+             prev=''\n\
+             for a in \"$@\"; do [ \"$prev\" = '--record' ] && rec=\"$a\"; prev=\"$a\"; done\n\
+             stop() {{ touch $d/seen/stopped; cp $d/record.canned \"$rec\"; cat $d/events.canned; exit 0; }}\n\
+             trap stop TERM INT\n\
+             touch $d/seen/ready\n\
+             while :; do sleep 0.2; done\n",
+            dir = dir.display()
+        );
+        let path = self.executor();
+        std::fs::write(&path, script).expect("a script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("to chmod");
+    }
+
+    /// Start `heph run` and leave it running.
+    fn start(&self, args: &[&str]) -> std::process::Child {
+        let path = format!(
+            "{}:{}",
+            self.gh.bin().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let executor = self.executor().to_string_lossy().into_owned();
+        let runs = self.runs_dir().to_string_lossy().into_owned();
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_heph"));
+        command
+            .current_dir(&self.home.0)
+            .arg("run")
+            .args(args)
+            .args(["--executor", &executor, "--runs-dir", &runs])
+            .env("PATH", path)
+            .env("HOME", &self.home.0)
+            .env("XDG_CONFIG_HOME", self.config_dir())
+            .env("XDG_STATE_HOME", "")
+            .env("HEPH_TEST_GH_DIR", &self.gh.scratch.0)
+            .env("HEPH_GITHUB_TOKEN", "")
+            .env("HEPH_GITHUB_TOKEN_FILE", "")
+            .env("CLAUDE_CODE_OAUTH_TOKEN", "")
+            .env("CLAUDE_CODE_OAUTH_TOKEN_FILE", "")
+            .stdout(std::fs::File::create(self.home.0.join("heph-out.txt")).expect("a file"))
+            .stderr(std::fs::File::create(self.home.0.join("heph-err.txt")).expect("a file"));
+        command.spawn().expect("heph to start")
+    }
+}
+
+#[test]
+fn a_signal_to_heph_run_is_passed_to_the_executor_and_the_run_ends_cancelled() {
+    for signal in ["TERM", "INT"] {
+        let rig = rig(&format!("run-cancel-{signal}"));
+        rig.token_file("github-token");
+        rig.write_executor_that_waits_to_be_stopped();
+        let mut heph = rig.start(&["12", "--repo", "acme/widgets"]);
+        let ready = rig.home.0.join("executor-dir/seen/ready");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !ready.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the executor never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        std::process::Command::new("kill")
+            .args([format!("-{signal}"), heph.id().to_string()])
+            .status()
+            .expect("kill");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = heph.try_wait().expect("to wait") {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{signal}: heph did not end within 30 seconds"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let shown = std::fs::read_to_string(rig.home.0.join("heph-out.txt")).unwrap_or_default();
+        let said = std::fs::read_to_string(rig.home.0.join("heph-err.txt")).unwrap_or_default();
+
+        assert_eq!(status.code(), Some(1), "{signal}: {said}\n{shown}");
+        assert!(
+            rig.home.0.join("executor-dir/seen/stopped").exists(),
+            "{signal}: the executor was not told to stop"
+        );
+        assert!(shown.contains("outcome: cancelled"), "{signal}: {shown}");
+    }
+}

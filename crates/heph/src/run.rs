@@ -9,10 +9,13 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use rustix::process::{Pid, Signal, kill_process};
 
 use serde_json::Value;
 
+use crate::process::cancelled as heph_cancelled;
 use crate::workload::{self, Built};
 
 /// The secrets the executor takes, with the file each is looked for in when it
@@ -182,18 +185,9 @@ pub fn run(options: &Options) -> Result<Ended, String> {
     let mut events = std::fs::File::create(&events_file)
         .map_err(|e| format!("could not make {}: {e}", events_file.display()))?;
     let started = Instant::now();
-    let reader = BufReader::new(child.stdout.take().ok_or("the executor has no output")?);
-    for line in reader.lines().map_while(Result::ok) {
-        let _ = writeln!(events, "{line}");
-        let _ = events.flush();
-        if let Some(shown) = serde_json::from_str::<Value>(&line)
-            .ok()
-            .and_then(|e| render(&e))
-        {
-            let seconds = started.elapsed().as_secs();
-            println!("[{:02}:{:02}] {shown}", seconds / 60, seconds % 60);
-        }
-    }
+
+    let output = child.stdout.take().ok_or("the executor has no output")?;
+    follow(&child, output, &mut events, started);
     let status = child
         .wait()
         .map_err(|e| format!("waiting for the executor failed: {e}"))?;
@@ -208,6 +202,54 @@ pub fn run(options: &Options) -> Result<Ended, String> {
     }
 
     summarise(&record, &directory)
+}
+
+/// Show the executor's events as they come, and keep them. A stop asked of this
+/// program is passed on once, to the executor, and this goes on reading until the
+/// executor has stopped what it started and said how it ended.
+fn follow(
+    child: &std::process::Child,
+    output: std::process::ChildStdout,
+    events: &mut std::fs::File,
+    started: Instant,
+) {
+    // The output is read on a thread of its own, so that this one can notice a
+    // signal while the executor is quiet.
+    let (sender, lines) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(output).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut told_to_stop = false;
+    loop {
+        match lines.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => {
+                let _ = writeln!(events, "{line}");
+                let _ = events.flush();
+                if let Some(shown) = serde_json::from_str::<Value>(&line)
+                    .ok()
+                    .and_then(|e| render(&e))
+                {
+                    let seconds = started.elapsed().as_secs();
+                    println!("[{:02}:{:02}] {shown}", seconds / 60, seconds % 60);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if heph_cancelled() && !told_to_stop {
+                    told_to_stop = true;
+                    println!("stopping: telling the executor to stop what it is running…");
+                    if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
+                        let _ = kill_process(pid, Signal::TERM);
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 /// The last few lines of a file, for saying what went wrong.

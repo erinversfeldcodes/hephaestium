@@ -146,8 +146,9 @@ kept in a directory of its own outside your project, under
 `~/.local/state/hephaestium/runs/` (or `$XDG_STATE_HOME`), with the workload, the events,
 the executor's output, the run record and the workspace. The tokens are found in the
 environment or in `~/.config/hephaestium/github-token` and `claude-token`. It exits 0
-if the workload completed and 1 if it ended any other way. Interrupting it does not yet
-stop the agent.
+if the workload completed and 1 if it ended any other way. Interrupting it (Ctrl-C, or a
+termination signal) stops the agent and everything it started, and the run ends
+`cancelled`, with its record written.
 
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,

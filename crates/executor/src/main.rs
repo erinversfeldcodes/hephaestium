@@ -31,6 +31,12 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // From here a signal asks the executor to stop what it is running, and does
+    // not end it: the agent and everything else it started would be left behind.
+    if let Err(error) = heph::process::install_cancellation() {
+        eprintln!("executor: could not install the signal handlers: {error}");
+        return ExitCode::from(1);
+    }
     if options.deliver && secrets.get(secrets::GITHUB_TOKEN).is_none() {
         eprintln!(
             "executor: --deliver needs {0} or {0}_FILE in the environment",
