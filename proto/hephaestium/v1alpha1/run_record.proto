@@ -47,6 +47,10 @@ message RunRecord {
   // agent does: the runtime, the model, the pinned Athenaeum commit and the
   // skills it loaded. Two runs with the same hash ran under the same harness.
   string configuration_sha256 = 14;
+  // For a review workload that completed: its verdict, exactly as it passed the
+  // review contract and as the executor checked it names the commit and lens
+  // asked for. Absent for every other workload and for a review that failed.
+  google.protobuf.Struct review = 15;
 }
 
 // A gate that ran, and what it said.

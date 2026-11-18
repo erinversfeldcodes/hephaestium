@@ -49,6 +49,9 @@ const EXCERPTS_CAP: usize = 24_000;
 /// What the agent is told: the ticket, and that the runtime opens the pull
 /// request after its own checks; for a revision, also which checks failed.
 fn prompt(workload: &Workload) -> String {
+    if let Some(review) = workload.review.as_ref() {
+        return crate::review::prompt(workload, review);
+    }
     let ticket = workload.ticket.clone().unwrap_or_default();
     let mut text = format!(
         "You are working in a clone of the repository, in the current directory, on ticket #{number}: {title}\n\n{body}\n\n",

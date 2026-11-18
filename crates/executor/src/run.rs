@@ -21,6 +21,7 @@ use crate::agent::{self, End};
 use crate::claude_code::ClaudeCode;
 use crate::cli::Options;
 use crate::deliver;
+use crate::review;
 use crate::secrets::{self, Secrets};
 use crate::stream::Stream;
 use crate::{transcript, workload};
@@ -67,15 +68,6 @@ pub fn run(
     let workload = workload::read(&text)
         .map_err(|e| Refused(format!("{}: {e}", options.workload.display())))?;
 
-    // A review changes nothing and ends with a verdict. Run as a ticket it would
-    // change code and open a pull request, so until it is run as a review it is
-    // refused here, before anything is created.
-    if workload.review.is_some() {
-        return Err(Refused(
-            "the executor cannot run a review workload yet".to_owned(),
-        ));
-    }
-
     let adapter = adapter_for(options, &workload)?;
 
     let workspace = options.work_dir.join(&workload.id);
@@ -91,8 +83,27 @@ pub fn run(
         executor_version: executor_version.to_owned(),
     }))?;
 
+    let mut verdict = None;
     let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
         Ok(manifest) => {
+            // A review is held to changing nothing, so what the workspace is before
+            // the agent runs is kept to compare with what it is after.
+            let before = if workload.review.is_some() {
+                match review::snapshot(&workspace) {
+                    Ok(before) => Some(before),
+                    Err(reason) => {
+                        return finish_failed(
+                            stream,
+                            &workload,
+                            &reason,
+                            options,
+                            executor_version,
+                        );
+                    }
+                }
+            } else {
+                None
+            };
             match agent::run(
                 adapter.as_ref(),
                 &workload,
@@ -101,6 +112,15 @@ pub fn run(
                 secrets,
                 &mut stream,
             )? {
+                End::Done if workload.review.is_some() => {
+                    match reviewed(&workload, &workspace, before.as_ref()) {
+                        Ok(said) => {
+                            verdict = Some(said);
+                            (Outcome::Completed, String::new())
+                        }
+                        Err(reason) => (Outcome::Failed, reason),
+                    }
+                }
                 End::Done => match run_gates(&manifest, &workload, &workspace, &mut stream)? {
                     Ok(()) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) {
                         (true, Some(token)) => {
@@ -138,7 +158,44 @@ pub fn run(
         (outcome, reason)
     };
 
-    let record = stream.finish(&workload, outcome, &reason, executor_version)?;
+    let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
+    if let Some(verdict) = verdict {
+        record.review = Some(serde_json::from_value(verdict).map_err(|e| Refused(e.to_string()))?);
+    }
+    write_record(&options.record, &record)
+}
+
+/// What a review has to show for itself once the agent is done: the workspace is
+/// what it was, and the verdict is one that can be kept.
+fn reviewed(
+    workload: &Workload,
+    workspace: &Path,
+    before: Option<&review::Snapshot>,
+) -> Result<serde_json::Value, String> {
+    let review = workload.review.as_ref().expect("checked by the caller");
+    let commit = &workload
+        .repository
+        .as_ref()
+        .expect("checked when read")
+        .base_commit;
+    if let Some(before) = before {
+        let after = review::snapshot(workspace)?;
+        if let Some(changed) = review::changed_since(before, &after) {
+            return Err(changed);
+        }
+    }
+    review::verdict(workspace, commit, &review.lens)
+}
+
+/// End a workload that failed before its agent could run, writing its record.
+fn finish_failed(
+    stream: Stream<'_, impl Write>,
+    workload: &Workload,
+    reason: &str,
+    options: &Options,
+    executor_version: &str,
+) -> Result<(), Refused> {
+    let record = stream.finish(workload, Outcome::Failed, reason, executor_version)?;
     write_record(&options.record, &record)
 }
 
@@ -300,6 +357,8 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     let mut text = fs::read_to_string(&exclude).unwrap_or_default();
     text.push('\n');
     text.push_str(deliver::MESSAGE_FILE);
+    text.push('\n');
+    text.push_str(review::VERDICT_FILE);
     text.push('\n');
     fs::write(&exclude, text)
         .map_err(|e| format!("could not keep the commit message out of the changes: {e}"))

@@ -19,8 +19,8 @@ We will go with Option 2.
 - A workload gains a `review` section beside `revision`: the pull request, the lens's name (the pack), and the lens's text. The lens travels in the message so a review can be run again from the message alone.
 - The commit reviewed is the workload's `base_commit`. The workspace is that commit, so what is read is what is named, and the verdict must name the same commit.
 - A workload is a ticket's work, a revision, or a review, never two of these. The executor refuses one that is, and refuses a malformed review before it creates anything: a pull request number not above zero, an address not on GitHub, a lens that is not a pack's name (it is used to name a file, so it is letters, digits, `-` and `_`, and starts with a letter or digit), and no lens text.
-- Until the executor can run a review as a review, it refuses to run one at all. Run as a ticket it would change code and open a pull request.
-- The executor will refuse a verdict that does not pass the review contract, or that names another commit or lens, and a review that changed the working tree. That is the next slice; this decision is recorded now so the contract does not outrun it.
+- The executor runs a review as a review. The agent is told to read the change against the pull request's base branch under the lens, to change nothing, and to write its verdict to `.heph-verdict.json`, with the review contract's schema in the prompt. It delivers nothing and runs no gate.
+- The run fails unless the workspace is as it was when the agent started (same commit, no changed or new file, no further edit to a file bootstrap had already changed) and the verdict is JSON that passes the review contract, names the commit under review and names the lens asked for. A verdict that does is kept in the run record, as it passed. An agent's own statement of approval is never read.
 
 ## Consequences
 
