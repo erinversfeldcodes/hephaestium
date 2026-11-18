@@ -39,6 +39,17 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   `heph:running` until its pull request is green, which is the next piece. A label
   or comment that cannot be written never changes how a workload ended. The labels
   and comments are written with `gh`, so its login must be able to write issues.
+- `ControlPlane.Settle`, run every minute by `ControlPlane.Jobs.SettleTickets`, makes
+  done mean green: a ticket whose workload completed is settled only once its pull
+  request's required checks are. It reads the pull request, the checks the base
+  branch's ruleset requires, and the check runs on the head commit. All green (or
+  skipped): `heph:done`. Any failed, cancelled or timed out: `heph:failed`, naming
+  them, without waiting for the rest. Merged: done. Closed unmerged: the running
+  label goes and a comment says so. A check still running or not yet seen, no
+  checks at all, or GitHub unable to say waits and writes nothing. Only the newest
+  run of a check counts, since a cancelled duplicate run leaves a failed run of
+  the same name behind. A ticket is marked settled (`settled_at`) only once its
+  labels and comment were written. Only the first 100 check runs are read.
 
 ## Running it
 

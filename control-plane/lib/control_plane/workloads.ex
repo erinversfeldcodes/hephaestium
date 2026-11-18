@@ -122,4 +122,28 @@ defmodule ControlPlane.Workloads do
 
     :ok
   end
+
+  @doc """
+  The workloads that completed with a pull request and whose ticket has not been
+  settled yet, oldest first.
+  """
+  def awaiting_settlement do
+    Repo.all(
+      from(w in Workload,
+        where:
+          w.state == "completed" and is_nil(w.settled_at) and
+            fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
+        order_by: [asc: w.inserted_at]
+      )
+    )
+  end
+
+  @doc "Record that the ticket was settled."
+  def settle(id) do
+    Repo.update_all(from(w in Workload, where: w.id == ^id and is_nil(w.settled_at)),
+      set: [settled_at: DateTime.utc_now(), updated_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
 end

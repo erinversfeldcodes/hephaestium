@@ -57,6 +57,49 @@ defmodule ControlPlane.Tickets do
 
   def ended(_workload), do: :ok
 
+  @done "heph:done"
+
+  @doc """
+  The workload's pull request has been looked at and the ticket settled: `:done` when
+  its required checks are green (or it was merged), `{:failed, names}` when some
+  are not, `:abandoned` when it was closed without merging.
+  """
+  @spec settled(%Workload{}, :done | {:failed, [String.t()]} | :abandoned) ::
+          :ok | {:error, String.t()}
+  def settled(workload, :done) do
+    first_error([
+      add_label(workload, @done),
+      remove_label(workload, @running),
+      note(workload, "the pull request's required checks are green. The ticket is done.")
+    ])
+  end
+
+  def settled(workload, {:failed, names}) do
+    first_error([
+      add_label(workload, @failed),
+      remove_label(workload, @running),
+      note(
+        workload,
+        "the pull request's required checks did not pass: #{Enum.join(names, ", ")}."
+      )
+    ])
+  end
+
+  def settled(workload, :abandoned) do
+    first_error([
+      remove_label(workload, @running),
+      note(workload, "the pull request was closed without being merged.")
+    ])
+  end
+
+  defp note(workload, text) do
+    url = get_in(workload.record || %{}, ["pullRequest", "url"])
+
+    write("POST", issue(workload) <> "/comments", [
+      "body=**Hephaestium:** #{text}\n\nPull request: #{url}"
+    ])
+  end
+
   defp issue(workload), do: "repos/#{workload.repository}/issues/#{workload.ticket_number}"
 
   defp add_label(workload, label),

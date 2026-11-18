@@ -13,6 +13,7 @@ defmodule ControlPlane.Workload do
     field :reason, :string
     field :started_at, :utc_datetime_usec
     field :finished_at, :utc_datetime_usec
+    field :settled_at, :utc_datetime_usec
 
     timestamps()
   end
