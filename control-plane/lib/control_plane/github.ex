@@ -28,6 +28,25 @@ defmodule ControlPlane.GitHub do
     error in ErlangError -> {:error, "gh could not be run: #{inspect(error.original)}"}
   end
 
+  @doc "Read a file's own text from the contents API, not the JSON that wraps it."
+  @spec raw(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def raw(endpoint) do
+    if Programs.allowed?(command()) do
+      case System.cmd(
+             command(),
+             ["api", "-H", "Accept: application/vnd.github.raw+json", endpoint],
+             stderr_to_stdout: true
+           ) do
+        {output, 0} -> {:ok, output}
+        {output, _} -> {:error, String.trim(output)}
+      end
+    else
+      {:error, Programs.refusal(command())}
+    end
+  rescue
+    error in ErlangError -> {:error, "gh could not be run: #{inspect(error.original)}"}
+  end
+
   @doc "Read every page of a list endpoint, as one list."
   @spec get_all(String.t()) :: {:ok, [term()]} | {:error, String.t()}
   def get_all(endpoint) do

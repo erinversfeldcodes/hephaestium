@@ -25,6 +25,7 @@ defmodule ControlPlane.Tickets do
   """
   @spec started(%Workload{}) :: :ok | {:error, String.t()}
   def started(%Workload{workload: %{"revision" => _}}), do: :ok
+  def started(%Workload{workload: %{"review" => _}}), do: :ok
 
   def started(workload) do
     first_error([
@@ -35,6 +36,10 @@ defmodule ControlPlane.Tickets do
 
   @doc "The workload has ended: leave the label that says how, and a comment."
   @spec ended(%Workload{}) :: :ok | {:error, String.t()}
+  # A review reads a pull request and says nothing on the ticket by itself: what its
+  # verdict means for the ticket is decided where the verdicts are counted.
+  def ended(%Workload{workload: %{"review" => _}}), do: :ok
+
   def ended(%Workload{state: state} = workload) when state in ["failed", "timed_out"] do
     first_error([
       add_label(workload, @failed),

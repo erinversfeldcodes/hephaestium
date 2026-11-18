@@ -12,7 +12,6 @@ defmodule ControlPlane.ReviewsTest do
   @repo "erinversfeldcodes/gazebolang"
   @athenaeum "erinversfeldcodes/athenaeum"
   @ref "v0.17.0"
-  @issue "repos/#{@repo}/issues/12"
   @pr_url "https://github.com/#{@repo}/pull/52"
   @sha "f6f2dc5f9df5fb32ff2a5c36ebee4e3bc9e159d5"
   @pull "repos/#{@repo}/pulls/52"
@@ -96,7 +95,7 @@ defmodule ControlPlane.ReviewsTest do
   defp reviews_of(id) do
     Repo.all(
       from(w in Workload,
-        where: w.parent_id == ^id and fragment("? ? 'review'", w.workload, ^"review") == true,
+        where: w.parent_id == ^id and fragment("?->'review' IS NOT NULL", w.workload),
         order_by: [asc: w.inserted_at]
       )
     )
@@ -204,6 +203,24 @@ defmodule ControlPlane.ReviewsTest do
     assert lenses_of(reviews_of(id)) == ["rust"]
   end
 
+  test "a lens that could not be read for another reason is an error, and nothing is asked for",
+       %{
+         gh: gh,
+         id: id
+       } do
+    StandInGitHub.fail(
+      gh,
+      "repos/#{@athenaeum}/contents/packs/elixir/review.md?ref=#{@ref}",
+      "gh: Bad Gateway (HTTP 502)"
+    )
+
+    assert {:error, message} = request(id)
+
+    assert message =~ "elixir"
+    assert message =~ "502"
+    assert reviews_of(id) == []
+  end
+
   test "what no lens will look at is reported and no review is made for it", %{gh: gh, id: id} do
     StandInGitHub.heph_lenses(gh, %{
       "lenses" => [],
@@ -275,6 +292,24 @@ defmodule ControlPlane.ReviewsTest do
       assert message =~ "HEPH_ATHENAEUM_REF"
       assert reviews_of(id) == []
       refute Workloads.get(id).settled_at
+    end
+
+    test "nothing is merged on the strength of the checks while reviews are asked for", %{
+      gh: gh,
+      id: id
+    } do
+      Application.put_env(:control_plane, :settle,
+        reviews: [@repo],
+        athenaeum_ref: @ref,
+        automerge: [@repo]
+      )
+
+      StandInGitHub.respond(gh, @pull, Map.put(pull(), "mergeable_state", "clean"))
+
+      assert result(id) == :done
+
+      refute Enum.any?(StandInGitHub.writes(gh), fn {method, _, _} -> method == "PUT" end)
+      assert length(reviews_of(id)) == 2
     end
 
     test "checks that are not green ask for no review", %{gh: gh, id: id} do
