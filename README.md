@@ -145,7 +145,8 @@ the pull request), and ends with the outcome, the cost and the pull request. The
 kept in a directory of its own outside your project, under
 `~/.local/state/hephaestium/runs/` (or `$XDG_STATE_HOME`), with the workload, the events,
 the executor's output, the run record and the workspace. The tokens are found in the
-environment or in `~/.config/hephaestium/github-token` and `claude-token`. It exits 0
+environment or in `~/.config/hephaestium/github-token` and `claude-token`; what
+each needs, and how to make it, is in [`docs/tokens.md`](./docs/tokens.md). It exits 0
 if the workload completed and 1 if it ended any other way. Interrupting it (Ctrl-C, or a
 termination signal) stops the agent and everything it started, and the run ends
 `cancelled`, with its record written.
