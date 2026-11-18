@@ -206,7 +206,9 @@ fn gate_usage_error() -> ExitCode {
 struct GateRun {
     name: String,
     manifest: String,
-    changed: Vec<String>,
+    /// The files given with `--changed`, or `None` when none were given and what
+    /// changed is not known.
+    changed: Option<Vec<String>>,
 }
 
 impl GateRun {
@@ -215,13 +217,15 @@ impl GateRun {
     fn parse(arguments: &[&str]) -> Option<Self> {
         let mut name = None;
         let mut manifest = manifest::DEFAULT_PATH.to_owned();
-        let mut changed = Vec::new();
+        let mut changed: Option<Vec<String>> = None;
 
         let mut remaining = arguments.iter();
         while let Some(argument) = remaining.next() {
             match *argument {
                 "--manifest" => (*remaining.next()?).clone_into(&mut manifest),
-                "--changed" => changed.push((*remaining.next()?).to_owned()),
+                "--changed" => changed
+                    .get_or_insert_with(Vec::new)
+                    .push((*remaining.next()?).to_owned()),
                 flag if flag.starts_with('-') => return None,
                 positional if name.is_none() => name = Some(positional.to_owned()),
                 _ => return None,
@@ -246,7 +250,7 @@ fn run_gate(request: &GateRun) -> ExitCode {
     let result = gate::run_named(
         &manifest,
         &request.name,
-        &request.changed,
+        request.changed.as_deref(),
         std::path::Path::new("."),
         |name| std::env::var(name).ok(),
         |message| {
