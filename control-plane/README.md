@@ -50,6 +50,14 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   run of a check counts, since a cancelled duplicate run leaves a failed run of
   the same name behind. A ticket is marked settled (`settled_at`) only once its
   labels and comment were written. Only the first 100 check runs are read.
+- Re-running cancelled checks is off by default. `HEPH_RERUNS=N` lets settle re-run a
+  required check whose newest run was cancelled, at most N times per check, before
+  calling the ticket failed; the count is kept on the workload (`reruns`). Only
+  `cancelled` is re-run: `failure` and `timed_out` are real results, and a real failure
+  beside a cancelled check fails at once without spending a re-run. A cancelled run
+  that a newer run replaced, or a check the ruleset does not require, is not re-run.
+  A re-run GitHub refuses waits and is not counted. The final failure comment says
+  the check was re-run.
 
 ## Running it
 

@@ -80,7 +80,8 @@ defmodule ControlPlane.Tickets do
       remove_label(workload, @running),
       note(
         workload,
-        "the pull request's required checks did not pass: #{Enum.join(names, ", ")}."
+        "the pull request's required checks did not pass: #{Enum.join(names, ", ")}." <>
+          reran(workload)
       )
     ])
   end
@@ -91,6 +92,14 @@ defmodule ControlPlane.Tickets do
       note(workload, "the pull request was closed without being merged.")
     ])
   end
+
+  # Which cancelled checks were re-run first, if any, and how often.
+  defp reran(%{reruns: reruns}) when is_map(reruns) and map_size(reruns) > 0 do
+    times = reruns |> Map.values() |> Enum.max()
+    " Cancelled checks were re-run #{times} times first."
+  end
+
+  defp reran(_), do: ""
 
   defp note(workload, text) do
     url = get_in(workload.record || %{}, ["pullRequest", "url"])

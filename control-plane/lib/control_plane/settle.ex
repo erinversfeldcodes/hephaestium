@@ -35,14 +35,43 @@ defmodule ControlPlane.Settle do
     with {:ok, number} <- pull_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
          {:ok, verdict} <- verdict(workload, pull),
-         :ok <- write(workload, verdict) do
-      Workloads.settle(workload.id)
-      verdict
+         :ok <- act(workload, verdict) do
+      if match?({:rerun, _}, verdict),
+        do: {:waiting, rerun_message(verdict)},
+        else: finish(workload, verdict)
     else
       {:error, reason} -> {:waiting, to_string(reason)}
       {:waiting, reason} -> {:waiting, reason}
     end
   end
+
+  defp finish(workload, verdict) do
+    Workloads.settle(workload.id)
+    verdict
+  end
+
+  defp rerun_message({:rerun, runs}),
+    do: "re-running cancelled: #{runs |> Enum.map(&elem(&1, 0)) |> Enum.join(", ")}"
+
+  # A verdict that is a rerun asks GitHub to re-run each cancelled job and counts the
+  # ones it accepted; any other verdict is written to the ticket.
+  defp act(workload, {:rerun, runs}) do
+    results =
+      for {name, id} <- runs do
+        case GitHub.write("POST", "repos/#{workload.repository}/actions/jobs/#{id}/rerun", []) do
+          {:ok, _} ->
+            Workloads.count_rerun(workload.id, name)
+            :ok
+
+          {:error, message} ->
+            {:error, "could not re-run #{name}: #{message}"}
+        end
+      end
+
+    Enum.find(results, :ok, &match?({:error, _}, &1))
+  end
+
+  defp act(workload, verdict), do: write(workload, verdict)
 
   defp write(workload, verdict) do
     case Tickets.settled(workload, verdict) do
@@ -67,7 +96,7 @@ defmodule ControlPlane.Settle do
     with {:ok, rules} <- GitHub.get("repos/#{workload.repository}/rules/branches/#{base}"),
          {:ok, runs} <-
            GitHub.get("repos/#{workload.repository}/commits/#{sha}/check-runs?per_page=100") do
-      judge(required(rules), newest(runs["check_runs"] || []))
+      judge(workload, required(rules), newest(runs["check_runs"] || []))
     end
   end
 
@@ -91,19 +120,24 @@ defmodule ControlPlane.Settle do
     |> Map.new(fn {name, rs} -> {name, Enum.max_by(rs, & &1["id"])} end)
   end
 
-  defp judge(required, runs) do
+  defp judge(workload, required, runs) do
     names = if required == [], do: Map.keys(runs), else: required
     looked_at = Enum.map(names, &{&1, runs[&1]})
 
-    failed =
-      for {name, run} <- looked_at,
-          run != nil and run["status"] == "completed" and run["conclusion"] not in @good,
-          do: name
+    ended =
+      for {name, run} <- looked_at, run != nil and run["status"] == "completed", do: {name, run}
+
+    bad = for {name, run} <- ended, run["conclusion"] not in @good, do: {name, run}
+    cancelled = for {name, run} <- bad, run["conclusion"] == "cancelled", do: {name, run}
+    failed = Enum.map(bad, &elem(&1, 0))
 
     unfinished =
       for {name, run} <- looked_at, is_nil(run) or run["status"] != "completed", do: name
 
     cond do
+      failed != [] and bad == cancelled and rerunnable?(workload, cancelled) ->
+        {:ok, {:rerun, for({name, run} <- cancelled, do: {name, run["id"]})}}
+
       failed != [] ->
         {:ok, {:failed, Enum.sort(failed)}}
 
@@ -117,4 +151,14 @@ defmodule ControlPlane.Settle do
         {:ok, :done}
     end
   end
+
+  # Every cancelled check has re-runs left. With none allowed (the default) none has.
+  defp rerunnable?(workload, cancelled) do
+    max = reruns()
+    done = workload.reruns || %{}
+
+    max > 0 and Enum.all?(cancelled, fn {name, _} -> Map.get(done, name, 0) < max end)
+  end
+
+  defp reruns, do: Application.get_env(:control_plane, :settle, []) |> Keyword.get(:reruns, 0)
 end
