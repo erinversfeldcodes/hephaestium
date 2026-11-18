@@ -9,7 +9,13 @@ config :control_plane, ControlPlane.Repo,
 config :control_plane, Oban,
   repo: ControlPlane.Repo,
   queues: [workloads: 5, intake: 1],
-  plugins: [{Oban.Plugins.Cron, crontab: [{"* * * * *", ControlPlane.Jobs.Intake}]}]
+  plugins: [
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"* * * * *", ControlPlane.Jobs.Intake},
+       {"* * * * *", ControlPlane.Jobs.SettleTickets}
+     ]}
+  ]
 
 # The repositories whose tickets are taken in, and the programs intake reads
 # GitHub and builds workloads with: `gh` and `heph` on the path unless this says.
