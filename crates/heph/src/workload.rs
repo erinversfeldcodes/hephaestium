@@ -224,6 +224,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         }),
         // A workload built from a ticket alone is never a revision.
         revision: None,
+        review: None,
     };
     Ok(Built { workload, warnings })
 }

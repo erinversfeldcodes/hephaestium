@@ -50,6 +50,7 @@ fn check_values(workload: &Workload) -> Result<(), String> {
 
     check_limits(workload)?;
     check_revision(workload)?;
+    check_review(workload)?;
 
     if !repository.manifest_path.is_empty()
         && !Path::new(&repository.manifest_path)
@@ -104,6 +105,42 @@ fn check_revision(workload: &Workload) -> Result<(), String> {
     }
     if revision.failures.iter().any(|f| f.name.trim().is_empty()) {
         return Err("a failing check in the revision has no name".to_owned());
+    }
+    Ok(())
+}
+
+/// What a review is told. The lens names a pack and is used to name a file, so
+/// it is a name and not a path; the pull request must be a GitHub address; and a
+/// workload is never a revision and a review at once.
+fn check_review(workload: &Workload) -> Result<(), String> {
+    let Some(review) = workload.review.as_ref() else {
+        return Ok(());
+    };
+    if workload.revision.is_some() {
+        return Err("the workload is both a revision and a review".to_owned());
+    }
+    if review.pull_request_number <= 0 {
+        return Err("the review's pull request number is not above zero".to_owned());
+    }
+    if !review.pull_request_url.starts_with("https://github.com/") {
+        return Err(format!(
+            "the review's pull request {:?} is not a GitHub address",
+            review.pull_request_url
+        ));
+    }
+    if !review.lens.starts_with(|c: char| c.is_ascii_alphanumeric())
+        || !review
+            .lens
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err(format!(
+            "the review's lens {:?} is not a pack name (letters, digits, - and _, and not starting with - or _)",
+            review.lens
+        ));
+    }
+    if review.lens_document.trim().is_empty() {
+        return Err("the review has no lens text".to_owned());
     }
     Ok(())
 }

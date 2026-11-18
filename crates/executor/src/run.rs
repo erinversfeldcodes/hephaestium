@@ -67,6 +67,15 @@ pub fn run(
     let workload = workload::read(&text)
         .map_err(|e| Refused(format!("{}: {e}", options.workload.display())))?;
 
+    // A review changes nothing and ends with a verdict. Run as a ticket it would
+    // change code and open a pull request, so until it is run as a review it is
+    // refused here, before anything is created.
+    if workload.review.is_some() {
+        return Err(Refused(
+            "the executor cannot run a review workload yet".to_owned(),
+        ));
+    }
+
     let adapter = adapter_for(options, &workload)?;
 
     let workspace = options.work_dir.join(&workload.id);
