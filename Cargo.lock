@@ -330,8 +330,10 @@ name = "heph"
 version = "0.0.0"
 dependencies = [
  "athenaeum",
+ "contracts",
  "globset",
  "jsonschema",
+ "pbjson-types",
  "rustix",
  "serde",
  "serde_json",

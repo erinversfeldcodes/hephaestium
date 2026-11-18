@@ -15,6 +15,7 @@ use heph::github;
 use heph::lock;
 use heph::manifest::{self, Invalid};
 use heph::sync;
+use heph::workload;
 
 /// What a build reports when no version was compiled in.
 const DEVELOPMENT_VERSION: &str = "0.0.0-dev";
@@ -53,6 +54,21 @@ Commands:
                          900 seconds unless --timeout-seconds says otherwise.
                          Exits 0 if all passed, 1 if any failed or timed out,
                          and 3 if linting could not be run.
+
+  workload TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
+                   [--timeout-seconds N] [--budget-usd X]
+                         Build the workload for a ticket and print it as JSON,
+                         which is what `executor run` takes. The repository is
+                         --repo, or the origin of the checkout at --root
+                         [default: .]. The run starts from the tip of the
+                         default branch on GitHub, not from your checkout, and
+                         a checkout at another commit is warned about. The
+                         ticket must be an open issue. You are the approver:
+                         the signed-in GitHub user, now. Defaults: Claude Code
+                         on the Anthropic subscription, model sonnet, 1800
+                         seconds, 5 dollars. Nothing is run or changed. Exits 0,
+                         2 on a usage error, and 3 if no workload could be
+                         built.
 
   baseline check [--root PATH] [--answers PATH] [--settings [--repo OWNER/NAME]]
                          Check the repository at PATH [default: .] against the
@@ -144,6 +160,8 @@ fn main() -> ExitCode {
                 run_baseline_apply(&request)
             }),
         ["baseline", ..] => baseline_usage_error(),
+        ["workload", rest @ ..] => WorkloadRequest::parse(rest)
+            .map_or_else(workload_usage_error, |request| run_workload(&request)),
         ["sync", rest @ ..] => {
             Sync::parse(rest).map_or_else(sync_usage_error, |request| run_sync(&request))
         }
@@ -770,4 +788,108 @@ fn sync_repository(request: &Sync) -> Result<ExitCode, String> {
         println!("up to date");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What `workload` was asked to do.
+struct WorkloadRequest {
+    ticket: i64,
+    repo: Option<String>,
+    root: String,
+    model: String,
+    timeout_seconds: u64,
+    budget_usd: f64,
+}
+
+impl WorkloadRequest {
+    /// Read the arguments after `workload`: a ticket number, with or without a
+    /// leading `#`, and any of the options. `None` if they are not that.
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut ticket = None;
+        let mut repo = None;
+        let mut root = ".".to_owned();
+        let mut model = workload::DEFAULT_MODEL.to_owned();
+        let mut timeout_seconds = workload::DEFAULT_TIMEOUT_SECONDS;
+        let mut budget_usd = workload::DEFAULT_BUDGET_USD;
+
+        let mut remaining = arguments.iter();
+        while let Some(argument) = remaining.next() {
+            match *argument {
+                "--repo" => repo = Some((*remaining.next()?).to_owned()),
+                "--root" => (*remaining.next()?).clone_into(&mut root),
+                "--model" => (*remaining.next()?).clone_into(&mut model),
+                "--timeout-seconds" => {
+                    timeout_seconds = remaining.next()?.parse().ok().filter(|n| *n > 0)?;
+                }
+                "--budget-usd" => {
+                    budget_usd = remaining
+                        .next()?
+                        .parse()
+                        .ok()
+                        .filter(|amount: &f64| amount.is_finite() && *amount > 0.0)?;
+                }
+                flag if flag.starts_with("--") => return None,
+                positional if ticket.is_none() => {
+                    ticket = Some(
+                        positional
+                            .trim_start_matches('#')
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|n| *n > 0)?,
+                    );
+                }
+                _ => return None,
+            }
+        }
+
+        Some(Self {
+            ticket: ticket?,
+            repo,
+            root,
+            model,
+            timeout_seconds,
+            budget_usd,
+        })
+    }
+}
+
+fn workload_usage_error() -> ExitCode {
+    eprintln!(
+        "heph: expected 'workload TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME] [--timeout-seconds N] [--budget-usd X]'\n\n{USAGE}"
+    );
+    ExitCode::from(USAGE_ERROR)
+}
+
+/// Build the workload for a ticket and print it.
+fn run_workload(request: &WorkloadRequest) -> ExitCode {
+    let root = std::path::Path::new(&request.root);
+    let repository = match github::repository_of(root, request.repo.as_deref()) {
+        Ok(repository) => repository,
+        Err(error) => return could_not_run(&error.to_string()),
+    };
+    let local_head = workload::head_of(root);
+    let built = workload::build(
+        &workload::Request {
+            repository: &repository,
+            ticket: request.ticket,
+            model: &request.model,
+            timeout_seconds: request.timeout_seconds,
+            budget_usd: request.budget_usd,
+        },
+        local_head.as_deref(),
+    );
+    match built {
+        Ok(built) => {
+            for warning in &built.warnings {
+                eprintln!("heph: warning: {warning}");
+            }
+            match serde_json::to_string_pretty(&built.workload) {
+                Ok(text) => {
+                    println!("{text}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => could_not_run(&format!("the workload could not be written: {error}")),
+            }
+        }
+        Err(error) => could_not_run(&error.to_string()),
+    }
 }
