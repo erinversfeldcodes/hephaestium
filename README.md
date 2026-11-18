@@ -96,6 +96,14 @@ named `lint:<component>:<n>`. Every command runs even if an earlier one fails, s
 one run reports every finding. See
 [ADR-0012](./docs/adr/0012-lint-commands-run-as-gates-named-for-their-component.md).
 
+`heph lenses --changed PATH...` says which review lenses a change needs. It reads the
+files the way `heph lint` does, by each component's `paths`, and prints one line of
+JSON: the packs those components name, each with the components that named it, then
+the touched components that name no pack and the files no component owns. Those last
+two are what no lens will look at, so they are said and not left out. It needs at
+least one `--changed`, because a change with no files is not a change that needs
+every lens. Nothing runs a review from it yet; see issue #105.
+
 `heph sync` makes the skills a repository vendors in `.athenaeum/skills/` match its
 lock, which pins an Athenaeum release by tag and commit, and links them where an
 agent runtime looks. It refuses a tag that has moved and never overwrites what it
