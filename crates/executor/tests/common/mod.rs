@@ -182,6 +182,19 @@ pub fn run_with_env(
     extra: &[&str],
     environment: &[(&str, &str)],
 ) -> Ran {
+    let mut command = command_for(&scratch, workload, transcript, extra, environment);
+    let output = command.output().expect("the executor to run");
+    Ran { output, scratch }
+}
+
+/// The executor's command line for a workload, not yet run.
+pub fn command_for(
+    scratch: &Scratch,
+    workload: &Value,
+    transcript: Option<&str>,
+    extra: &[&str],
+    environment: &[(&str, &str)],
+) -> Command {
     scratch.write("workload.json", &workload.to_string());
     let mut command = Command::new(env!("CARGO_BIN_EXE_executor"));
     command
@@ -199,8 +212,7 @@ pub fn run_with_env(
             .arg(scratch.write("transcript.jsonl", text));
     }
     command.args(extra).envs(environment.iter().copied());
-    let output = command.output().expect("the executor to run");
-    Ran { output, scratch }
+    command
 }
 
 pub fn kinds(events: &[Event]) -> Vec<&'static str> {
