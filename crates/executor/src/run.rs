@@ -7,8 +7,11 @@ use std::time::Duration;
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
-use contracts::v1alpha1::{RunRecord, Started, Workload, WorkspaceReady};
-use heph::manifest::{self, BootstrapStep};
+use contracts::v1alpha1::{
+    GateFinished, GateStarted, RunRecord, Started, Workload, WorkspaceReady,
+};
+use heph::gate;
+use heph::manifest::{self, BootstrapStep, Manifest};
 use heph::process::{Ended, execute};
 
 use crate::cli::Options;
@@ -73,13 +76,15 @@ pub fn run(options: &Options, executor_version: &str, out: &mut impl Write) -> R
         executor_version: executor_version.to_owned(),
     }))?;
 
-    let outcome = prepare(options, &workload, &workspace, &mut stream);
-    let (outcome, reason) = match outcome {
-        Ok(()) => {
+    let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
+        Ok(manifest) => {
             for kind in played {
                 stream.emit(kind)?;
             }
-            (Outcome::Completed, String::new())
+            match run_gates(&manifest, &workload, &workspace, &mut stream)? {
+                Ok(()) => (Outcome::Completed, String::new()),
+                Err(reason) => (Outcome::Failed, reason),
+            }
         }
         Err(reason) => (Outcome::Failed, reason),
     };
@@ -96,7 +101,7 @@ fn prepare<W: Write>(
     workload: &Workload,
     workspace: &Path,
     stream: &mut Stream<'_, W>,
-) -> Result<(), String> {
+) -> Result<Manifest, String> {
     clone(options, workload, workspace)?;
     let commit = workload
         .repository
@@ -121,9 +126,88 @@ fn prepare<W: Write>(
         manifest::parse(&text).map_err(|e| format!("the manifest is not valid: {e:?}"))?;
 
     for (index, step) in manifest.bootstrap.iter().enumerate() {
-        bootstrap(index + 1, step, workspace)?;
+        bootstrap(&manifest, index + 1, step, workspace)?;
     }
-    Ok(())
+    Ok(manifest)
+}
+
+/// Where the environment is read from, for what a gate needs and whether the
+/// toolchain is already entered.
+fn environment(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// Run every gate the manifest declares in the workspace, in name order, and
+/// say what each did.
+///
+/// Every gate runs even if an earlier one failed, so a failure shows all that is
+/// wrong at once. The outer error is a failure to write an event. The inner
+/// result is the workload's: the reasons it failed, if any gate did.
+fn run_gates<W: Write>(
+    manifest: &Manifest,
+    workload: &Workload,
+    workspace: &Path,
+    stream: &mut Stream<'_, W>,
+) -> Result<Result<(), String>, Refused> {
+    let base = &workload
+        .repository
+        .as_ref()
+        .expect("checked when read")
+        .base_commit;
+    let changed = match changed_files(workspace, base) {
+        Ok(changed) => changed,
+        Err(reason) => return Ok(Err(reason)),
+    };
+
+    let mut failures = Vec::new();
+    for name in manifest.gates.keys() {
+        stream.emit(Kind::GateStarted(GateStarted { name: name.clone() }))?;
+        match gate::run_named(manifest, name, &changed, workspace, environment, say) {
+            Ok(result) => {
+                if matches!(
+                    result.outcome,
+                    gate::Outcome::Failed | gate::Outcome::TimedOut
+                ) {
+                    failures.push(format!("gate {name} {}", result.outcome));
+                }
+                let value = serde_json::to_value(&result).map_err(|e| Refused(e.to_string()))?;
+                let result = serde_json::from_value(value).map_err(|e| Refused(e.to_string()))?;
+                stream.emit(Kind::GateFinished(GateFinished {
+                    name: name.clone(),
+                    result: Some(result),
+                }))?;
+            }
+            Err(error) => failures.push(format!("gate {name} could not be run: {error}")),
+        }
+    }
+    Ok(if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    })
+}
+
+/// The files the workspace differs from the base commit by: those changed and
+/// those new, and not those git ignores.
+fn changed_files(workspace: &Path, base: &str) -> Result<Vec<String>, String> {
+    let mut changed = Vec::new();
+    for args in [
+        vec!["diff", "--name-only", "-z", base],
+        vec!["ls-files", "--others", "--exclude-standard", "-z"],
+    ] {
+        let mut command = vec!["git".to_owned()];
+        command.extend(args.iter().map(|a| (*a).to_owned()));
+        match execute(&command, workspace, CLONE_TIMEOUT, true, say) {
+            Ok((Ended::Exited(0), Some(bytes))) => changed.extend(
+                bytes
+                    .split(|b| *b == 0)
+                    .filter(|name| !name.is_empty())
+                    .map(|name| String::from_utf8_lossy(name).into_owned()),
+            ),
+            _ => return Err("could not find what the agent changed in the workspace".to_owned()),
+        }
+    }
+    Ok(changed)
 }
 
 fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(), String> {
@@ -174,14 +258,19 @@ fn git(args: &[&str], directory: &Path, what: &str) -> Result<(), String> {
     }
 }
 
-fn bootstrap(number: usize, step: &BootstrapStep, workspace: &Path) -> Result<(), String> {
+fn bootstrap(
+    manifest: &Manifest,
+    number: usize,
+    step: &BootstrapStep,
+    workspace: &Path,
+) -> Result<(), String> {
     let directory: PathBuf = match &step.root {
         Some(root) => workspace.join(root),
         None => workspace.to_path_buf(),
     };
     let described = format!("bootstrap step {number} (`{}`)", step.run.join(" "));
     match execute(
-        &step.run,
+        &gate::wrap(manifest, &step.run, environment),
         &directory,
         Duration::from_secs(step.timeout_seconds),
         false,
