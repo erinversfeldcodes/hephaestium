@@ -73,19 +73,38 @@ defmodule ControlPlane.Tickets do
   """
   @spec settled(%Workload{}, :done | {:failed, [String.t()]} | :abandoned) ::
           :ok | {:error, String.t()}
-  def settled(workload, :done), do: settled(workload, {:done, nil})
+  def settled(workload, verdict, notes \\ nil)
 
-  def settled(workload, {:done, merge}) do
+  def settled(workload, :done, notes), do: settled(workload, {:done, nil}, notes)
+
+  def settled(workload, {:done, merge}, notes) do
     first_error([
       add_label(workload, @done),
       remove_label(workload, @running),
-      note(workload, "the pull request's checks are green. The ticket is done." <> merged(merge))
+      note(
+        workload,
+        "the pull request's checks are green. The ticket is done." <>
+          merged(merge) <> if(notes, do: "\n\n" <> notes, else: "")
+      )
     ])
   end
 
-  def settled(workload, {:failed, names}), do: settled(workload, {:failed, names, nil})
+  # The checks were green and the reviews did not approve it.
+  def settled(workload, {:review_failed, lenses, extra}, _notes) do
+    first_error([
+      add_label(workload, @failed),
+      remove_label(workload, @running),
+      note(
+        workload,
+        "the pull request's checks are green and its review did not approve it: #{Enum.join(lenses, ", ")}.\n\n#{extra}"
+      )
+    ])
+  end
 
-  def settled(workload, {:failed, names, extra}) do
+  def settled(workload, {:failed, names}, notes),
+    do: settled(workload, {:failed, names, nil}, notes)
+
+  def settled(workload, {:failed, names, extra}, _notes) do
     first_error([
       add_label(workload, @failed),
       remove_label(workload, @running),
@@ -97,7 +116,7 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
-  def settled(workload, :abandoned) do
+  def settled(workload, :abandoned, _notes) do
     first_error([
       remove_label(workload, @running),
       note(workload, "the pull request was closed without being merged.")
@@ -115,6 +134,20 @@ defmodule ControlPlane.Tickets do
     note(
       workload,
       "the pull request's checks did not pass: #{Enum.join(names, ", ")}. Starting revision #{attempt} of #{max}: the agent will investigate and push a fix to the same branch."
+    )
+  end
+
+  @doc """
+  The pull request's reviews found something that blocks and a revision has been
+  started: the ticket says which lenses, and that the agent will address the
+  blocking findings on the same branch. The labels do not change.
+  """
+  @spec revising_for_review(%Workload{}, [String.t()], pos_integer(), pos_integer()) ::
+          :ok | {:error, String.t()}
+  def revising_for_review(workload, names, attempt, max) do
+    note(
+      workload,
+      "the pull request's review found problems that block it: #{Enum.join(names, ", ")}. Starting revision #{attempt} of #{max}: the agent will address the blocking findings on the same branch."
     )
   end
 

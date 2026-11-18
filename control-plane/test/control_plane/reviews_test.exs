@@ -315,10 +315,13 @@ defmodule ControlPlane.ReviewsTest do
   describe "in settling" do
     defp result(id), do: Enum.find(Settle.run(), &(&1.workload_id == id)).result
 
-    test "a pull request whose checks are green is reviewed, and the ticket is done", %{id: id} do
-      assert result(id) == :done
+    test "a pull request whose checks are green is reviewed, and the ticket waits for the verdicts",
+         %{id: id} do
+      assert {:waiting, message} = result(id)
 
+      assert message =~ "elixir" and message =~ "rust"
       assert lenses_of(reviews_of(id)) == ["elixir", "rust"]
+      refute Workloads.get(id).settled_at
     end
 
     test "nothing is asked for when the repository has not opted in", %{gh: gh, id: id} do
@@ -340,7 +343,7 @@ defmodule ControlPlane.ReviewsTest do
       refute Workloads.get(id).settled_at
     end
 
-    test "nothing is merged on the strength of the checks while reviews are asked for", %{
+    test "nothing is merged while the reviews that were asked for have not said", %{
       gh: gh,
       id: id
     } do
@@ -352,7 +355,7 @@ defmodule ControlPlane.ReviewsTest do
 
       StandInGitHub.respond(gh, @pull, Map.put(pull(), "mergeable_state", "clean"))
 
-      assert result(id) == :done
+      assert {:waiting, _} = result(id)
 
       refute Enum.any?(StandInGitHub.writes(gh), fn {method, _, _} -> method == "PUT" end)
       assert length(reviews_of(id)) == 2
