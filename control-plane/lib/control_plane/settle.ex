@@ -35,6 +35,7 @@ defmodule ControlPlane.Settle do
     with {:ok, number} <- pull_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
          {:ok, verdict} <- verdict(workload, pull, number),
+         {:ok, verdict} <- merge(workload, pull, number, verdict),
          :ok <- act(workload, verdict) do
       outcome(workload, verdict)
     else
@@ -46,6 +47,72 @@ defmodule ControlPlane.Settle do
   defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, verdict), do: finish(workload, verdict)
+
+  # Merging a pull request whose every check is green, for the repositories that
+  # opted in (`HEPH_AUTOMERGE`). It is never a bypass: GitHub's own account of the pull
+  # request has to be `clean`, which it is only when the repository's rules are met
+  # (a required review, a branch up to date), because an account that may bypass
+  # those rules would otherwise merge a blocked pull request through the API without
+  # anyone saying so. Anything else is reported on the ticket and left to a person.
+  defp merge(workload, %{"state" => "open"} = pull, number, :done) when pull != %{} do
+    if automerge?(workload.repository) and pull["merged"] != true do
+      merge_open(workload, pull, number)
+    else
+      {:ok, :done}
+    end
+  end
+
+  defp merge(_workload, _pull, _number, verdict), do: {:ok, verdict}
+
+  defp merge_open(workload, pull, number) do
+    head = pull["head"] || %{}
+    ref = head["ref"] || ""
+
+    cond do
+      pull["mergeable_state"] in [nil, "unknown"] ->
+        {:waiting, "GitHub has not worked out whether the pull request can be merged"}
+
+      not String.starts_with?(ref, "heph/") ->
+        not_merged("it is not a pull request the runtime made (heph/...)")
+
+      get_in(head, ["repo", "full_name"]) != workload.repository ->
+        not_merged("its branch is in another repository")
+
+      pull["mergeable_state"] != "clean" ->
+        not_merged(unmergeable(pull["mergeable_state"]))
+
+      true ->
+        put_merge(workload, number, head["sha"])
+    end
+  end
+
+  defp put_merge(workload, number, sha) do
+    case GitHub.write("PUT", "repos/#{workload.repository}/pulls/#{number}/merge", [
+           "merge_method=squash",
+           "sha=#{sha}"
+         ]) do
+      {:ok, _} -> {:ok, {:done, :merged}}
+      {:error, message} -> merge_refused(message)
+    end
+  end
+
+  # GitHub saying the pull request cannot be merged (not allowed, conflicting, the head
+  # moved) is an answer, to be reported once. Anything else may pass, so it waits.
+  defp merge_refused(message) do
+    if Regex.match?(~r/HTTP (405|409|422)/, message),
+      do: not_merged("GitHub refused the merge: #{message}"),
+      else: {:waiting, "could not merge: #{message}"}
+  end
+
+  defp not_merged(reason), do: {:ok, {:done, {:not_merged, reason}}}
+
+  defp unmergeable("blocked"),
+    do: "it is blocked: its rules are not met (for example a required review)"
+
+  defp unmergeable("behind"), do: "its branch is behind the base"
+  defp unmergeable("dirty"), do: "it has conflicts with the base"
+  defp unmergeable("draft"), do: "it is a draft"
+  defp unmergeable(state), do: "GitHub reports it as #{state}"
 
   defp finish(workload, verdict) do
     Workloads.settle(workload.id)
@@ -313,4 +380,8 @@ defmodule ControlPlane.Settle do
   # A setting of settling, zero (none) unless set.
   defp setting(name),
     do: (Application.get_env(:control_plane, :settle) || []) |> Keyword.get(name, 0)
+
+  defp automerge?(repository) do
+    repository in ((Application.get_env(:control_plane, :settle) || [])[:automerge] || [])
+  end
 end
