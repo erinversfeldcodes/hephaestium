@@ -14,6 +14,8 @@ use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
 use heph::process::{Ended, execute};
 
+use crate::adapter::{Adapter, Stub};
+use crate::agent::{self, End};
 use crate::cli::Options;
 use crate::stream::Stream;
 use crate::{transcript, workload};
@@ -54,14 +56,7 @@ pub fn run(options: &Options, executor_version: &str, out: &mut impl Write) -> R
     let workload = workload::read(&text)
         .map_err(|e| Refused(format!("{}: {e}", options.workload.display())))?;
 
-    let played = match &options.transcript {
-        Some(path) => {
-            let text = fs::read_to_string(path)
-                .map_err(|e| Refused(format!("{}: {e}", path.display())))?;
-            transcript::read(&text).map_err(|e| Refused(format!("{}: {e}", path.display())))?
-        }
-        None => Vec::new(),
-    };
+    let adapter = adapter_for(options)?;
 
     let workspace = options.work_dir.join(&workload.id);
     if workspace.exists() {
@@ -78,12 +73,19 @@ pub fn run(options: &Options, executor_version: &str, out: &mut impl Write) -> R
 
     let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
         Ok(manifest) => {
-            for kind in played {
-                stream.emit(kind)?;
-            }
-            match run_gates(&manifest, &workload, &workspace, &mut stream)? {
-                Ok(()) => (Outcome::Completed, String::new()),
-                Err(reason) => (Outcome::Failed, reason),
+            match agent::run(
+                adapter.as_ref(),
+                &workload,
+                &workspace,
+                options.heartbeat,
+                &mut stream,
+            )? {
+                End::Done => match run_gates(&manifest, &workload, &workspace, &mut stream)? {
+                    Ok(()) => (Outcome::Completed, String::new()),
+                    Err(reason) => (Outcome::Failed, reason),
+                },
+                End::Failed(reason) => (Outcome::Failed, reason),
+                End::TimedOut(reason) => (Outcome::TimedOut, reason),
             }
         }
         Err(reason) => (Outcome::Failed, reason),
@@ -242,7 +244,7 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
 
 /// Where what a command says about itself goes: standard error, because
 /// standard output carries only events.
-fn say(message: &str) {
+pub fn say(message: &str) {
     eprintln!("{message}");
 }
 
@@ -295,4 +297,28 @@ fn write_record(path: &Path, record: &RunRecord) -> Result<(), Refused> {
             path.display()
         ))
     })
+}
+
+/// The adapter the options select. A transcript is checked before anything
+/// runs, and played by printing it.
+fn adapter_for(options: &Options) -> Result<Box<dyn Adapter>, Refused> {
+    if let Some(path) = &options.transcript {
+        let text =
+            fs::read_to_string(path).map_err(|e| Refused(format!("{}: {e}", path.display())))?;
+        transcript::check(&text).map_err(|e| Refused(format!("{}: {e}", path.display())))?;
+        return Ok(Box::new(Stub {
+            command: vec!["cat".to_owned(), path.display().to_string()],
+            env_names: vec!["PATH".to_owned()],
+        }));
+    }
+    match &options.agent_command {
+        Some(command) => Ok(Box::new(Stub {
+            command: command.clone(),
+            env_names: options.agent_env.clone(),
+        })),
+        None => Err(Refused(
+            "no agent is selected: pass --transcript or --agent-command (no agent runtime has an adapter yet)"
+                .to_owned(),
+        )),
+    }
 }

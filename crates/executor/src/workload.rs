@@ -48,6 +48,8 @@ fn check_values(workload: &Workload) -> Result<(), String> {
         ));
     }
 
+    check_limits(workload)?;
+
     if !repository.manifest_path.is_empty()
         && !Path::new(&repository.manifest_path)
             .components()
@@ -72,4 +74,28 @@ pub fn manifest_path(workload: &Workload) -> &str {
         Some(path) if !path.is_empty() => path,
         _ => DEFAULT_MANIFEST,
     }
+}
+
+/// A workload never runs without an end: it has a timeout above zero, and a
+/// budget in a stated unit above zero.
+fn check_limits(workload: &Workload) -> Result<(), String> {
+    let limits = workload
+        .limits
+        .as_ref()
+        .ok_or("the workload has no limits")?;
+    let timeout = limits
+        .timeout
+        .as_ref()
+        .ok_or("the workload has no timeout")?;
+    if timeout.seconds < 0 || (timeout.seconds == 0 && timeout.nanos <= 0) {
+        return Err("the workload's timeout is not above zero".to_owned());
+    }
+    let budget = limits.budget.as_ref().ok_or("the workload has no budget")?;
+    if budget.unit == 0 {
+        return Err("the workload's budget has no unit".to_owned());
+    }
+    if !(budget.amount.is_finite() && budget.amount > 0.0) {
+        return Err("the workload's budget is not above zero".to_owned());
+    }
+    Ok(())
 }

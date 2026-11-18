@@ -1,10 +1,12 @@
 //! The command line: `executor run`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub const USAGE: &str = "\
 Usage: executor run --workload FILE --work-dir DIR --record FILE
-                    [--source PATH_OR_URL] [--transcript FILE]
+                    (--transcript FILE | --agent-command JSON [--agent-env NAME]...)
+                    [--source PATH_OR_URL] [--heartbeat-seconds N]
 
 Runs one workload. Events are written to standard output, one JSON object to a
 line; diagnostics go to standard error. Exits 0 if the workload ran to an
@@ -16,6 +18,13 @@ outcome, whatever it was, 1 if it could not be run, and 2 on a usage error.
   --source SOURCE     where to clone from [default: https://github.com/OWNER/NAME.git]
   --transcript FILE   a recorded transcript to play in place of an agent
                       (development only)
+  --agent-command JSON  a command to run as the agent, as a JSON array of
+                      strings, whose standard output is events (development
+                      only)
+  --agent-env NAME    a variable the agent may have, if the executor has it;
+                      repeatable. The agent has no others.
+  --heartbeat-seconds N  how often a heartbeat is written while the agent runs
+                      [default: 30]
 ";
 
 /// What `run` was asked to do.
@@ -26,7 +35,13 @@ pub struct Options {
     pub record: PathBuf,
     pub source: Option<String>,
     pub transcript: Option<PathBuf>,
+    pub agent_command: Option<Vec<String>>,
+    pub agent_env: Vec<String>,
+    pub heartbeat: Duration,
 }
+
+/// How often a heartbeat is written when nothing says otherwise.
+pub const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// Read the arguments after the program name.
 ///
@@ -46,6 +61,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
     let mut record = None;
     let mut source = None;
     let mut transcript = None;
+    let mut agent_command = None;
+    let mut agent_env = Vec::new();
+    let mut heartbeat = DEFAULT_HEARTBEAT;
     while let Some(option) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match option.as_str() {
@@ -54,8 +72,34 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             "--record" => record = Some(PathBuf::from(value("--record")?)),
             "--source" => source = Some(value("--source")?),
             "--transcript" => transcript = Some(PathBuf::from(value("--transcript")?)),
+            "--agent-command" => {
+                let text = value("--agent-command")?;
+                let command: Vec<String> = serde_json::from_str(&text).map_err(|error| {
+                    format!("--agent-command is not a JSON array of strings: {error}")
+                })?;
+                if command.is_empty() {
+                    return Err("--agent-command is an empty command".to_owned());
+                }
+                agent_command = Some(command);
+            }
+            "--agent-env" => agent_env.push(value("--agent-env")?),
+            "--heartbeat-seconds" => {
+                let text = value("--heartbeat-seconds")?;
+                let seconds: u64 = text
+                    .parse()
+                    .ok()
+                    .filter(|seconds| *seconds > 0)
+                    .ok_or("--heartbeat-seconds is a whole number of seconds, at least 1")?;
+                heartbeat = Duration::from_secs(seconds);
+            }
             other => return Err(format!("unknown option: {other}")),
         }
+    }
+
+    if transcript.is_some() && agent_command.is_some() {
+        return Err(
+            "--transcript and --agent-command are two ways to say the same thing".to_owned(),
+        );
     }
 
     Ok(Options {
@@ -64,5 +108,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
         record: record.ok_or("--record is required")?,
         source,
         transcript,
+        agent_command,
+        agent_env,
+        heartbeat,
     })
 }
