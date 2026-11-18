@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
-use contracts::v1alpha1::{CostTotal, Event, Finished, RunRecord, SkillLoaded, Workload};
+use contracts::v1alpha1::{CostTotal, Event, Finished, GateRun, RunRecord, SkillLoaded, Workload};
 use pbjson_types::Timestamp;
 
 /// The name a kind has in the contract.
@@ -45,6 +45,7 @@ pub struct Stream<'a, W: Write> {
     // what was estimated.
     costs: BTreeMap<(i32, i32), f64>,
     skills: Vec<SkillLoaded>,
+    gates: Vec<GateRun>,
 }
 
 impl<'a, W: Write> Stream<'a, W> {
@@ -57,6 +58,7 @@ impl<'a, W: Write> Stream<'a, W> {
             started_at: None,
             costs: BTreeMap::new(),
             skills: Vec::new(),
+            gates: Vec::new(),
         }
     }
 
@@ -72,6 +74,10 @@ impl<'a, W: Write> Stream<'a, W> {
                 *self.costs.entry((cost.unit, cost.source)).or_insert(0.0) += cost.amount;
             }
             Kind::SkillLoaded(skill) => self.skills.push(skill.clone()),
+            Kind::GateFinished(gate) => self.gates.push(GateRun {
+                name: gate.name.clone(),
+                result: gate.result.clone(),
+            }),
             _ => {}
         }
         let event = Event {
@@ -133,7 +139,7 @@ impl<'a, W: Write> Stream<'a, W> {
             question: String::new(),
             started_at: self.started_at,
             finished_at: Some(finished_at),
-            gates: Vec::new(),
+            gates: self.gates,
             costs: self
                 .costs
                 .into_iter()

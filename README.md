@@ -134,10 +134,12 @@ first, and never modifies a ruleset that exists. See
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of
 it as events, one JSON object to a line on standard output, ending with a run record.
-It is not finished: there is no agent yet, so a recorded transcript stands in for one
-(`--transcript`, for development), and the gates, the workload's limits and the pull
-request are still to come. It exits 0 if the workload ran to an outcome, whatever it
-was, and 1 if it could not be run.
+After the agent it runs every gate the manifest declares, in the workspace, and says
+what each did; the workload is completed only if none failed, so nothing rests on the
+agent's own word. It is not finished: there is no agent yet, so a recorded transcript
+stands in for one (`--transcript`, for development), and the workload's limits and
+the pull request are still to come. It exits 0 if the workload ran to an outcome,
+whatever it was, and 1 if it could not be run.
 
 ## What is different
 
