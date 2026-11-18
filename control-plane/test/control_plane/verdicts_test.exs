@@ -434,6 +434,111 @@ defmodule ControlPlane.VerdictsTest do
     assert length(reviews_of(id, other)) == 2
   end
 
+  test "a verdict in a record that names another commit is not an approval", %{id: id} do
+    asked(id)
+    ended(id, "elixir", "completed", verdict("elixir", "approved"))
+    ended(id, "rust", "completed", verdict("rust", "approved", [], String.duplicate("c", 40)))
+
+    assert {:failed, ["rust"], extra} = result(id)
+
+    assert extra =~ "no verdict"
+  end
+
+  test "a verdict in a record that names another lens is not an approval", %{id: id} do
+    asked(id)
+    ended(id, "elixir", "completed", verdict("elixir", "approved"))
+    ended(id, "rust", "completed", verdict("elixir", "approved"))
+
+    assert {:failed, ["rust"], extra} = result(id)
+
+    assert extra =~ "no verdict"
+  end
+
+  test "a verdict that is not one of the contract's three is not an approval", %{id: id} do
+    asked(id)
+    ended(id, "elixir", "completed", verdict("elixir", "approved"))
+    ended(id, "rust", "completed", verdict("rust", "looks fine to me"))
+
+    assert {:failed, ["rust"], extra} = result(id)
+
+    assert extra =~ "no verdict"
+  end
+
+  test "a blocking finding is revised even when another lens could not review", %{id: id} do
+    asked(id)
+    ended(id, "elixir", "failed")
+
+    ended(
+      id,
+      "rust",
+      "completed",
+      verdict("rust", "needs_revision", [blocking("Unwrap on a Result")])
+    )
+
+    assert result(id) == {:revising, 1}
+  end
+
+  test "a lens that could not review fails the ticket without waiting for the others", %{id: id} do
+    asked(id)
+    ended(id, "rust", "failed")
+
+    assert {:failed, ["rust"], _} = result(id)
+  end
+
+  test "an advisory lens that is still running is waited for", %{gh: gh, id: id} do
+    lens(gh, "elixir", "---\nname: elixir\nblocking: false\n---\nthe elixir lens")
+    asked(id)
+    ended(id, "rust", "completed", verdict("rust", "approved"))
+
+    assert {:waiting, message} = result(id)
+
+    assert message =~ "elixir"
+  end
+
+  test "a review of another pull request at the same commit is not this one's", %{id: id} do
+    asked(id)
+    approve_all(id)
+    other = review(id, "rust")
+
+    Repo.update_all(from(w in Workload, where: w.id == ^other.id),
+      set: [workload: put_in(other.workload, ["review", "pullRequestNumber"], "53")]
+    )
+
+    assert {:waiting, message} = result(id)
+
+    assert message =~ "rust"
+    refute message =~ "elixir"
+  end
+
+  # A review of this lens that is newer than the real one, but of another pull request or
+  # head commit, and failed. If it were read, the ticket would not be done.
+  defp newer_failed_review(id, change) do
+    real = review(id, "rust")
+
+    {:ok, copy} =
+      Workloads.create(change.(%{real.workload | "id" => Ecto.UUID.generate()}), parent: id)
+
+    Repo.update_all(from(w in Workload, where: w.id == ^copy.id),
+      set: [state: "failed", inserted_at: NaiveDateTime.add(real.inserted_at, 60)]
+    )
+  end
+
+  test "a newer review of another pull request at the same commit is not read", %{id: id} do
+    asked(id)
+    approve_all(id)
+    newer_failed_review(id, &put_in(&1, ["review", "pullRequestNumber"], "53"))
+
+    assert result(id) == :done
+  end
+
+  test "a newer review of another head commit is not read", %{id: id} do
+    asked(id)
+    approve_all(id)
+    newer_failed_review(id, &put_in(&1, ["repository", "baseCommit"], String.duplicate("d", 40)))
+
+    assert result(id) == :done
+  end
+
   test "a change that needs no lens is done", %{gh: gh, id: id} do
     StandInGitHub.heph_lenses(gh, %{"lenses" => [], "unpacked" => ["docs"], "unowned" => []})
 
