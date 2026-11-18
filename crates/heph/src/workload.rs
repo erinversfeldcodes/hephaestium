@@ -34,6 +34,10 @@ pub struct Request<'a> {
     pub model: &'a str,
     pub timeout_seconds: u64,
     pub budget_usd: f64,
+    /// Who approved the ticket, when it is not whoever is signed in to `gh`.
+    pub approver: Option<&'a str>,
+    /// When it was approved, when that is not now.
+    pub approved_at: Option<Timestamp>,
 }
 
 /// A workload, and what the person who asked for it should be told.
@@ -80,7 +84,7 @@ struct Facts {
 }
 
 /// Read the default branch and its tip, the issue, and the signed-in user.
-fn read(repository: &str, number: i64) -> Result<Facts, CouldNotBuild> {
+fn read(repository: &str, number: i64, approver: Option<&str>) -> Result<Facts, CouldNotBuild> {
     let base = format!("repos/{repository}");
 
     let repo = found(
@@ -121,13 +125,19 @@ fn read(repository: &str, number: i64) -> Result<Facts, CouldNotBuild> {
         )));
     }
 
-    let user = found("user", "GitHub does not say who is signed in to gh")?;
-    let approver = text(&user, "login");
-    if approver.is_empty() {
-        return Err(CouldNotBuild(
-            "GitHub did not give the signed-in user's login".to_owned(),
-        ));
-    }
+    // Who approved it is given, or is whoever is signed in.
+    let approver = if let Some(login) = approver {
+        login.to_owned()
+    } else {
+        let user = found("user", "GitHub does not say who is signed in to gh")?;
+        let login = text(&user, "login");
+        if login.is_empty() {
+            return Err(CouldNotBuild(
+                "GitHub did not give the signed-in user's login".to_owned(),
+            ));
+        }
+        login
+    };
     Ok(Facts {
         branch,
         tip,
@@ -157,7 +167,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         tip,
         issue,
         approver,
-    } = read(repository, request.ticket)?;
+    } = read(repository, request.ticket, request.approver)?;
 
     let mut warnings = Vec::new();
     if let Some(head) = local_head
@@ -207,10 +217,10 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         goal_documents: Vec::new(),
         approval: Some(Approval {
             approved_by: approver,
-            approved_at: Some(Timestamp {
+            approved_at: Some(request.approved_at.unwrap_or(Timestamp {
                 seconds: i64::try_from(now.as_secs()).unwrap_or(i64::MAX),
                 nanos: 0,
-            }),
+            })),
         }),
     };
     Ok(Built { workload, warnings })

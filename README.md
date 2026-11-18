@@ -136,7 +136,8 @@ and prints it as JSON, which is what `executor run` takes. The repository is the
 branch on GitHub and not from your checkout, because a run clones from GitHub and sees
 only what is pushed, and it warns when your checkout is somewhere else. The ticket must
 be an open issue. You are the approver: the workload names the signed-in GitHub user and
-the time. It changes nothing and runs nothing.
+the time, unless `--approver` names a login and `--approved-at` a time, which is how the
+control plane records the maintainer who labelled the ticket. It changes nothing and runs nothing.
 
 `heph run TICKET` is the one command: from inside any project it builds the ticket's
 workload as `heph workload` does, runs the executor on it with delivery, shows what is

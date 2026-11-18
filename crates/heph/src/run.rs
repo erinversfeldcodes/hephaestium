@@ -127,6 +127,9 @@ pub fn run(options: &Options) -> Result<Ended, String> {
             model: &options.model,
             timeout_seconds: options.timeout_seconds,
             budget_usd: options.budget_usd,
+            // Running it is the approval, by whoever is signed in, now.
+            approver: None,
+            approved_at: None,
         },
         options.local_head.as_deref(),
     )
