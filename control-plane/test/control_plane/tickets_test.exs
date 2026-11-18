@@ -2,6 +2,8 @@ defmodule ControlPlane.TicketsTest do
   use ControlPlane.DataCase
   use Oban.Testing, repo: ControlPlane.Repo
 
+  import Ecto.Query
+
   import ControlPlane.Fixtures
 
   alias ControlPlane.{Events, StandInGitHub, Tickets, Workloads}
@@ -248,5 +250,56 @@ defmodule ControlPlane.TicketsTest do
 
     assert :ok = perform_job(ControlPlane.Jobs.RunWorkload, %{"workload_id" => id})
     assert Workloads.get(id).state == "failed"
+  end
+
+  describe "a revision" do
+    setup %{id: id} do
+      revision = %{
+        "pullRequestNumber" => "52",
+        "pullRequestUrl" => @pr,
+        "branch" => "heph/12-x",
+        "attempt" => 1,
+        "failures" => [%{"name" => "ci", "result" => "failure", "excerpt" => "x"}]
+      }
+
+      current = Workloads.get(id).workload
+
+      ControlPlane.Repo.update_all(
+        from(w in ControlPlane.Workload, where: w.id == ^id),
+        set: [workload: Map.put(current, "revision", revision)]
+      )
+
+      :ok
+    end
+
+    test "starting does not touch the ticket's labels: it is already being worked on", %{
+      gh: gh,
+      id: id
+    } do
+      assert :ok = Tickets.started(Workloads.get(id))
+      assert StandInGitHub.writes(gh) == []
+    end
+
+    test "completing says a revision was pushed, not that a pull request was opened", %{
+      gh: gh,
+      id: id
+    } do
+      assert :ok =
+               ended(id, "OUTCOME_COMPLETED", "", %{
+                 "pullRequest" => %{"url" => @pr, "number" => "52"}
+               })
+
+      body = comment(gh)
+      assert body =~ "revision"
+      assert body =~ @pr
+      refute body =~ "opened a pull request"
+    end
+
+    test "a revision that failed ends the ticket failed like any workload", %{gh: gh, id: id} do
+      assert :ok = ended(id, "OUTCOME_FAILED", "the agent changed nothing")
+
+      assert {"POST", _, ["labels[]=heph:failed"]} = hd(StandInGitHub.writes(gh))
+      assert comment(gh) =~ "the agent changed nothing"
+    end
   end
 end
