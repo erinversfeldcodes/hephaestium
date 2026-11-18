@@ -4,6 +4,8 @@ defmodule ControlPlane.GitHub do
   holds no token. Everything it reads, it reads through here.
   """
 
+  alias ControlPlane.Programs
+
   @doc "The command that is run: `gh`, or what the configuration says."
   def command, do: Application.get_env(:control_plane, :intake, []) |> Keyword.get(:gh, "gh")
 
@@ -19,6 +21,15 @@ defmodule ControlPlane.GitHub do
     end
   end
 
+  @doc """
+  Change something on GitHub: a label, a comment. `gh` makes the request with its
+  own credentials, so what it may change is what its login may.
+  """
+  @spec write(String.t(), String.t(), [String.t()]) :: {:ok, term()} | {:error, String.t()}
+  def write(method, endpoint, fields) do
+    run(["api", "-X", method, endpoint | Enum.flat_map(fields, &["-f", &1])])
+  end
+
   @doc "Run a GraphQL query with variables, as decoded JSON."
   @spec graphql(String.t(), keyword()) :: {:ok, term()} | {:error, String.t()}
   def graphql(query, variables) do
@@ -32,6 +43,14 @@ defmodule ControlPlane.GitHub do
   end
 
   defp run(arguments) do
+    if Programs.allowed?(command()) do
+      execute(arguments)
+    else
+      {:error, Programs.refusal(command())}
+    end
+  end
+
+  defp execute(arguments) do
     case System.cmd(command(), arguments, stderr_to_stdout: true) do
       {output, 0} ->
         case Jason.decode(output) do
