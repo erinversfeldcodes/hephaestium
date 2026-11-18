@@ -8,8 +8,8 @@ mod common;
 use std::path::PathBuf;
 
 use common::{
-    BRANCH, IDENTITY, Rig, agent_script, finished, gh_was_called, git, kinds, manifest, rig,
-    run_with_env, stand_in_gh, workload,
+    IDENTITY, Rig, agent_script, finished, gh_was_called, git, kinds, manifest, rig, run_with_env,
+    stand_in_gh, workload,
 };
 use contracts::v1alpha1::Workload;
 use contracts::v1alpha1::event::Kind;
@@ -19,6 +19,10 @@ use executor::claude_code::ClaudeCode;
 use serde_json::{Value, json};
 
 type Edit = fn(&mut Value);
+
+/// The pull request's branch. It is not the name a ticket's own branch would get, so a
+/// revision pushed to a new branch named for its ticket would be seen.
+const PR_BRANCH: &str = "heph/12-an-earlier-title-of-the-ticket";
 
 const PULL: &str = "https://github.com/erinversfeldcodes/gazebolang/pull/52";
 
@@ -38,7 +42,7 @@ fn revision(branch: &str) -> Value {
 /// and the commit's id: the head a revision starts from.
 fn rig_with_branch(name: &str) -> (Rig, String) {
     let rig = rig(name, &manifest(&[]));
-    git(&rig.source, &["switch", "-q", "-c", BRANCH]);
+    git(&rig.source, &["switch", "-q", "-c", PR_BRANCH]);
     rig.scratch
         .write("source/web/first.txt", "the first attempt\n");
     git(&rig.source, &["add", "."]);
@@ -53,7 +57,7 @@ fn rig_with_branch(name: &str) -> (Rig, String) {
 
 fn revising(head: &str, edit: impl FnOnce(&mut Value)) -> Value {
     let mut value = workload(head);
-    value["revision"] = revision(BRANCH);
+    value["revision"] = revision(PR_BRANCH);
     edit(&mut value);
     value
 }
@@ -96,7 +100,7 @@ fn a_revision_is_pushed_to_the_pull_requests_branch_and_opens_no_pull_request() 
         "the existing pull request is the one reported"
     );
     assert_eq!(pr.number, 52);
-    assert_eq!(pr.head_branch, BRANCH);
+    assert_eq!(pr.head_branch, PR_BRANCH);
     assert_eq!(
         ran.record()
             .pull_request
@@ -107,7 +111,7 @@ fn a_revision_is_pushed_to_the_pull_requests_branch_and_opens_no_pull_request() 
     );
 
     assert_eq!(
-        git(&source, &["rev-parse", &format!("{BRANCH}^")]),
+        git(&source, &["rev-parse", &format!("{PR_BRANCH}^")]),
         head,
         "one commit on top of the branch's head"
     );
@@ -123,7 +127,7 @@ fn a_revision_is_pushed_to_the_pull_requests_branch_and_opens_no_pull_request() 
 fn a_revision_whose_branch_has_moved_is_not_forced() {
     let (rig, head) = rig_with_branch("revision-moved");
     // Someone pushed to the branch after the revision's base was chosen.
-    git(&rig.source, &["switch", "-q", BRANCH]);
+    git(&rig.source, &["switch", "-q", PR_BRANCH]);
     rig.scratch
         .write("source/web/second.txt", "a person's commit\n");
     git(&rig.source, &["add", "."]);
@@ -141,7 +145,7 @@ fn a_revision_whose_branch_has_moved_is_not_forced() {
     assert_eq!(outcome, Outcome::Failed);
     assert!(reason.contains("could not push"), "{reason}");
     assert_eq!(
-        git(&source, &["rev-parse", BRANCH]),
+        git(&source, &["rev-parse", PR_BRANCH]),
         moved,
         "the branch is as the person left it: nothing was forced"
     );
@@ -283,4 +287,31 @@ fn output_past_the_cap_is_cut_and_says_so() {
         prompt.len()
     );
     assert!(prompt.contains("truncated"), "it says it was cut");
+}
+
+#[test]
+fn all_the_output_together_is_capped_not_only_each_part() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let long = "y".repeat(200_000);
+    let prompt = prompt_of(&revising(head, |v| {
+        v["revision"]["failures"] = json!([
+            {"name": "one", "result": "failure", "excerpt": long},
+            {"name": "two", "result": "failure", "excerpt": long},
+            {"name": "three", "result": "failure", "excerpt": long},
+            {"name": "four", "result": "failure", "excerpt": long},
+            {"name": "five", "result": "failure", "excerpt": long},
+        ]);
+    }));
+
+    assert!(
+        prompt.len() < 30_000,
+        "the prompt is {} bytes",
+        prompt.len()
+    );
+    for name in ["one", "two", "three", "four", "five"] {
+        assert!(
+            prompt.contains(&format!("Check `{name}`")),
+            "every failing check is still named: {name}"
+        );
+    }
 }
