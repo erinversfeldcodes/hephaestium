@@ -17,3 +17,4 @@ pub mod manifest;
 pub mod process;
 pub mod schema;
 pub mod sync;
+pub mod workload;

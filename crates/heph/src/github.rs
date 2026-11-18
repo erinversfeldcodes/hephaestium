@@ -56,8 +56,13 @@ impl std::fmt::Display for CouldNotRead {
     }
 }
 
-/// Read one endpoint.
-fn get(endpoint: &str) -> Result<Fetched, CouldNotRead> {
+/// Read one endpoint, with `gh api`.
+///
+/// # Errors
+///
+/// Returns why `gh` could not be run at all. A response that is an error, or is
+/// not JSON, is a [`Fetched`] and not an error here.
+pub fn get(endpoint: &str) -> Result<Fetched, CouldNotRead> {
     let output = match Command::new("gh").args(["api", endpoint]).output() {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

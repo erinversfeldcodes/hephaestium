@@ -130,6 +130,14 @@ covers the branch. It changes nothing unless given `--yes`, prints the exact req
 first, and never modifies a ruleset that exists. See
 [ADR-0018](./docs/adr/0018-changing-github-is-an-explicit-act-and-never-modifies-what-exists.md).
 
+`heph workload TICKET` builds the workload for a ticket on the repository you are in
+and prints it as JSON, which is what `executor run` takes. The repository is the
+`origin` of the checkout (or `--repo`); the run starts from the tip of the default
+branch on GitHub and not from your checkout, because a run clones from GitHub and sees
+only what is pushed, and it warns when your checkout is somewhere else. The ticket must
+be an open issue. You are the approver: the workload names the signed-in GitHub user and
+the time. It changes nothing and runs nothing.
+
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of
