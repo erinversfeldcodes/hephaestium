@@ -49,6 +49,7 @@ fn check_values(workload: &Workload) -> Result<(), String> {
     }
 
     check_limits(workload)?;
+    check_revision(workload)?;
 
     if !repository.manifest_path.is_empty()
         && !Path::new(&repository.manifest_path)
@@ -59,6 +60,50 @@ fn check_values(workload: &Workload) -> Result<(), String> {
             "the manifest path {:?} is not a path inside the repository",
             repository.manifest_path
         ));
+    }
+    Ok(())
+}
+
+/// What a revision is pushed to and told. The branch goes to `git push`, so it
+/// must be one the runtime made and nothing that could be taken for an option or
+/// a way to another ref; the pull request must be a GitHub address, and there
+/// must be something that failed.
+fn check_revision(workload: &Workload) -> Result<(), String> {
+    let Some(revision) = workload.revision.as_ref() else {
+        return Ok(());
+    };
+    let branch = &revision.branch;
+    let rest = branch.strip_prefix("heph/");
+    if rest.is_none_or(|rest| {
+        rest.is_empty()
+            || rest
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || !rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    }) {
+        return Err(format!(
+            "the revision's branch {branch:?} is not one the runtime made (heph/ and then letters, digits, - _ . and /)"
+        ));
+    }
+    if revision.pull_request_number <= 0 {
+        return Err("the revision's pull request number is not above zero".to_owned());
+    }
+    if !revision.pull_request_url.starts_with("https://github.com/") {
+        return Err(format!(
+            "the revision's pull request {:?} is not a GitHub address",
+            revision.pull_request_url
+        ));
+    }
+    if revision.attempt <= 0 {
+        return Err("the revision's attempt is not above zero".to_owned());
+    }
+    if revision.failures.is_empty() {
+        return Err("the revision names no failing check".to_owned());
+    }
+    if revision.failures.iter().any(|f| f.name.trim().is_empty()) {
+        return Err("a failing check in the revision has no name".to_owned());
     }
     Ok(())
 }

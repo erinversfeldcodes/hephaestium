@@ -1,5 +1,6 @@
 //! Delivery: commit the agent's work, push it to a branch and open the pull
-//! request.
+//! request. For a revision the branch is the pull request's own and nothing is
+//! opened.
 //!
 //! This is the only step that holds the token that can push, and it runs after
 //! the agent has ended and the gates have passed. The token reaches `git push`
@@ -140,7 +141,6 @@ pub fn deliver(
     gh: &str,
     token: &str,
 ) -> Result<PullRequestOpened, String> {
-    let repository = workload.repository.as_ref().expect("checked when read");
     let ticket = workload.ticket.clone().unwrap_or_default();
 
     let message_path = workspace.join(MESSAGE_FILE);
@@ -166,7 +166,12 @@ pub fn deliver(
         return Err("the agent changed nothing, so there is nothing to deliver".to_owned());
     }
 
-    let branch = branch_for(ticket.number, &ticket.title);
+    // A revision goes on the pull request's own branch; any other workload on a
+    // new one named for its ticket.
+    let branch = workload.revision.as_ref().map_or_else(
+        || branch_for(ticket.number, &ticket.title),
+        |revision| revision.branch.clone(),
+    );
     run(
         &["git", "switch", "-c", &branch],
         workspace,
@@ -198,8 +203,34 @@ pub fn deliver(
         &format!("could not push {branch}"),
     )?;
 
+    // A revision's pull request exists: pushing to its branch is all there is to do.
+    // The push above is a plain one, so a branch that has moved is refused, never
+    // forced.
+    if let Some(revision) = workload.revision.as_ref() {
+        return Ok(PullRequestOpened {
+            url: revision.pull_request_url.clone(),
+            number: revision.pull_request_number,
+            head_branch: branch,
+        });
+    }
+
+    open_pull_request(workload, workspace, gh, token, &branch, &message, &subject)
+}
+
+/// Open the pull request for a branch that was pushed.
+fn open_pull_request(
+    workload: &Workload,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    branch: &str,
+    message: &str,
+    subject: &str,
+) -> Result<PullRequestOpened, String> {
+    let repository = workload.repository.as_ref().expect("checked when read");
+    let ticket = workload.ticket.clone().unwrap_or_default();
     let body_path = workspace.with_file_name(format!("{}.pr-body.md", workload.id));
-    std::fs::write(&body_path, body(workload, &message, ticket.number))
+    std::fs::write(&body_path, body(workload, message, ticket.number))
         .map_err(|e| format!("could not write the pull request's body: {e}"))?;
     let repository_name = format!("{}/{}", repository.owner, repository.name);
     let lines = run(
@@ -210,11 +241,11 @@ pub fn deliver(
             "--repo",
             &repository_name,
             "--head",
-            &branch,
+            branch,
             "--base",
             &repository.base_branch,
             "--title",
-            &subject,
+            subject,
             "--body-file",
             &body_path.display().to_string(),
         ],
@@ -237,7 +268,7 @@ pub fn deliver(
     Ok(PullRequestOpened {
         url,
         number,
-        head_branch: branch,
+        head_branch: branch.to_owned(),
     })
 }
 
