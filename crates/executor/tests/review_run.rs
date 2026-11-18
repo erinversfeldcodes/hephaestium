@@ -249,6 +249,46 @@ fn a_review_that_adds_a_file_fails_and_keeps_no_verdict() {
 }
 
 #[test]
+fn a_review_that_edits_a_file_bootstrap_had_already_changed_fails() {
+    // The workspace is not clean when the agent starts: a bootstrap step changed a
+    // tracked file. The file's status is the same after, so only its contents say.
+    let steps: [(&[&str], Option<&str>, u64); 1] =
+        [(&["sh", "-c", "echo bootstrap >> README.md"], None, 30)];
+    let (rig, head) = rig_with_change("review-dirty", &manifest(&steps));
+
+    let ran = review(
+        rig,
+        &review_of(&head),
+        &writes(&verdict(&head).to_string(), "echo more >> README.md;"),
+    );
+
+    failed_because(&ran, &["changed", "already"]);
+}
+
+#[test]
+fn bootstrap_changes_before_the_agent_runs_are_not_the_reviews() {
+    let steps: [(&[&str], Option<&str>, u64); 1] = [(
+        &[
+            "sh",
+            "-c",
+            "echo bootstrap >> README.md; echo built > built.txt",
+        ],
+        None,
+        30,
+    )];
+    let (rig, head) = rig_with_change("review-bootstrap", &manifest(&steps));
+
+    let ran = review(
+        rig,
+        &review_of(&head),
+        &writes(&verdict(&head).to_string(), ""),
+    );
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+}
+
+#[test]
 fn a_review_that_commits_fails() {
     let (rig, head) = rig_with_change("review-commit-made", &manifest(&[]));
 
@@ -307,6 +347,16 @@ fn the_prompt_of_a_review_names_the_lens_the_change_the_commit_and_where_the_ver
         prompt.contains("#12") || prompt.contains("Make the reset spec wait"),
         "what the ticket asked for is there: {prompt}"
     );
+}
+
+#[test]
+fn the_prompt_of_a_review_reads_the_change_against_the_repositorys_own_base_branch() {
+    let mut value = review_of("0123456789abcdef0123456789abcdef01234567");
+    value["repository"]["baseBranch"] = json!("trunk");
+
+    let prompt = prompt_of(&value);
+
+    assert!(prompt.contains("git diff origin/trunk...HEAD"), "{prompt}");
 }
 
 #[test]
