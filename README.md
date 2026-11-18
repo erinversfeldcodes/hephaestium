@@ -138,6 +138,17 @@ only what is pushed, and it warns when your checkout is somewhere else. The tick
 be an open issue. You are the approver: the workload names the signed-in GitHub user and
 the time. It changes nothing and runs nothing.
 
+`heph run TICKET` is the one command: from inside any project it builds the ticket's
+workload as `heph workload` does, runs the executor on it with delivery, shows what is
+happening one line at a time (the workspace, what the agent says and does, each gate,
+the pull request), and ends with the outcome, the cost and the pull request. The run is
+kept in a directory of its own outside your project, under
+`~/.local/state/hephaestium/runs/` (or `$XDG_STATE_HOME`), with the workload, the events,
+the executor's output, the run record and the workspace. The tokens are found in the
+environment or in `~/.config/hephaestium/github-token` and `claude-token`. It exits 0
+if the workload completed and 1 if it ended any other way. Interrupting it does not yet
+stop the agent.
+
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of
