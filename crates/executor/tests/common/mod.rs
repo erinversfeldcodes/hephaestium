@@ -171,6 +171,17 @@ pub fn run_with(
     transcript: Option<&str>,
     extra: &[&str],
 ) -> Ran {
+    run_with_env(scratch, workload, transcript, extra, &[])
+}
+
+/// As [`run_with`], with these variables set in the executor's environment.
+pub fn run_with_env(
+    scratch: Scratch,
+    workload: &Value,
+    transcript: Option<&str>,
+    extra: &[&str],
+    environment: &[(&str, &str)],
+) -> Ran {
     scratch.write("workload.json", &workload.to_string());
     let mut command = Command::new(env!("CARGO_BIN_EXE_executor"));
     command
@@ -187,7 +198,7 @@ pub fn run_with(
             .arg("--transcript")
             .arg(scratch.write("transcript.jsonl", text));
     }
-    command.args(extra);
+    command.args(extra).envs(environment.iter().copied());
     let output = command.output().expect("the executor to run");
     Ran { output, scratch }
 }
