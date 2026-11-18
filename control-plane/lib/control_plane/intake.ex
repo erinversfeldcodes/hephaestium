@@ -14,7 +14,7 @@ defmodule ControlPlane.Intake do
   about, is not an approval.
   """
 
-  alias ControlPlane.{GitHub, Runner, Workloads}
+  alias ControlPlane.{GitHub, Programs, Runner, Workloads}
 
   @label "heph:ready"
   @writers ~w(admin maintain write)
@@ -191,9 +191,13 @@ defmodule ControlPlane.Intake do
       approval.text
     ]
 
-    case System.cmd(heph(), arguments, stderr_to_stdout: true) do
-      {output, 0} -> check_built(output, number, approval)
-      {output, _} -> {:could_not_build, String.trim(output)}
+    if Programs.allowed?(heph()) do
+      case System.cmd(heph(), arguments, stderr_to_stdout: true) do
+        {output, 0} -> check_built(output, number, approval)
+        {output, _} -> {:could_not_build, String.trim(output)}
+      end
+    else
+      {:could_not_build, Programs.refusal(heph())}
     end
   rescue
     error in ErlangError ->

@@ -18,7 +18,7 @@ defmodule ControlPlane.Jobs.RunWorkload do
       states: [:available, :scheduled, :executing, :retryable]
     ]
 
-  alias ControlPlane.{Events, Runner, Workloads}
+  alias ControlPlane.{Events, Runner, Tickets, Workloads}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"workload_id" => id}, attempt: attempt, max_attempts: max}) do
@@ -43,6 +43,9 @@ defmodule ControlPlane.Jobs.RunWorkload do
 
         if last_attempt? do
           Workloads.fail(workload.id, message)
+          # It never ran, but the ticket should say what became of it.
+          Tickets.started(workload)
+          Tickets.ended(Workloads.get(workload.id))
         else
           Workloads.release(workload.id)
         end
@@ -61,10 +64,23 @@ defmodule ControlPlane.Jobs.RunWorkload do
     ])
   end
 
+  defp usable(path) do
+    cond do
+      not ControlPlane.Programs.allowed?(path) ->
+        {:error, {:refused, ControlPlane.Programs.refusal(path)}}
+
+      File.regular?(path) ->
+        {:ok, path}
+
+      true ->
+        {:error, {:no_such_executor, path}}
+    end
+  end
+
   defp find_executor do
     case Runner.config(:executor) || System.find_executable("executor") do
       nil -> {:error, :no_executor}
-      path -> if File.regular?(path), do: {:ok, path}, else: {:error, {:no_such_executor, path}}
+      path -> usable(path)
     end
   end
 
@@ -95,6 +111,9 @@ defmodule ControlPlane.Jobs.RunWorkload do
         {:line, 1_048_576},
         {:args, ["-c", ~s(log=$1; shift; exec "$@" 2>>"$log"), "sh", log, executor | arguments]}
       ])
+
+    # The executor is running: the ticket stops looking approved.
+    Tickets.started(workload)
 
     state = %{
       workload: workload,
@@ -187,6 +206,7 @@ defmodule ControlPlane.Jobs.RunWorkload do
         Workloads.fail(id, "the executor exited (status #{status}) without saying how it ended")
     end
 
+    Tickets.ended(Workloads.get(id))
     :ok
   end
 end

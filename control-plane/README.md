@@ -30,6 +30,15 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   while no one without write access has edited the ticket since. Anything GitHub or
   `heph` cannot say is not an approval. An Oban job (`ControlPlane.Jobs.Intake`)
   runs it every minute for each repository in `HEPH_REPOSITORIES`.
+- `ControlPlane.Tickets` moves a ticket's labels as its workload progresses: when
+  the executor starts, `heph:running` is added and `heph:ready` (the approval, now
+  spent) is removed; when it ends, the label that says how is left (`heph:failed` for
+  a failure or a timeout, `heph:blocked` for a blocked one, none for a cancelled
+  one) and a comment says what happened, with the reason, the question for a
+  blocked one, the pull request and what it cost. A completed workload's ticket keeps
+  `heph:running` until its pull request is green, which is the next piece. A label
+  or comment that cannot be written never changes how a workload ended. The labels
+  and comments are written with `gh`, so its login must be able to write issues.
 
 ## Running it
 
@@ -52,6 +61,10 @@ separated list of `owner/name`; none if it is not set). It reads GitHub with `gh
 (`HEPH_BIN`); neither is given a token by the control plane, and `gh` uses its own
 login. A repository named there has its approved tickets run for real, with
 delivery.
+
+In the tests, `gh`, `heph` and the executor are refused unless a test stands in for
+them with a program made in the temporary directory (`ControlPlane.Programs`),
+because a test that ran the real ones would act on a real repository.
 
 `DATABASE_URL` (for example `ecto://user:password@host/database`) says where the
 database is when it is not the local default.
