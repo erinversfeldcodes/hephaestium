@@ -35,9 +35,9 @@ defmodule ControlPlane.Settle do
     with {:ok, number} <- pull_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
          {:ok, verdict} <- verdict(workload, pull, number),
-         {:ok, verdict} <- reviews(workload, pull, number, verdict),
+         {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
-         :ok <- act(workload, verdict) do
+         :ok <- act(workload, verdict, notes) do
       outcome(workload, verdict)
     else
       {:error, reason} -> {:waiting, to_string(reason)}
@@ -47,23 +47,70 @@ defmodule ControlPlane.Settle do
 
   defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
+  defp outcome(workload, {:revise_review, _, _, _}), do: {:revising, attempt(workload) + 1}
+
+  defp outcome(workload, {:failed, names, extra, :review}),
+    do: finish(workload, {:failed, names, extra})
+
   defp outcome(workload, verdict), do: finish(workload, verdict)
 
-  # A pull request whose checks are all green is asked to be reviewed, for the
-  # repositories that opted in. If that cannot be done the ticket waits: it is not
-  # done on the strength of checks alone when a review was meant to happen.
+  # A pull request whose checks are all green is reviewed, for the repositories that
+  # opted in, and what the verdicts say decides what becomes of it (ADR 0026). If the
+  # reviews cannot be asked for, the ticket waits: it is not done on the strength of
+  # checks alone when a review was meant to happen.
   defp reviews(workload, %{"state" => "open"} = pull, number, :done) do
     if Reviews.enabled?(workload.repository) and pull["merged"] != true do
-      case Reviews.request(workload, pull, number) do
-        {:ok, _asked} -> {:ok, :done}
+      with {:ok, asked} <- Reviews.request(workload, pull, number) do
+        sha = get_in(pull, ["head", "sha"])
+        reviewed(workload, pull, number, Reviews.assess(workload, number, sha, asked))
+      else
         {:error, message} -> {:waiting, "could not ask for reviews: #{message}"}
       end
     else
-      {:ok, :done}
+      {:ok, :done, nil}
     end
   end
 
-  defp reviews(_workload, _pull, _number, verdict), do: {:ok, verdict}
+  defp reviews(_workload, _pull, _number, verdict), do: {:ok, verdict, nil}
+
+  defp reviewed(_workload, _pull, _number, {:approved, lines}),
+    do: {:ok, :done, "Reviews:\n" <> Enum.join(lines, "\n")}
+
+  defp reviewed(_workload, _pull, _number, {:pending, lenses}),
+    do: {:waiting, "waiting for reviews: #{Enum.join(lenses, ", ")}"}
+
+  defp reviewed(_workload, _pull, _number, {:blocked, reasons}) do
+    lenses = Enum.map(reasons, &elem(&1, 0))
+    lines = for {lens, why} <- reasons, do: "- #{lens}: #{why}. That is no approval."
+    {:ok, {:failed, lenses, Enum.join(lines, "\n"), :review}, nil}
+  end
+
+  defp reviewed(workload, pull, number, {:revise, findings}) do
+    case revisable(workload, {pull, number}) do
+      :yes ->
+        {:ok, {:revise_review, findings, pull, number}, nil}
+
+      why ->
+        lenses = findings |> Enum.map(& &1.lens) |> Enum.uniq()
+
+        {:ok, {:failed, lenses, not_revised(workload, why) <> "\n\n" <> found(findings), :review},
+         nil}
+    end
+  end
+
+  defp found(findings) do
+    Enum.map_join(findings, "\n", fn %{lens: lens, finding: finding} ->
+      "- #{lens} [#{finding["severity"]}] #{finding["title"]}: #{finding["evidence"]}" <>
+        if(finding["revision"], do: " Revise: #{finding["revision"]}", else: "")
+    end)
+  end
+
+  defp not_revised(_workload, :off), do: "It was not revised: revisions are off."
+  defp not_revised(_workload, {:no, reason}), do: "It was not revised: #{reason}."
+
+  defp not_revised(workload, :exhausted) do
+    "It was not revised again: revisions made #{attempt(workload)} of #{revisions()}."
+  end
 
   # Merging a pull request whose every check is green, for the repositories that
   # opted in (`HEPH_AUTOMERGE`). It is never a bypass: GitHub's own account of the pull
@@ -72,10 +119,7 @@ defmodule ControlPlane.Settle do
   # those rules would otherwise merge a blocked pull request through the API without
   # anyone saying so. Anything else is reported on the ticket and left to a person.
   defp merge(workload, %{"state" => "open"} = pull, number, :done) when pull != %{} do
-    # Until the verdicts of the reviews that were asked for count, nothing is merged
-    # on the strength of the checks alone.
-    if automerge?(workload.repository) and not Reviews.enabled?(workload.repository) and
-         pull["merged"] != true do
+    if automerge?(workload.repository) and pull["merged"] != true do
       merge_open(workload, pull, number)
     else
       {:ok, :done}
@@ -144,7 +188,7 @@ defmodule ControlPlane.Settle do
 
   # A verdict that is a rerun asks GitHub to re-run each cancelled job and counts the
   # ones it accepted; any other verdict is written to the ticket.
-  defp act(workload, {:rerun, runs}) do
+  defp act(workload, {:rerun, runs}, _notes) do
     results =
       for {name, id} <- runs do
         case GitHub.write("POST", "repos/#{workload.repository}/actions/jobs/#{id}/rerun", []) do
@@ -160,17 +204,37 @@ defmodule ControlPlane.Settle do
     Enum.find(results, :ok, &match?({:error, _}, &1))
   end
 
-  # A revision: the stored workload again, on the pull request's head, told which
-  # checks failed and what they said. It is kept, queued and the first workload
-  # handed on in one step; the ticket is told afterwards, and a comment that
-  # cannot be written does not undo the revision.
-  defp act(workload, {:revise, runs, pull, number}) do
-    attempt = attempt(workload) + 1
-
+  # A revision: the stored workload again, on the pull request's head, told what is
+  # wrong: the checks that failed and what they said, or the blocking findings of the
+  # reviews. It is kept, queued and the first workload handed on in one step; the
+  # ticket is told afterwards, and a comment that cannot be written does not undo the
+  # revision.
+  defp act(workload, {:revise, runs, pull, number}, _notes) do
     failures =
       for {name, run} <- runs do
         %{"name" => name, "result" => run["conclusion"], "excerpt" => excerpt(workload, run)}
       end
+
+    revise(workload, failures, pull, number, &Tickets.revising/4)
+  end
+
+  defp act(workload, {:revise_review, findings, pull, number}, _notes) do
+    failures =
+      for %{lens: lens, finding: finding} <- findings do
+        %{
+          "name" => "#{lens} review: #{finding["title"]}",
+          "result" => "needs_revision",
+          "excerpt" => finding_text(finding)
+        }
+      end
+
+    revise(workload, failures, pull, number, &Tickets.revising_for_review/4)
+  end
+
+  defp act(workload, verdict, notes), do: write(workload, verdict, notes)
+
+  defp revise(workload, failures, pull, number, tell) do
+    attempt = attempt(workload) + 1
 
     revision =
       workload.workload
@@ -186,7 +250,7 @@ defmodule ControlPlane.Settle do
 
     case Workloads.hand_on(workload, revision) do
       {:ok, _child} ->
-        Tickets.revising(workload, Enum.map(failures, & &1["name"]), attempt, revisions())
+        tell.(workload, Enum.map(failures, & &1["name"]), attempt, revisions())
         :ok
 
       {:error, reason} ->
@@ -194,10 +258,24 @@ defmodule ControlPlane.Settle do
     end
   end
 
-  defp act(workload, verdict), do: write(workload, verdict)
+  defp finding_text(finding) do
+    [
+      "[#{finding["severity"]}] #{finding["title"]}",
+      if(finding["location"], do: "Location: #{finding["location"]}"),
+      "Evidence: #{finding["evidence"]}",
+      if(finding["revision"], do: "What to revise: #{finding["revision"]}")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
 
-  defp write(workload, verdict) do
-    case Tickets.settled(workload, verdict) do
+  defp write(workload, {:failed, names, extra, :review}, _notes),
+    do: write_to(Tickets.settled(workload, {:review_failed, names, extra}))
+
+  defp write(workload, verdict, notes), do: write_to(Tickets.settled(workload, verdict, notes))
+
+  defp write_to(result) do
+    case result do
       :ok -> :ok
       {:error, message} -> {:error, "could not write to the ticket: #{message}"}
     end

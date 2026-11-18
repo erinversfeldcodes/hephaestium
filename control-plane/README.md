@@ -96,9 +96,17 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   asked for once per pull request, head commit and lens; a new head is a new review.
   A lens whose text is not in the release is reported, not skipped silently. If the
   lenses cannot be worked out, the ticket waits. A review leaves the ticket alone.
-  **Interim:** until verdicts count (#105, slice 4), the ticket is still marked done
-  when its checks are green, and nothing is auto-merged for a repository whose
-  reviews are on.
+  What the verdicts at the pull request's head commit say decides what happens next
+  (ADR 0026), in this order: a lens that blocks and found something that blocks starts
+  a revision told each blocking finding, from the same budget as a failing check
+  (`HEPH_REVISIONS`); with none left, or off, the ticket is `heph:failed` and says what
+  was found; a lens that could not review (its run did not end well, it left no
+  verdict, or its text is not in the release) fails the ticket, and is never an
+  approval; a review still running makes the ticket wait; and when every lens that
+  blocks approved, the ticket is done and says what each lens said. A lens whose own
+  text says `blocking: false` is advisory: it is waited for and reported and never
+  stops the change. A verdict for another head commit never counts. Merging, when
+  it is on, happens only after that, and only when GitHub says `clean`.
 
 ## Running it
 

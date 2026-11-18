@@ -57,6 +57,143 @@ defmodule ControlPlane.Reviews do
     end
   end
 
+  @doc """
+  What the verdicts of the reviews at this head commit say, for the lenses `asked`
+  names, in this order of what matters:
+
+    * `{:revise, findings}`: a lens that blocks found something that blocks;
+    * `{:blocked, reasons}`: a lens that blocks could not review, so there is no
+      approval (its run did not end well, it left no verdict, or it has no text);
+    * `{:pending, lenses}`: a review is still to end;
+    * `{:approved, lines}`: every lens that blocks approved, and the lines say what
+      each lens said, and what no lens looked at.
+
+  A lens whose own text says `blocking: false` is advisory: it is waited for and
+  reported, and what it says never stops the change. A verdict for another commit is
+  never read here, because the reviews are looked up at this one.
+  """
+  @spec assess(%Workload{}, String.t(), String.t(), result()) ::
+          {:revise, [map()]}
+          | {:blocked, [{String.t(), String.t()}]}
+          | {:pending, [String.t()]}
+          | {:approved, [String.t()]}
+  def assess(%Workload{} = workload, number, sha, asked) do
+    found = reviews_at(workload.repository, number, sha)
+
+    lenses =
+      (asked.requested ++ asked.existing)
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.map(&{&1, lens_state(found[&1], &1, sha)})
+
+    missing = for pack <- asked.missing, do: {pack, {:blocking, {:could_not, "no lens text"}}}
+    all = lenses ++ missing
+
+    revise =
+      for {pack, {:blocking, {:said, verdict}}} <- all,
+          verdict["verdict"] != "approved",
+          finding <- verdict["findings"] || [],
+          finding["blocking"] == true,
+          do: %{lens: pack, finding: finding}
+
+    blocked = for {pack, {:blocking, {:could_not, why}}} <- all, do: {pack, why}
+    pending = for {pack, {_, :pending}} <- all, do: pack
+
+    cond do
+      revise != [] -> {:revise, revise}
+      blocked != [] -> {:blocked, blocked}
+      pending != [] -> {:pending, pending}
+      true -> {:approved, summary(all, asked)}
+    end
+  end
+
+  # Whether a lens blocks, and what its review came to.
+  defp lens_state(nil, _pack, _sha),
+    do: {:blocking, {:could_not, "its review was never asked for"}}
+
+  defp lens_state(%Workload{} = review, pack, sha) do
+    kind = if blocks?(review), do: :blocking, else: :advisory
+
+    outcome =
+      cond do
+        review.state not in Workloads.terminal_states() ->
+          :pending
+
+        review.state == "completed" ->
+          case review.record do
+            %{"review" => %{"verdict" => verdict, "commit" => ^sha, "lens" => ^pack} = said}
+            when verdict in ["approved", "needs_revision", "failed"] ->
+              {:said, said}
+
+            _ ->
+              {:could_not, "it completed with no verdict in its record"}
+          end
+
+        true ->
+          {:could_not, "its review ended #{review.state}" <> reason(review.reason)}
+      end
+
+    {kind, outcome}
+  end
+
+  defp reason(reason) when reason in [nil, ""], do: ""
+  defp reason(reason), do: ": #{reason}"
+
+  # A lens says in its own front matter whether it blocks. Without it, it does.
+  defp blocks?(%Workload{workload: %{"review" => %{"lensDocument" => text}}}) do
+    case Regex.run(~r/\A---\n(.*?)\n---/s, text) do
+      [_, front] -> not Regex.match?(~r/^blocking:\s*false\s*$/m, front)
+      _ -> true
+    end
+  end
+
+  defp blocks?(_), do: true
+
+  defp summary(all, asked) do
+    lines =
+      for {pack, {kind, outcome}} <- all do
+        "- #{pack}: " <> said(kind, outcome)
+      end
+
+    lines ++
+      for(
+        {text, items} <- [
+          {"No lens applied to the components", asked.unpacked},
+          {"No component owns the files", asked.unowned}
+        ],
+        items != [],
+        do: "#{text}: #{Enum.join(items, ", ")}."
+      )
+  end
+
+  defp said(:blocking, {:said, verdict}), do: verdict["verdict"]
+
+  defp said(:advisory, {:said, verdict}),
+    do: "#{verdict["verdict"]} (advisory, so it did not block)"
+
+  defp said(kind, {:could_not, why}),
+    do:
+      "no verdict, #{why}" <>
+        if(kind == :advisory, do: " (advisory, so it did not block)", else: "")
+
+  defp said(_kind, :pending), do: "still running"
+
+  # The newest review of each lens at this pull request and head commit.
+  defp reviews_at(repository, number, sha) do
+    number = to_string(number)
+
+    Repo.all(
+      from(w in Workload,
+        where:
+          w.repository == ^repository and
+            fragment("?->'review'->>'pullRequestNumber' = ?", w.workload, ^number) and
+            fragment("?->'repository'->>'baseCommit' = ?", w.workload, ^sha),
+        order_by: [asc: w.inserted_at]
+      )
+    )
+    |> Map.new(&{&1.workload["review"]["lens"], &1})
+  end
+
   defp athenaeum_ref do
     case settings()[:athenaeum_ref] do
       ref when is_binary(ref) and ref != "" ->
