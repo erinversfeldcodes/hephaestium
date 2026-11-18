@@ -42,7 +42,7 @@ fn an_unknown_gate_is_not_run_and_the_declared_ones_are_named() {
     let error = run_named(
         &unwrapped(),
         "missing",
-        &[],
+        None,
         &scratch.0,
         no_environment,
         |_| {},
@@ -65,7 +65,7 @@ fn a_gate_whose_requirement_is_unset_is_not_run_and_its_command_does_not_run() {
     let error = run_named(
         &unwrapped(),
         "needy",
-        &[],
+        None,
         &scratch.0,
         |name| environment.get(name).map(|v| (*v).to_owned()),
         |_| {},
@@ -91,7 +91,7 @@ fn a_gate_that_applies_to_no_changed_file_is_skipped_and_one_that_does_runs() {
     let skipped = run_named(
         &unwrapped(),
         "docs",
-        &changed,
+        Some(&changed),
         &scratch.0,
         no_environment,
         |_| {},
@@ -103,7 +103,7 @@ fn a_gate_that_applies_to_no_changed_file_is_skipped_and_one_that_does_runs() {
     let ran = run_named(
         &unwrapped(),
         "docs",
-        &["docs/a.md".to_owned()],
+        Some(&["docs/a.md".to_owned()]),
         &scratch.0,
         no_environment,
         |_| {},
@@ -120,7 +120,7 @@ fn a_gate_runs_in_the_directory_it_is_given() {
     let result = run_named(
         &unwrapped(),
         "first",
-        &[],
+        None,
         &scratch.0,
         no_environment,
         |_| {},
@@ -157,4 +157,49 @@ fn the_toolchain_wrapper_goes_in_front_of_a_command_unless_the_caller_is_inside_
         ["nix", "develop", "--command", "npm", "ci"],
         "an empty variable is not inside"
     );
+}
+
+#[test]
+fn an_unknown_change_set_applies_every_gate_and_a_known_empty_one_applies_only_those_with_no_paths()
+{
+    let scratch = Scratch::new("named-known-empty");
+
+    // Unknown: not knowing what changed is no reason to skip a check.
+    let unknown = run_named(
+        &unwrapped(),
+        "docs",
+        None,
+        &scratch.0,
+        no_environment,
+        |_| {},
+    )
+    .expect("a result");
+    assert_eq!(unknown.outcome, Outcome::Passed);
+    assert!(scratch.exists("docs-ran"));
+    std::fs::remove_file(scratch.0.join("docs-ran")).expect("to remove");
+
+    // Known, and nothing changed: a gate that names paths has nothing to check.
+    let known_empty = run_named(
+        &unwrapped(),
+        "docs",
+        Some(&[]),
+        &scratch.0,
+        no_environment,
+        |_| {},
+    )
+    .expect("a result");
+    assert_eq!(known_empty.outcome, Outcome::Skipped);
+    assert!(!scratch.exists("docs-ran"));
+
+    // A gate that names no paths applies whatever changed.
+    let always = run_named(
+        &unwrapped(),
+        "first",
+        Some(&[]),
+        &scratch.0,
+        no_environment,
+        |_| {},
+    )
+    .expect("a result");
+    assert_eq!(always.outcome, Outcome::Passed);
 }

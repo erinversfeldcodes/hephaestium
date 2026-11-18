@@ -235,3 +235,31 @@ fn gates_and_bootstrap_steps_run_in_the_workspace_through_the_toolchain_wrapper(
         "a gate runs from the workspace root"
     );
 }
+
+#[test]
+fn a_workload_whose_agent_changed_nothing_skips_the_gates_that_name_paths_and_runs_the_others() {
+    let scratch = Scratch::new("gates-nothing-changed");
+    let text = manifest(&[])
+        + &gate(
+            "docs-check",
+            "touch docs-ran",
+            30,
+            "when_paths = [\"docs/**\"]\n",
+        )
+        + &gate("always", "exit 0", 30, "");
+    let (_, commit) = source(&scratch, &text);
+
+    let ran = run_with(scratch, &workload(&commit), Some(&transcript()), &[]);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    let events = ran.events();
+    let results = gate_results(&events);
+    assert_eq!(results[0].0, "always");
+    assert_eq!(results[0].1["outcome"], "passed");
+    assert_eq!(results[1].0, "docs-check");
+    assert_eq!(
+        results[1].1["outcome"], "skipped",
+        "nothing changed, so a gate for docs has nothing to check"
+    );
+    assert_eq!(finished(&events).0, Outcome::Completed);
+}
