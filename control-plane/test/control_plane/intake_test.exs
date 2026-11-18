@@ -15,6 +15,8 @@ defmodule ControlPlane.IntakeTest do
     dir = Path.join(System.tmp_dir!(), "cp-intake-#{System.unique_integer([:positive])}")
     stand_in = StandInGitHub.install(dir)
 
+    previous = Application.get_env(:control_plane, :intake)
+
     Application.put_env(:control_plane, :intake,
       gh: stand_in.gh,
       heph: stand_in.heph,
@@ -22,7 +24,7 @@ defmodule ControlPlane.IntakeTest do
     )
 
     on_exit(fn ->
-      Application.delete_env(:control_plane, :intake)
+      Application.put_env(:control_plane, :intake, previous)
       File.rm_rf(dir)
     end)
 
