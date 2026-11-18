@@ -32,7 +32,13 @@ if intake != [] do
   config :control_plane, :intake, intake
 end
 
-# Settling a ticket: how many times a cancelled check is re-run (none unless set).
-if reruns = System.get_env("HEPH_RERUNS") do
-  config :control_plane, :settle, reruns: String.to_integer(reruns)
+# Settling a ticket: how many times a cancelled check is re-run, and how many
+# revisions a failing pull request gets (none of either unless set).
+settle =
+  [reruns: System.get_env("HEPH_RERUNS"), revisions: System.get_env("HEPH_REVISIONS")]
+  |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+  |> Enum.map(fn {key, value} -> {key, String.to_integer(value)} end)
+
+if settle != [] do
+  config :control_plane, :settle, settle
 end

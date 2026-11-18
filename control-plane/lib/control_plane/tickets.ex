@@ -24,6 +24,8 @@ defmodule ControlPlane.Tickets do
   in that order, so the ticket is never without a state.
   """
   @spec started(%Workload{}) :: :ok | {:error, String.t()}
+  def started(%Workload{workload: %{"revision" => _}}), do: :ok
+
   def started(workload) do
     first_error([
       add_label(workload, @running),
@@ -74,14 +76,16 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
-  def settled(workload, {:failed, names}) do
+  def settled(workload, {:failed, names}), do: settled(workload, {:failed, names, nil})
+
+  def settled(workload, {:failed, names, extra}) do
     first_error([
       add_label(workload, @failed),
       remove_label(workload, @running),
       note(
         workload,
         "the pull request's required checks did not pass: #{Enum.join(names, ", ")}." <>
-          reran(workload)
+          reran(workload) <> if(extra, do: "\n\n" <> extra, else: "")
       )
     ])
   end
@@ -91,6 +95,20 @@ defmodule ControlPlane.Tickets do
       remove_label(workload, @running),
       note(workload, "the pull request was closed without being merged.")
     ])
+  end
+
+  @doc """
+  The pull request's checks really failed and a revision has been started: the ticket
+  says which, and that the agent will investigate on the same branch. The labels do
+  not change: the ticket is still being worked on.
+  """
+  @spec revising(%Workload{}, [String.t()], pos_integer(), pos_integer()) ::
+          :ok | {:error, String.t()}
+  def revising(workload, names, attempt, max) do
+    note(
+      workload,
+      "the pull request's checks did not pass: #{Enum.join(names, ", ")}. Starting revision #{attempt} of #{max}: the agent will investigate and push a fix to the same branch."
+    )
   end
 
   # Which cancelled checks were re-run first, if any, and how often.
@@ -143,7 +161,7 @@ defmodule ControlPlane.Tickets do
     record = workload.record || %{}
 
     [
-      "**Hephaestium:** #{headline(workload.state)}",
+      "**Hephaestium:** #{headline(workload.state, revision?(workload))}",
       reason(workload),
       question(workload.state, record),
       pull_request(record),
@@ -153,12 +171,18 @@ defmodule ControlPlane.Tickets do
     |> Enum.join("\n\n")
   end
 
-  defp headline("completed"), do: "the workload completed and opened a pull request."
-  defp headline("failed"), do: "the workload failed."
-  defp headline("timed_out"), do: "the workload timed out."
-  defp headline("blocked"), do: "the workload is blocked."
-  defp headline("cancelled"), do: "the workload was cancelled."
-  defp headline(other), do: "the workload is #{other}."
+  defp headline("completed", true),
+    do: "a revision completed and pushed to the pull request's branch."
+
+  defp headline("completed", _), do: "the workload completed and opened a pull request."
+  defp headline("failed", _), do: "the workload failed."
+  defp headline("timed_out", _), do: "the workload timed out."
+  defp headline("blocked", _), do: "the workload is blocked."
+  defp headline("cancelled", _), do: "the workload was cancelled."
+  defp headline(other, _), do: "the workload is #{other}."
+
+  defp revision?(%Workload{workload: %{"revision" => _}}), do: true
+  defp revision?(_), do: false
 
   defp reason(%{reason: reason}) when reason not in [nil, ""], do: "Why: #{reason}"
   defp reason(_), do: nil

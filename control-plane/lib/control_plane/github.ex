@@ -13,6 +13,21 @@ defmodule ControlPlane.GitHub do
   @spec get(String.t()) :: {:ok, term()} | {:error, String.t()}
   def get(endpoint), do: run(["api", endpoint])
 
+  @doc "Read an endpoint that answers with text, not JSON: a job's log."
+  @spec text(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def text(endpoint) do
+    if Programs.allowed?(command()) do
+      case System.cmd(command(), ["api", endpoint], stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {output, _} -> {:error, String.trim(output)}
+      end
+    else
+      {:error, Programs.refusal(command())}
+    end
+  rescue
+    error in ErlangError -> {:error, "gh could not be run: #{inspect(error.original)}"}
+  end
+
   @doc "Read every page of a list endpoint, as one list."
   @spec get_all(String.t()) :: {:ok, [term()]} | {:error, String.t()}
   def get_all(endpoint) do

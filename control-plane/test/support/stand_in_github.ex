@@ -82,6 +82,10 @@ defmodule ControlPlane.StandInGitHub do
   def respond(%{dir: dir}, endpoint, term),
     do: File.write!(Path.join(dir, "data/#{name(endpoint)}.json"), Jason.encode!(term))
 
+  @doc "Make the stand-in `gh` answer an endpoint with this text, as it is (a job's log)."
+  def respond_text(%{dir: dir}, endpoint, text),
+    do: File.write!(Path.join(dir, "data/#{name(endpoint)}.json"), text)
+
   @doc "Make the stand-in `gh` answer a GraphQL query about this issue number."
   def respond_graphql(%{dir: dir}, number, term),
     do: File.write!(Path.join(dir, "data/graphql_#{number}.json"), Jason.encode!(term))

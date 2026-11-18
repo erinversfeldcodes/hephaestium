@@ -11,8 +11,14 @@ defmodule ControlPlane.Workloads do
   It must be a workload: an id that is a UUID, a repository with an owner and a
   name, and a ticket with a number (a number the mapping writes as a string).
   """
-  @spec create(map()) :: {:ok, %Workload{}} | {:error, :not_a_workload | :already_exists}
-  def create(%{"id" => id, "repository" => %{"owner" => owner, "name" => name}} = workload)
+  @spec create(map(), keyword()) ::
+          {:ok, %Workload{}} | {:error, :not_a_workload | :already_exists}
+  def create(workload, options \\ [])
+
+  def create(
+        %{"id" => id, "repository" => %{"owner" => owner, "name" => name}} = workload,
+        options
+      )
       when is_binary(owner) and is_binary(name) do
     with {:ok, id} <- Ecto.UUID.cast(id),
          {:ok, number} <- ticket_number(workload) do
@@ -21,7 +27,8 @@ defmodule ControlPlane.Workloads do
         repository: "#{owner}/#{name}",
         ticket_number: number,
         state: "queued",
-        workload: workload
+        workload: workload,
+        parent_id: options[:parent]
       }
       |> Ecto.Changeset.change()
       |> Ecto.Changeset.unique_constraint(:id, name: :workloads_pkey)
@@ -35,7 +42,7 @@ defmodule ControlPlane.Workloads do
     end
   end
 
-  def create(_), do: {:error, :not_a_workload}
+  def create(_, _options), do: {:error, :not_a_workload}
 
   @doc "The workloads of a ticket, oldest first."
   @spec for_ticket(String.t(), integer()) :: [%Workload{}]
@@ -170,5 +177,39 @@ defmodule ControlPlane.Workloads do
     )
 
     :ok
+  end
+
+  @doc """
+  The workloads a workload was revised from, oldest first, ending with it: the
+  original, then each revision of its pull request.
+  """
+  @spec chain(%Workload{}) :: [%Workload{}]
+  def chain(%Workload{} = workload), do: chain(workload, [workload])
+
+  defp chain(%Workload{parent_id: nil}, acc), do: acc
+
+  defp chain(%Workload{parent_id: parent_id}, acc) do
+    case get(parent_id) do
+      nil -> acc
+      parent -> chain(parent, [parent | acc])
+    end
+  end
+
+  @doc """
+  Hand a workload's pull request on to a revision: keep the revision, put it on the
+  queue, and mark the workload settled, all or none, so that a revision is started
+  once and a workload that was handed on is never judged again.
+  """
+  @spec hand_on(%Workload{}, map()) :: {:ok, %Workload{}} | {:error, term()}
+  def hand_on(%Workload{} = workload, revision) do
+    Repo.transaction(fn ->
+      with {:ok, child} <- create(revision, parent: workload.id),
+           {:ok, _job} <- ControlPlane.Runner.enqueue(child.id) do
+        settle(workload.id)
+        child
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
   end
 end

@@ -416,4 +416,262 @@ defmodule ControlPlane.SettleTest do
       assert rerun_writes(gh) == []
     end
   end
+
+  describe "revising a pull request whose checks really failed" do
+    @branch "heph/12-an-earlier-title-of-the-ticket"
+    @logs "repos/#{@repo}/actions/jobs/31/logs"
+
+    setup %{gh: gh, id: id} do
+      previous = Application.get_env(:control_plane, :settle)
+      on_exit(fn -> Application.put_env(:control_plane, :settle, previous) end)
+      Application.put_env(:control_plane, :settle, revisions: 2)
+
+      StandInGitHub.respond(gh, @pull, pull_on(@branch))
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          Map.put(run(31, "ci", "completed", "failure"), "output", %{
+            "title" => "1 failed",
+            "summary" => "reset_spec failed"
+          })
+        ])
+      )
+
+      StandInGitHub.respond_text(
+        gh,
+        @logs,
+        Enum.map_join(1..1000, "", &"noise line #{&1}\n") <> "FAILED: reset spec at reset.rs:40\n"
+      )
+
+      %{revised_from: Workloads.get(id)}
+    end
+
+    defp pull_on(ref, repository \\ @repo),
+      do:
+        pull(%{
+          "head" => %{"sha" => @sha, "ref" => ref, "repo" => %{"full_name" => repository}}
+        })
+
+    defp revision_of(id),
+      do: Enum.find(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
+
+    test "a real failure starts a revision from the stored workload, on the head, and says so", %{
+      gh: gh,
+      id: id,
+      revised_from: original
+    } do
+      assert result(id) == {:revising, 1}
+
+      revision = revision_of(id)
+      assert revision.state == "queued"
+      assert revision.workload["id"] == revision.id
+      assert revision.id != id
+      assert revision.workload["repository"]["baseCommit"] == @sha
+      assert revision.workload["ticket"] == original.workload["ticket"]
+      assert revision.workload["approval"] == original.workload["approval"]
+
+      assert %{
+               "pullRequestNumber" => "52",
+               "pullRequestUrl" => @pr_url,
+               "branch" => @branch,
+               "attempt" => 1,
+               "failures" => [%{"name" => "ci", "result" => "failure", "excerpt" => excerpt}]
+             } = revision.workload["revision"]
+
+      assert excerpt =~ "FAILED: reset spec at reset.rs:40"
+      assert excerpt =~ "reset_spec failed"
+      assert byte_size(excerpt) <= 8_000
+      refute excerpt =~ "noise line 1\n", "the tail of the log, not its start"
+
+      assert_enqueued(
+        worker: ControlPlane.Jobs.RunWorkload,
+        args: %{"workload_id" => revision.id}
+      )
+
+      assert Workloads.get(id).settled_at, "the first workload is handed on"
+      assert labels(gh) == []
+      assert [comment] = comments(gh)
+      assert comment =~ "revision 1 of 2"
+      assert comment =~ "ci"
+    end
+
+    test "colour codes in a log do not reach the agent", %{gh: gh, id: id} do
+      StandInGitHub.respond_text(gh, @logs, "\e[31mFAILED\e[0m: the reset spec\n")
+
+      assert result(id) == {:revising, 1}
+      assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
+      assert excerpt =~ "FAILED: the reset spec"
+      refute excerpt =~ "\e["
+    end
+
+    test "a second revision is numbered from the first", %{id: id} do
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+      complete(first.id)
+
+      Workloads.keep_record(first.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      Workloads.settle(id)
+
+      assert Enum.find(Settle.run(), &(&1.workload_id == first.id)).result == {:revising, 2}
+      assert %{"revision" => %{"attempt" => 2}} = revision_of(first.id).workload
+    end
+
+    test "by default nothing is revised", %{id: id} do
+      Application.delete_env(:control_plane, :settle)
+
+      assert result(id) == {:failed, ["ci"]}
+      assert revision_of(id) == nil
+    end
+
+    test "a failure that cannot be read still starts a revision, with what there is", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.fail(gh, @logs, "gh: HTTP 410 Gone")
+
+      assert result(id) == {:revising, 1}
+      assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
+      assert excerpt =~ "reset_spec failed"
+    end
+
+    test "with no output at all the revision says there was none", %{gh: gh, id: id} do
+      StandInGitHub.fail(gh, @logs, "gh: HTTP 410 Gone")
+      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "failure")]))
+
+      assert result(id) == {:revising, 1}
+      assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
+      assert excerpt =~ "no output"
+    end
+
+    test "cancelled checks are never revised", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "cancelled")]))
+
+      assert result(id) == {:failed, ["ci"]}
+      assert revision_of(id) == nil
+    end
+
+    test "a real failure beside a cancelled check is revised, for the real one only", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @rules, [required(["ci", "e2e"])])
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(31, "ci", "completed", "failure"), run(32, "e2e", "completed", "cancelled")])
+      )
+
+      assert result(id) == {:revising, 1}
+      assert [%{"name" => "ci"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
+    test "timed out is revised", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "timed_out")]))
+
+      assert result(id) == {:revising, 1}
+      assert [%{"result" => "timed_out"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
+    test "a pull request that is not on a branch of the runtime's is not revised", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, pull_on("feature/someone-elses"))
+
+      assert {:failed, ["ci"], note} = result(id)
+      assert note =~ "branch"
+      assert revision_of(id) == nil
+      assert hd(comments(gh)) =~ "not revised"
+    end
+
+    test "a pull request from a branch in another repository is not revised", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, pull_on(@branch, "someone/fork"))
+
+      assert {:failed, ["ci"], _} = result(id)
+      assert revision_of(id) == nil
+    end
+
+    test "the revisions are bounded, and the last failure says what each did", %{gh: gh, id: id} do
+      # A chain: the original, a revision that changed nothing, and a revision that pushed.
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+      Workloads.keep_record(first.id, %{"outcome" => "OUTCOME_FAILED"})
+      Workloads.fail(first.id, "the agent changed nothing, so there is nothing to deliver")
+      {:ok, second} = Workloads.create(revision_workload(first.id, 2), parent: first.id)
+
+      Workloads.keep_record(second.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      complete(second.id)
+      Workloads.settle(id)
+
+      assert {:failed, ["ci"], note} =
+               Enum.find(Settle.run(), &(&1.workload_id == second.id)).result
+
+      assert note =~ "2 of 2"
+      assert hd(Enum.reverse(comments(gh))) =~ "the agent changed nothing"
+      assert revision_of(second.id) == nil
+      assert labels(gh) == ["labels[]=heph:failed"]
+    end
+
+    test "a revision that pushed is judged like any workload, and settles when green", %{
+      gh: gh,
+      id: id
+    } do
+      assert result(id) == {:revising, 1}
+      revision = revision_of(id)
+
+      Workloads.keep_record(revision.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      complete(revision.id)
+      StandInGitHub.respond(gh, @runs, runs([run(40, "ci", "completed", "success")]))
+
+      assert Enum.find(Settle.run(), &(&1.workload_id == revision.id)).result == :done
+      assert labels(gh) == ["labels[]=heph:done"]
+    end
+
+    test "a refused read of the pull request waits and starts nothing", %{gh: gh, id: id} do
+      StandInGitHub.fail(gh, @pull, "gh: HTTP 502")
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+    end
+
+    test "settling twice starts one revision", %{id: id} do
+      assert result(id) == {:revising, 1}
+      assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
+      assert length(Workloads.for_ticket(@repo, 12)) == 2
+    end
+  end
+
+  # A workload that ran and completed, as its events say.
+  defp complete(id) do
+    {:ok, _} = Events.append(id, event(id, 1, started()))
+    {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+    :ok
+  end
+
+  defp revision_workload(parent_id, attempt) do
+    parent = Workloads.get(parent_id)
+
+    parent.workload
+    |> Map.put("id", Ecto.UUID.generate())
+    |> Map.put("revision", %{
+      "pullRequestNumber" => "52",
+      "pullRequestUrl" => @pr_url,
+      "branch" => "heph/12-an-earlier-title-of-the-ticket",
+      "attempt" => attempt,
+      "failures" => [%{"name" => "ci", "result" => "failure", "excerpt" => "x"}]
+    })
+  end
 end
