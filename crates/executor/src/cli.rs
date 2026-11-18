@@ -24,8 +24,9 @@ outcome, whatever it was, 1 if it could not be run, and 2 on a usage error.
   --agent-env NAME    a variable the agent may have, if the executor has it;
                       repeatable. The agent has no others.
   --deliver           when the gates pass, commit the agent's work, push a
-                      branch and open the pull request. Needs HEPH_GITHUB_TOKEN
-                      in the environment, which only this step ever holds.
+                      branch and open the pull request. Needs HEPH_GITHUB_TOKEN,
+                      or HEPH_GITHUB_TOKEN_FILE naming a file only you can read;
+                      only this step ever holds it.
   --gh PROGRAM        the GitHub command-line tool to use [default: gh]
   --heartbeat-seconds N  how often a heartbeat is written while the agent runs
                       [default: 30]

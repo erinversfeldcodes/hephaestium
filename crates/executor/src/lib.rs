@@ -7,6 +7,7 @@ pub mod claude_code;
 pub mod cli;
 pub mod deliver;
 pub mod run;
+pub mod secrets;
 pub mod stream;
 pub mod transcript;
 pub mod workload;

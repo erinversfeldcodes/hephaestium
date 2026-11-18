@@ -146,7 +146,10 @@ stands in for any of them (`--transcript` or `--agent-command`, for development)
 With `--deliver`, a workload whose gates passed is committed on a branch of its own,
 pushed, and opened as a pull request; that step alone holds the token that can push
 (`HEPH_GITHUB_TOKEN`), which the bootstrap steps, the gates and the agent never see.
-It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
+Each secret (that token, and `CLAUDE_CODE_OAUTH_TOKEN` for a Claude Code agent) is the
+variable of its name or the contents of the file its `_FILE` variable names, kept
+outside any repository with mode 600; the executor takes it at start and removes both
+from its environment. It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
 be run.
 
 ## What is different
