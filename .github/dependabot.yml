@@ -20,3 +20,13 @@ updates:
     groups:
       cargo:
         update-types: [minor, patch]
+
+  - package-ecosystem: mix
+    directory: /control-plane
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      mix:
+        update-types: [minor, patch]

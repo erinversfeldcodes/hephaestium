@@ -157,9 +157,48 @@ jobs:
           buf build -o /tmp/runtime.binpb
           /tmp/venv/bin/python scripts/check-contract-cases.py /tmp/runtime.binpb cases/runtime
 
+  # The control plane keeps the record of every workload in Postgres, so its
+  # tests run against a real one.
+  control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: control-plane
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: ecto://postgres:postgres@localhost/hephaestium_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19.5"
+      - name: Dependencies, exactly as locked
+        run: mix deps.get --check-locked
+      - name: Formatted
+        run: mix format --check-formatted
+      - name: Compiled, warnings denied
+        run: mix compile --warnings-as-errors
+      - name: Tested
+        run: mix test
+
   ci:
     if: always()
-    needs: [docs, commits, rust, baseline, contracts, artifacts]
+    needs: [docs, commits, rust, baseline, contracts, artifacts, control-plane]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
