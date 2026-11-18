@@ -1,0 +1,8 @@
+//! The Hephaestium executor: runs one workload in a workspace of its own and
+//! says everything it does as events.
+
+pub mod cli;
+pub mod run;
+pub mod stream;
+pub mod transcript;
+pub mod workload;

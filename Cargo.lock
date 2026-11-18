@@ -196,6 +196,8 @@ name = "executor"
 version = "0.0.0"
 dependencies = [
  "contracts",
+ "heph",
+ "pbjson-types",
  "serde_json",
 ]
 
