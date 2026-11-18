@@ -42,7 +42,8 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
 - `ControlPlane.Settle`, run every minute by `ControlPlane.Jobs.SettleTickets`, makes
   done mean green: a ticket whose workload completed is settled only once its pull
   request's required checks are. It reads the pull request, the checks the base
-  branch's ruleset requires, and the check runs on the head commit. All green (or
+  branch's ruleset requires, and the check runs on the head commit. Every check on the
+  commit counts, required or not, and the required ones must have appeared. All green (or
   skipped): `heph:done`. Any failed, cancelled or timed out: `heph:failed`, naming
   them, without waiting for the rest. Merged: done. Closed unmerged: the running
   label goes and a comment says so. A check still running or not yet seen, no
