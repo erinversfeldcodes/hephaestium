@@ -206,11 +206,44 @@ defmodule ControlPlane.SettleTest do
     assert result(id) == {:failed, ["ci"]}
   end
 
-  test "a check the ruleset does not require is not looked at", %{gh: gh, id: id} do
+  test "a check the ruleset does not require counts too: a failing one is failed", %{
+    gh: gh,
+    id: id
+  } do
     StandInGitHub.respond(
       gh,
       @runs,
       runs([run(1, "ci", "completed", "success"), run(2, "lint", "completed", "failure")])
+    )
+
+    assert result(id) == {:failed, ["lint"]}
+    assert labels(gh) == ["labels[]=heph:failed"]
+  end
+
+  test "a check the ruleset does not require waits while it is still running", %{gh: gh, id: id} do
+    StandInGitHub.respond(
+      gh,
+      @runs,
+      runs([run(1, "ci", "completed", "success"), run(2, "lint", "in_progress", nil)])
+    )
+
+    assert {:waiting, message} = result(id)
+    assert message =~ "lint"
+    assert StandInGitHub.writes(gh) == []
+  end
+
+  test "a check the ruleset does not require is green when it succeeded or was skipped", %{
+    gh: gh,
+    id: id
+  } do
+    StandInGitHub.respond(
+      gh,
+      @runs,
+      runs([
+        run(1, "ci", "completed", "success"),
+        run(2, "lint", "completed", "success"),
+        run(3, "preview", "completed", "skipped")
+      ])
     )
 
     assert result(id) == :done
@@ -403,7 +436,10 @@ defmodule ControlPlane.SettleTest do
       assert rerun_writes(gh) == []
     end
 
-    test "a cancelled check the ruleset does not require is not re-run", %{gh: gh, id: id} do
+    test "a cancelled check the ruleset does not require is re-run like any other", %{
+      gh: gh,
+      id: id
+    } do
       reruns(2)
 
       StandInGitHub.respond(
@@ -412,8 +448,8 @@ defmodule ControlPlane.SettleTest do
         runs([run(1, "ci", "completed", "success"), run(5, "lint", "completed", "cancelled")])
       )
 
-      assert result(id) == :done
-      assert rerun_writes(gh) == []
+      assert {:waiting, _} = result(id)
+      assert rerun_writes(gh) == ["repos/#{@repo}/actions/jobs/5/rerun"]
     end
   end
 
@@ -569,6 +605,17 @@ defmodule ControlPlane.SettleTest do
 
       assert result(id) == {:revising, 1}
       assert [%{"name" => "ci"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
+    test "a real failure of a check the ruleset does not require is revised", %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(1, "ci", "completed", "success"), run(31, "preview", "completed", "failure")])
+      )
+
+      assert result(id) == {:revising, 1}
+      assert [%{"name" => "preview"}] = revision_of(id).workload["revision"]["failures"]
     end
 
     test "timed out is revised", %{gh: gh, id: id} do

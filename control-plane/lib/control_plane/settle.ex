@@ -1,16 +1,16 @@
 defmodule ControlPlane.Settle do
   @moduledoc """
-  Done means green: a ticket whose workload completed is not done until its pull
-  request's required checks are green.
+  Done means green: a ticket whose workload completed is not done until every check
+  on its pull request is green, whether or not the ruleset requires it (ADR 0024).
 
   For each completed workload with a pull request whose ticket is not yet settled,
   this reads the pull request, the checks the base branch's ruleset requires, and
   the check runs on the pull request's head commit, with `gh`:
 
     * merged: done. Closed without merging: abandoned.
-    * any required check ended as anything but success, skipped or neutral:
-      failed, naming it. A failure is not waited on while others still run.
-    * every required check ended well: done.
+    * any check ended as anything but success, skipped or neutral: failed, naming
+      it. A failure is not waited on while others still run.
+    * every check ended well, and every required one has appeared: done.
     * anything else (a check still running or not yet seen, no checks at all, or
       GitHub unable to say) waits, and nothing is written: unknown is never green.
 
@@ -212,7 +212,10 @@ defmodule ControlPlane.Settle do
   defp attempt(workload), do: get_in(workload.workload, ["revision", "attempt"]) || 0
 
   defp judge(workload, required, runs, pull_and_number) do
-    names = if required == [], do: Map.keys(runs), else: required
+    # Every check on the commit counts, not only the ones the ruleset requires: a
+    # failing check is investigated whether or not it blocks a merge (ADR 0024). The
+    # required ones must also have appeared.
+    names = Enum.uniq(required ++ Map.keys(runs))
     looked_at = Enum.map(names, &{&1, runs[&1]})
 
     ended =
