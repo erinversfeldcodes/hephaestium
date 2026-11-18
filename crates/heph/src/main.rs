@@ -937,6 +937,11 @@ fn run_ticket(request: &WorkloadRequest) -> ExitCode {
         Ok(repository) => repository,
         Err(error) => return could_not_run(&error.to_string()),
     };
+    // An interrupt or a termination is passed on to the executor and waited for,
+    // and does not end this program before it has said how the run ended.
+    if let Err(error) = heph::process::install_cancellation() {
+        return could_not_run(&format!("could not install the signal handlers: {error}"));
+    }
     let options = run::Options {
         repository,
         ticket: request.ticket,

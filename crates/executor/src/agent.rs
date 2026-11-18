@@ -23,6 +23,9 @@ pub enum End {
     Failed(String),
     /// It ran past the workload's timeout.
     TimedOut(String),
+    /// The executor was told to stop, and the agent was stopped with everything it
+    /// started.
+    Cancelled,
 }
 
 /// Run the agent in the workspace.
@@ -148,6 +151,7 @@ pub fn run<W: Write>(
                 .into_inner()
                 .unwrap_or_else(|| "the agent was stopped".to_owned()),
         ),
+        Streamed::Cancelled => End::Cancelled,
         Streamed::NotRun(_) => End::Failed(format!(
             "the agent could not be started: {}",
             plan.command.first().map_or("", String::as_str)

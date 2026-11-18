@@ -9,9 +9,50 @@ use std::io::Read as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process_group};
+
+/// Whether the process has been told to stop. A signal handler can only set a
+/// flag, so every wait here looks at it each time it polls.
+static CANCELLED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// Make an interrupt, a termination or a hang-up set the cancellation flag
+/// instead of ending the process, so that what it is running can be stopped
+/// properly. Call it once, before starting any thread of your own.
+///
+/// # Errors
+///
+/// Returns the I/O error if a handler could not be installed.
+pub fn install_cancellation() -> std::io::Result<()> {
+    for signal in [
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+    ] {
+        signal_hook::flag::register(signal, Arc::clone(&CANCELLED))?;
+    }
+    Ok(())
+}
+
+/// Set the cancellation flag, as a signal does.
+pub fn cancel() {
+    CANCELLED.store(true, Ordering::SeqCst);
+}
+
+/// Whether the process has been told to stop.
+#[must_use]
+pub fn cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
+}
+
+/// Clear the cancellation flag. For tests, which share one process.
+#[doc(hidden)]
+pub fn reset_cancellation() {
+    CANCELLED.store(false, Ordering::SeqCst);
+}
 
 /// The exit code a shell reports for a program that does not exist.
 const NOT_FOUND: i32 = 127;
@@ -32,6 +73,9 @@ pub enum Ended {
     TimedOut,
     /// It never started. The code is the one a shell would report.
     NotRun(i32),
+    /// The process was told to stop, and the command was killed with everything it
+    /// started, or was not started.
+    Cancelled,
 }
 
 /// Start the command, wait for it for at most `timeout`, and clean up.
@@ -60,6 +104,10 @@ pub fn execute(
     let (program, arguments) = argv
         .split_first()
         .expect("a command to have a program: the schema requires at least one element");
+
+    if cancelled() {
+        return Ok((Ended::Cancelled, None));
+    }
 
     let mut command = Command::new(program);
     command
@@ -106,6 +154,11 @@ pub fn execute(
                 return Err(error);
             }
         }
+        if cancelled() {
+            stop_everything_started_by(&child);
+            let _ = child.wait();
+            break Ended::Cancelled;
+        }
         if Instant::now() >= deadline {
             stop_everything_started_by(&child);
             let _ = child.wait();
@@ -138,6 +191,26 @@ fn stop_everything_started_by(child: &std::process::Child) {
     }
 }
 
+/// Read a command's output a line at a time on a thread of its own, so that
+/// whoever waits for it can also notice other things.
+fn read_lines(
+    output: impl std::io::Read + Send + 'static,
+) -> (
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
+    let (sender, lines) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufRead::lines(std::io::BufReader::new(output)) {
+            let Ok(line) = line else { break };
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    (lines, reader)
+}
+
 /// What a caller of [`stream`] says after each line or tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Go {
@@ -158,6 +231,9 @@ pub enum Streamed {
     Stopped,
     /// It never started. The code is the one a shell would report.
     NotRun(i32),
+    /// The process was told to stop, and the command was killed with everything it
+    /// started, or was not started.
+    Cancelled,
 }
 
 /// Run a command and hand its standard output to the caller a line at a time,
@@ -198,6 +274,10 @@ pub fn stream(
         .split_first()
         .expect("a command to have a program: the schema requires at least one element");
 
+    if cancelled() {
+        return Ok(Streamed::Cancelled);
+    }
+
     let mut command = Command::new(program);
     command
         .args(arguments)
@@ -222,16 +302,8 @@ pub fn stream(
         }
     };
 
-    let (sender, lines) = std::sync::mpsc::channel::<String>();
     let standard_output = child.stdout.take().expect("standard output was piped");
-    let reader = std::thread::spawn(move || {
-        for line in std::io::BufRead::lines(std::io::BufReader::new(standard_output)) {
-            let Ok(line) = line else { break };
-            if sender.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let (lines, reader) = read_lines(standard_output);
 
     let end_at = Instant::now() + deadline;
     let mut next_tick = Instant::now() + tick;
@@ -250,6 +322,12 @@ pub fn stream(
                 // Whatever it left running goes with it, and closes the pipe.
                 stop_everything_started_by(&child);
             }
+        }
+
+        if cancelled() {
+            stop_everything_started_by(&child);
+            let _ = child.wait();
+            break Streamed::Cancelled;
         }
 
         let now = Instant::now();

@@ -118,6 +118,7 @@ fn run(command: &[&str], directory: &Path, token: &str, what: &str) -> Result<Ve
         Streamed::Exited(code) => Err(format!("{what}: exited with code {code}")),
         Streamed::TimedOut => Err(format!("{what}: timed out")),
         Streamed::Stopped => Err(format!("{what}: was stopped")),
+        Streamed::Cancelled => Err(format!("{what}: cancelled")),
         Streamed::NotRun(_) => Err(format!("{what}: could not be started")),
     }
 }

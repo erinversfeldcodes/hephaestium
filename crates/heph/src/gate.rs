@@ -84,6 +84,8 @@ pub enum CouldNotRun {
     Wait(std::io::Error),
     /// A gate that passed did not give the report the manifest says it gives.
     UnusableReport(String),
+    /// The process was told to stop while the gate ran.
+    Cancelled,
 }
 
 impl std::fmt::Display for CouldNotRun {
@@ -94,6 +96,7 @@ impl std::fmt::Display for CouldNotRun {
             }
             Self::Wait(error) => write!(formatter, "waiting for the command failed: {error}"),
             Self::UnusableReport(message) => formatter.write_str(message),
+            Self::Cancelled => formatter.write_str("was cancelled"),
         }
     }
 }
@@ -298,6 +301,7 @@ pub fn run(
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     let (outcome, exit_code) = match &ended {
+        Ended::Cancelled => return Err(CouldNotRun::Cancelled),
         Ended::Exited(0) => (Outcome::Passed, Some(0)),
         Ended::Exited(code) | Ended::NotRun(code) => (Outcome::Failed, Some(*code)),
         Ended::TimedOut => (Outcome::TimedOut, None),
