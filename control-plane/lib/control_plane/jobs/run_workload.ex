@@ -112,13 +112,17 @@ defmodule ControlPlane.Jobs.RunWorkload do
         {:args, ["-c", ~s(log=$1; shift; exec "$@" 2>>"$log"), "sh", log, executor | arguments]}
       ])
 
+    # Read before anything slow: a fast executor may have exited, and then the port
+    # no longer knows its process.
+    os_pid = Port.info(port, :os_pid) |> elem(1)
+
     # The executor is running: the ticket stops looking approved.
     Tickets.started(workload)
 
     state = %{
       workload: workload,
       port: port,
-      os_pid: Port.info(port, :os_pid) |> elem(1),
+      os_pid: os_pid,
       events_file: File.open!(Path.join(directory, "events.jsonl"), [:append]),
       directory: directory,
       buffer: "",

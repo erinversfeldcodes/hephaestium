@@ -217,4 +217,36 @@ defmodule ControlPlane.TicketsTest do
 
     assert [{"POST", @issue <> "/comments", [_body]}] = Enum.drop(writes, 4)
   end
+
+  test "a slow label write does not lose an executor that has already exited", %{gh: gh, id: id} do
+    # The stand-in gh takes a second; the executor is gone by the time it answers.
+    File.write!(
+      gh.gh,
+      String.replace(File.read!(gh.gh), "echo \"$*\"", "sleep 1; echo \"$*\"", global: false)
+    )
+
+    dir = Path.join(System.tmp_dir!(), "cp-tickets-slow-#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      Application.delete_env(:control_plane, :runner)
+      File.rm_rf(dir)
+    end)
+
+    events = [
+      event(id, 1, started()),
+      event(id, 2, finished("OUTCOME_FAILED", "gate test failed"))
+    ]
+
+    executor = ControlPlane.StandIn.executor(Path.join(dir, "stand-in"), events: events)
+
+    Application.put_env(:control_plane, :runner,
+      executor: executor,
+      runs_dir: Path.join(dir, "runs"),
+      silence_limit_ms: 5_000,
+      kill_grace_ms: 2_000
+    )
+
+    assert :ok = perform_job(ControlPlane.Jobs.RunWorkload, %{"workload_id" => id})
+    assert Workloads.get(id).state == "failed"
+  end
 end
