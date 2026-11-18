@@ -5,6 +5,7 @@ pub mod adapter;
 pub mod agent;
 pub mod claude_code;
 pub mod cli;
+pub mod deliver;
 pub mod run;
 pub mod stream;
 pub mod transcript;

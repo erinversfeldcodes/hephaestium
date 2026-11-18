@@ -142,9 +142,12 @@ started, at the workload's timeout or when it has spent its budget; a workload w
 no timeout or no budget is refused. A Claude Code workload runs Claude Code, with an
 empty configuration directory of its own and a token made for it, so nothing of the
 maintainer's own setup reaches it; the other runtimes have no adapter yet, and a stub
-stands in for any of them (`--transcript` or `--agent-command`, for development). The
-pull request is still to come. It exits 0 if the workload ran to an outcome, whatever
-it was, and 1 if it could not be run.
+stands in for any of them (`--transcript` or `--agent-command`, for development).
+With `--deliver`, a workload whose gates passed is committed on a branch of its own,
+pushed, and opened as a pull request; that step alone holds the token that can push
+(`HEPH_GITHUB_TOKEN`), which the bootstrap steps, the gates and the agent never see.
+It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
+be run.
 
 ## What is different
 

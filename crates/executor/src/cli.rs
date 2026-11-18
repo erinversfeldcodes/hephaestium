@@ -6,7 +6,7 @@ use std::time::Duration;
 pub const USAGE: &str = "\
 Usage: executor run --workload FILE --work-dir DIR --record FILE
                     (--transcript FILE | --agent-command JSON [--agent-env NAME]...)
-                    [--source PATH_OR_URL] [--heartbeat-seconds N]
+                    [--source PATH_OR_URL] [--heartbeat-seconds N] [--deliver] [--gh PROGRAM]
 
 Runs one workload. Events are written to standard output, one JSON object to a
 line; diagnostics go to standard error. Exits 0 if the workload ran to an
@@ -23,6 +23,10 @@ outcome, whatever it was, 1 if it could not be run, and 2 on a usage error.
                       only)
   --agent-env NAME    a variable the agent may have, if the executor has it;
                       repeatable. The agent has no others.
+  --deliver           when the gates pass, commit the agent's work, push a
+                      branch and open the pull request. Needs HEPH_GITHUB_TOKEN
+                      in the environment, which only this step ever holds.
+  --gh PROGRAM        the GitHub command-line tool to use [default: gh]
   --heartbeat-seconds N  how often a heartbeat is written while the agent runs
                       [default: 30]
 ";
@@ -38,6 +42,8 @@ pub struct Options {
     pub agent_command: Option<Vec<String>>,
     pub agent_env: Vec<String>,
     pub heartbeat: Duration,
+    pub deliver: bool,
+    pub gh: String,
 }
 
 /// How often a heartbeat is written when nothing says otherwise.
@@ -64,6 +70,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
     let mut agent_command = None;
     let mut agent_env = Vec::new();
     let mut heartbeat = DEFAULT_HEARTBEAT;
+    let mut deliver = false;
+    let mut gh = "gh".to_owned();
     while let Some(option) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match option.as_str() {
@@ -82,6 +90,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
                 }
                 agent_command = Some(command);
             }
+            "--deliver" => deliver = true,
+            "--gh" => gh = value("--gh")?,
             "--agent-env" => agent_env.push(value("--agent-env")?),
             "--heartbeat-seconds" => {
                 let text = value("--heartbeat-seconds")?;
@@ -111,5 +121,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
         agent_command,
         agent_env,
         heartbeat,
+        deliver,
+        gh,
     })
 }

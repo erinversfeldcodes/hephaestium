@@ -46,7 +46,7 @@ fn prompt(workload: &Workload) -> String {
     let ticket = workload.ticket.clone().unwrap_or_default();
     format!(
         "You are working in a clone of the repository, in the current directory, on ticket #{number}: {title}\n\n{body}\n\n\
-         Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, say in one short paragraph what you changed.",
+         Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `.heph-commit-message` in the current directory: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body saying what you changed and why. Then say in one short paragraph what you changed.",
         number = ticket.number,
         title = ticket.title,
         body = ticket.body,
