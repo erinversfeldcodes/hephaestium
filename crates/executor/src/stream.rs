@@ -159,6 +159,7 @@ impl<'a, W: Write> Stream<'a, W> {
             event_count: self.next - 1,
             executor_version: executor_version.to_owned(),
             configuration_sha256: String::new(),
+            review: None,
         })
     }
 }
