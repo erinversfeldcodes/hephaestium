@@ -14,6 +14,7 @@ use heph::gate;
 use heph::github;
 use heph::lock;
 use heph::manifest::{self, Invalid};
+use heph::run;
 use heph::sync;
 use heph::workload;
 
@@ -54,6 +55,23 @@ Commands:
                          900 seconds unless --timeout-seconds says otherwise.
                          Exits 0 if all passed, 1 if any failed or timed out,
                          and 3 if linting could not be run.
+
+  run TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
+             [--timeout-seconds N] [--budget-usd X] [--runs-dir PATH]
+             [--executor PATH]
+                         Run a ticket: build its workload as `workload` does,
+                         run the executor on it with delivery, show what
+                         happens as it does and end with the outcome, the cost
+                         and the pull request. The run is kept in its own
+                         directory outside your project, under --runs-dir
+                         [default: $XDG_STATE_HOME/hephaestium/runs, or
+                         ~/.local/state/hephaestium/runs]. The GitHub token is
+                         HEPH_GITHUB_TOKEN, or HEPH_GITHUB_TOKEN_FILE, or the
+                         file ~/.config/hephaestium/github-token; the Claude
+                         Code token is found the same way at claude-token.
+                         Exits 0 if the workload completed, 1 if it ended any
+                         other way, 2 on a usage error and 3 if it could not
+                         be run.
 
   workload TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
                    [--timeout-seconds N] [--budget-usd X]
@@ -160,8 +178,10 @@ fn main() -> ExitCode {
                 run_baseline_apply(&request)
             }),
         ["baseline", ..] => baseline_usage_error(),
-        ["workload", rest @ ..] => WorkloadRequest::parse(rest)
+        ["workload", rest @ ..] => WorkloadRequest::parse(rest, false)
             .map_or_else(workload_usage_error, |request| run_workload(&request)),
+        ["run", rest @ ..] => WorkloadRequest::parse(rest, true)
+            .map_or_else(run_usage_error, |request| run_ticket(&request)),
         ["sync", rest @ ..] => {
             Sync::parse(rest).map_or_else(sync_usage_error, |request| run_sync(&request))
         }
@@ -798,14 +818,19 @@ struct WorkloadRequest {
     model: String,
     timeout_seconds: u64,
     budget_usd: f64,
+    /// Only `run` takes these two.
+    runs_dir: Option<String>,
+    executor: Option<String>,
 }
 
 impl WorkloadRequest {
     /// Read the arguments after `workload`: a ticket number, with or without a
     /// leading `#`, and any of the options. `None` if they are not that.
-    fn parse(arguments: &[&str]) -> Option<Self> {
+    fn parse(arguments: &[&str], for_run: bool) -> Option<Self> {
         let mut ticket = None;
         let mut repo = None;
+        let mut runs_dir = None;
+        let mut executor = None;
         let mut root = ".".to_owned();
         let mut model = workload::DEFAULT_MODEL.to_owned();
         let mut timeout_seconds = workload::DEFAULT_TIMEOUT_SECONDS;
@@ -816,6 +841,8 @@ impl WorkloadRequest {
             match *argument {
                 "--repo" => repo = Some((*remaining.next()?).to_owned()),
                 "--root" => (*remaining.next()?).clone_into(&mut root),
+                "--runs-dir" if for_run => runs_dir = Some((*remaining.next()?).to_owned()),
+                "--executor" if for_run => executor = Some((*remaining.next()?).to_owned()),
                 "--model" => (*remaining.next()?).clone_into(&mut model),
                 "--timeout-seconds" => {
                     timeout_seconds = remaining.next()?.parse().ok().filter(|n| *n > 0)?;
@@ -848,6 +875,8 @@ impl WorkloadRequest {
             model,
             timeout_seconds,
             budget_usd,
+            runs_dir,
+            executor,
         })
     }
 }
@@ -891,5 +920,36 @@ fn run_workload(request: &WorkloadRequest) -> ExitCode {
             }
         }
         Err(error) => could_not_run(&error.to_string()),
+    }
+}
+
+fn run_usage_error() -> ExitCode {
+    eprintln!(
+        "heph: expected 'run TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME] [--timeout-seconds N] [--budget-usd X] [--runs-dir PATH] [--executor PATH]'\n\n{USAGE}"
+    );
+    ExitCode::from(USAGE_ERROR)
+}
+
+/// Run a ticket with the executor and say how it ended.
+fn run_ticket(request: &WorkloadRequest) -> ExitCode {
+    let root = std::path::Path::new(&request.root);
+    let repository = match github::repository_of(root, request.repo.as_deref()) {
+        Ok(repository) => repository,
+        Err(error) => return could_not_run(&error.to_string()),
+    };
+    let options = run::Options {
+        repository,
+        ticket: request.ticket,
+        model: request.model.clone(),
+        timeout_seconds: request.timeout_seconds,
+        budget_usd: request.budget_usd,
+        runs_dir: request.runs_dir.as_ref().map(std::path::PathBuf::from),
+        executor: request.executor.as_ref().map(std::path::PathBuf::from),
+        local_head: workload::head_of(root),
+    };
+    match run::run(&options) {
+        Ok(run::Ended::Completed) => ExitCode::SUCCESS,
+        Ok(run::Ended::Otherwise) => ExitCode::from(FAILED),
+        Err(message) => could_not_run(&message),
     }
 }
