@@ -73,6 +73,18 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   on a `heph/` branch of the same repository is never revised. When no revisions are
   left, the ticket is labelled `heph:failed` and the comment says what each revision
   did. Nothing in the control plane merges a pull request.
+- Merging a green pull request is off by default and chosen per repository:
+  `HEPH_AUTOMERGE=owner/name,owner/name`. For a listed repository, when every check
+  on the head commit is green (see above) and the pull request is open, settle merges
+  it, squashed and pinned to the head it judged. It is never a bypass: it merges only
+  when GitHub reports the pull request as `clean`, which it does only when the
+  repository's own rules are met (a required review, a branch up to date), because an
+  account that may bypass those rules would otherwise merge a blocked pull request
+  through the API without anyone saying so. A pull request that is blocked, behind,
+  conflicting, unstable or a draft, one that is not a same-repository `heph/` branch,
+  and one whose merge GitHub refuses are left for a person, and the ticket says why
+  (`Not merged: ...`). A state GitHub has not worked out yet, and a merge that failed
+  for a reason that may pass, wait for the next pass. It is attempted once per ticket.
 
 ## Running it
 

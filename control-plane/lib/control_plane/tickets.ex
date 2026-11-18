@@ -68,11 +68,13 @@ defmodule ControlPlane.Tickets do
   """
   @spec settled(%Workload{}, :done | {:failed, [String.t()]} | :abandoned) ::
           :ok | {:error, String.t()}
-  def settled(workload, :done) do
+  def settled(workload, :done), do: settled(workload, {:done, nil})
+
+  def settled(workload, {:done, merge}) do
     first_error([
       add_label(workload, @done),
       remove_label(workload, @running),
-      note(workload, "the pull request's required checks are green. The ticket is done.")
+      note(workload, "the pull request's checks are green. The ticket is done." <> merged(merge))
     ])
   end
 
@@ -110,6 +112,10 @@ defmodule ControlPlane.Tickets do
       "the pull request's checks did not pass: #{Enum.join(names, ", ")}. Starting revision #{attempt} of #{max}: the agent will investigate and push a fix to the same branch."
     )
   end
+
+  defp merged(nil), do: ""
+  defp merged(:merged), do: " Hephaestium merged it."
+  defp merged({:not_merged, reason}), do: " Not merged: #{reason}."
 
   # Which cancelled checks were re-run first, if any, and how often.
   defp reran(%{reruns: reruns}) when is_map(reruns) and map_size(reruns) > 0 do

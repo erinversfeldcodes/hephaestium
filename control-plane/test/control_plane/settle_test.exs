@@ -2,6 +2,8 @@ defmodule ControlPlane.SettleTest do
   use ControlPlane.DataCase
   use Oban.Testing, repo: ControlPlane.Repo
 
+  import Ecto.Query
+
   import ControlPlane.Fixtures
 
   alias ControlPlane.Jobs.SettleTickets
@@ -720,5 +722,164 @@ defmodule ControlPlane.SettleTest do
       "attempt" => attempt,
       "failures" => [%{"name" => "ci", "result" => "failure", "excerpt" => "x"}]
     })
+  end
+
+  describe "merging a pull request that is green" do
+    @merge "repos/#{@repo}/pulls/52/merge"
+    @heph_branch "heph/12-an-earlier-title-of-the-ticket"
+
+    setup %{gh: gh} do
+      previous = Application.get_env(:control_plane, :settle)
+      on_exit(fn -> Application.put_env(:control_plane, :settle, previous) end)
+      Application.put_env(:control_plane, :settle, automerge: [@repo])
+
+      StandInGitHub.respond(gh, @pull, mergeable("clean"))
+      :ok
+    end
+
+    defp mergeable(state, branch \\ @heph_branch, repository \\ @repo),
+      do:
+        pull(%{
+          "mergeable_state" => state,
+          "draft" => state == "draft",
+          "head" => %{"sha" => @sha, "ref" => branch, "repo" => %{"full_name" => repository}}
+        })
+
+    defp merges(gh),
+      do: for({"PUT", @merge, fields} <- StandInGitHub.writes(gh), do: fields)
+
+    test "green and clean: it is merged once, squashed, at the head it judged, and the ticket says so",
+         %{gh: gh, id: id} do
+      assert result(id) == {:done, :merged}
+
+      assert [fields] = merges(gh)
+      assert "merge_method=squash" in fields
+      assert "sha=#{@sha}" in fields
+      assert labels(gh) == ["labels[]=heph:done"]
+      assert hd(comments(gh)) =~ "merged"
+    end
+
+    test "by default nothing is merged", %{gh: gh, id: id} do
+      Application.delete_env(:control_plane, :settle)
+
+      assert result(id) == :done
+      assert merges(gh) == []
+    end
+
+    test "a repository that is not listed is never merged", %{gh: gh, id: id} do
+      Application.put_env(:control_plane, :settle, automerge: ["someone/else"])
+
+      assert result(id) == :done
+      assert merges(gh) == []
+    end
+
+    test "a pull request GitHub says is blocked is not merged, and nothing is forced", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, mergeable("blocked"))
+
+      assert {:done, {:not_merged, reason}} = result(id)
+      assert reason =~ "blocked"
+      assert merges(gh) == []
+      assert labels(gh) == ["labels[]=heph:done"]
+      assert hd(comments(gh)) =~ "Not merged"
+    end
+
+    test "behind, conflicting, unstable and draft pull requests are not merged", %{gh: gh, id: id} do
+      for state <- ["behind", "dirty", "unstable", "draft", "has_hooks"] do
+        ControlPlane.Repo.update_all(
+          from(w in ControlPlane.Workload, where: w.id == ^id),
+          set: [settled_at: nil]
+        )
+
+        StandInGitHub.respond(gh, @pull, mergeable(state))
+
+        assert {:done, {:not_merged, _}} = result(id), state
+        assert merges(gh) == [], state
+      end
+    end
+
+    test "a pull request whose state GitHub has not worked out yet waits and writes nothing", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, mergeable("unknown"))
+
+      assert {:waiting, _} = result(id)
+      assert StandInGitHub.writes(gh) == []
+      assert Workloads.get(id).settled_at == nil
+    end
+
+    test "a pull request that is not one the runtime made is not merged", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, mergeable("clean", "feature/someone-elses"))
+
+      assert {:done, {:not_merged, reason}} = result(id)
+      assert reason =~ "runtime"
+      assert merges(gh) == []
+    end
+
+    test "a branch from another repository is not merged", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, mergeable("clean", @heph_branch, "someone/fork"))
+
+      assert {:done, {:not_merged, _}} = result(id)
+      assert merges(gh) == []
+    end
+
+    test "a merge GitHub refuses is reported, settles, and is not tried again", %{gh: gh, id: id} do
+      StandInGitHub.fail_write(gh, "PUT", @merge, "gh: Pull Request is not mergeable (HTTP 405)")
+
+      assert {:done, {:not_merged, reason}} = result(id)
+      assert reason =~ "not mergeable"
+      assert Workloads.get(id).settled_at
+      assert hd(comments(gh)) =~ "Not merged"
+
+      assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
+      assert length(merges(gh)) == 1
+    end
+
+    test "a merge that fails for a reason that may pass waits, and is tried at the next pass", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.fail_write(gh, "PUT", @merge, "gh: Bad Gateway (HTTP 502)")
+
+      assert {:waiting, _} = result(id)
+      assert labels(gh) == []
+      assert Workloads.get(id).settled_at == nil
+
+      File.rm!(Path.join(gh.dir, "data/#{String.replace(@merge, ~r{[/?=&:%]}, "_")}.PUT.err"))
+      assert result(id) == {:done, :merged}
+    end
+
+    test "checks that are not green are not merged", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @runs, runs([run(1, "ci", "completed", "failure")]))
+      assert result(id) == {:failed, ["ci"]}
+      assert merges(gh) == []
+    end
+
+    test "checks that are still running are not merged", %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(1, "ci", "completed", "success"), run(2, "e2e", "in_progress", nil)])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert merges(gh) == []
+    end
+
+    test "a pull request already merged or closed is not merged again", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, mergeable("clean") |> Map.put("merged", true))
+
+      assert result(id) == :done
+      assert merges(gh) == []
+    end
+
+    test "a ticket is merged once however often it is settled", %{gh: gh, id: id} do
+      assert result(id) == {:done, :merged}
+      assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
+      assert length(merges(gh)) == 1
+    end
   end
 end
