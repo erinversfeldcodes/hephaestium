@@ -67,6 +67,7 @@ defmodule ControlPlane.StandInGitHub do
     d=#{dir}
     echo "$*" >> $d/heph-calls.log
     if [ -f $d/heph.err ]; then cat $d/heph.err >&2; exit 1; fi
+    if [ -f $d/heph.warning ]; then cat $d/heph.warning >&2; fi
     cat $d/heph.json
     """)
 
@@ -94,6 +95,9 @@ defmodule ControlPlane.StandInGitHub do
     File.rm(Path.join(dir, "heph.err"))
     File.write!(Path.join(dir, "heph.json"), Jason.encode!(workload))
   end
+
+  @doc "Make the stand-in `heph` print this on its error output, as it does while succeeding."
+  def heph_warns(%{dir: dir}, message), do: File.write!(Path.join(dir, "heph.warning"), message)
 
   @doc "Make the stand-in `heph` fail, saying this."
   def heph_fails(%{dir: dir}, message), do: File.write!(Path.join(dir, "heph.err"), message)

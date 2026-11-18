@@ -192,16 +192,45 @@ defmodule ControlPlane.Intake do
     ]
 
     if Programs.allowed?(heph()) do
-      case System.cmd(heph(), arguments, stderr_to_stdout: true) do
-        {output, 0} -> check_built(output, number, approval)
-        {output, _} -> {:could_not_build, String.trim(output)}
-      end
+      run_heph(arguments, number, approval)
     else
       {:could_not_build, Programs.refusal(heph())}
     end
   rescue
     error in ErlangError ->
       {:could_not_build, "heph could not be run: #{inspect(error.original)}"}
+  end
+
+  # heph prints the workload on its standard output and may warn on its error output
+  # while succeeding, so the two are kept apart; the error output is what a failure
+  # says.
+  defp run_heph(arguments, number, approval) do
+    errors = Path.join(System.tmp_dir!(), "heph-errors-#{System.unique_integer([:positive])}")
+
+    try do
+      case System.cmd("/bin/sh", [
+             "-c",
+             ~s(errors=$1; shift; exec "$@" 2>"$errors"),
+             "sh",
+             errors,
+             heph() | arguments
+           ]) do
+        {output, 0} ->
+          check_built(output, number, approval)
+
+        {output, _} ->
+          {:could_not_build, String.trim(String.trim(output) <> " " <> String.trim(read(errors)))}
+      end
+    after
+      File.rm(errors)
+    end
+  end
+
+  defp read(path) do
+    case File.read(path) do
+      {:ok, text} -> text
+      {:error, _} -> ""
+    end
   end
 
   defp check_built(output, number, approval) do

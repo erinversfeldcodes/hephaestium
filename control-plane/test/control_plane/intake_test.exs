@@ -251,6 +251,16 @@ defmodule ControlPlane.IntakeTest do
       assert Repo.all(ControlPlane.Workload) == []
     end
 
+    test "heph's warnings on its error output do not spoil the workload it prints", %{gh: gh} do
+      StandInGitHub.heph_warns(
+        gh,
+        "heph: warning: your checkout is at abc, not at GitHub's tip\n"
+      )
+
+      assert [%{result: :started}] = results()
+      assert [_] = Repo.all(ControlPlane.Workload)
+    end
+
     test "includes heph failing to build the workload", %{gh: gh} do
       StandInGitHub.heph_fails(gh, "heph: #12 in #{@repo} is not open (it is closed)")
 
