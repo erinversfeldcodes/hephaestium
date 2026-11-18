@@ -1,5 +1,6 @@
 //! Running one workload: prepare a workspace, play the agent, say how it ended.
 
+use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ pub fn run(
     secrets: &Secrets,
     out: &mut impl Write,
 ) -> Result<(), Refused> {
+    let options = &resolved(options)?;
     let text = fs::read_to_string(&options.workload)
         .map_err(|e| Refused(format!("{}: {e}", options.workload.display())))?;
     let workload = workload::read(&text)
@@ -281,11 +283,18 @@ pub fn say(message: &str) {
 fn git(args: &[&str], directory: &Path, what: &str) -> Result<(), String> {
     let mut command = vec!["git".to_owned()];
     command.extend(args.iter().map(|a| (*a).to_owned()));
-    match execute(&command, directory, CLONE_TIMEOUT, false, say) {
+    let said = RefCell::new(String::new());
+    match execute(&command, directory, CLONE_TIMEOUT, false, |message| {
+        say(message);
+        message.clone_into(&mut said.borrow_mut());
+    }) {
         Ok((Ended::Exited(0), _)) => Ok(()),
         Ok((Ended::Exited(code), _)) => Err(format!("{what}: git exited with code {code}")),
         Ok((Ended::TimedOut, _)) => Err(format!("{what}: git timed out")),
-        Ok((Ended::NotRun(_), _)) => Err(format!("{what}: git could not be started")),
+        Ok((Ended::NotRun(_), _)) => Err(format!(
+            "{what}: git could not be started: {}",
+            said.into_inner()
+        )),
         Err(error) => Err(format!("{what}: {error}")),
     }
 }
@@ -301,12 +310,16 @@ fn bootstrap(
         None => workspace.to_path_buf(),
     };
     let described = format!("bootstrap step {number} (`{}`)", step.run.join(" "));
+    let said = RefCell::new(String::new());
     match execute(
         &gate::wrap(manifest, &step.run, environment),
         &directory,
         Duration::from_secs(step.timeout_seconds),
         false,
-        say,
+        |message| {
+            say(message);
+            message.clone_into(&mut said.borrow_mut());
+        },
     ) {
         Ok((Ended::Exited(0), _)) => Ok(()),
         Ok((Ended::Exited(code), _)) => Err(format!("{described} exited with code {code}")),
@@ -314,7 +327,10 @@ fn bootstrap(
             "{described} timed out after {} seconds",
             step.timeout_seconds
         )),
-        Ok((Ended::NotRun(_), _)) => Err(format!("{described} could not be started")),
+        Ok((Ended::NotRun(_), _)) => Err(format!(
+            "{described} could not be started: {}",
+            said.into_inner()
+        )),
         Err(error) => Err(format!("{described}: {error}")),
     }
 }
@@ -327,6 +343,24 @@ fn write_record(path: &Path, record: &RunRecord) -> Result<(), Refused> {
             path.display()
         ))
     })
+}
+
+/// The options with every path made absolute, once. A relative path means
+/// relative to where the executor was started, and every command the executor
+/// runs, from the work directory or from the workspace, must mean the same by it.
+fn resolved(options: &Options) -> Result<Options, Refused> {
+    let absolute = |path: &Path| {
+        std::path::absolute(path).map_err(|e| Refused(format!("{}: {e}", path.display())))
+    };
+    let mut resolved = options.clone();
+    resolved.work_dir = absolute(&options.work_dir)?;
+    resolved.transcript = options.transcript.as_deref().map(absolute).transpose()?;
+    if let Some(source) = &options.source
+        && Path::new(source).exists()
+    {
+        resolved.source = Some(absolute(Path::new(source))?.display().to_string());
+    }
+    Ok(resolved)
 }
 
 /// The adapter the options select. A transcript is checked before anything
