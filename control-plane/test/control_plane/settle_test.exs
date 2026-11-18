@@ -783,7 +783,7 @@ defmodule ControlPlane.SettleTest do
       assert reason =~ "blocked"
       assert merges(gh) == []
       assert labels(gh) == ["labels[]=heph:done"]
-      assert hd(comments(gh)) =~ "not merged"
+      assert hd(comments(gh)) =~ "Not merged"
     end
 
     test "behind, conflicting, unstable and draft pull requests are not merged", %{gh: gh, id: id} do
@@ -832,7 +832,7 @@ defmodule ControlPlane.SettleTest do
       assert {:done, {:not_merged, reason}} = result(id)
       assert reason =~ "not mergeable"
       assert Workloads.get(id).settled_at
-      assert hd(comments(gh)) =~ "not merged"
+      assert hd(comments(gh)) =~ "Not merged"
 
       assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
       assert length(merges(gh)) == 1
