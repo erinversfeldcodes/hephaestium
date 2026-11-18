@@ -497,6 +497,30 @@ defmodule ControlPlane.SettleTest do
       assert comment =~ "ci"
     end
 
+    test "colour codes in a log do not reach the agent", %{gh: gh, id: id} do
+      StandInGitHub.respond_text(gh, @logs, "\e[31mFAILED\e[0m: the reset spec\n")
+
+      assert result(id) == {:revising, 1}
+      assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
+      assert excerpt =~ "FAILED: the reset spec"
+      refute excerpt =~ "\e["
+    end
+
+    test "a second revision is numbered from the first", %{id: id} do
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+      complete(first.id)
+
+      Workloads.keep_record(first.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      Workloads.settle(id)
+
+      assert Enum.find(Settle.run(), &(&1.workload_id == first.id)).result == {:revising, 2}
+      assert %{"revision" => %{"attempt" => 2}} = revision_of(first.id).workload
+    end
+
     test "by default nothing is revised", %{id: id} do
       Application.delete_env(:control_plane, :settle)
 
