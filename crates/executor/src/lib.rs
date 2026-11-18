@@ -6,6 +6,7 @@ pub mod agent;
 pub mod claude_code;
 pub mod cli;
 pub mod deliver;
+pub mod review;
 pub mod run;
 pub mod secrets;
 pub mod stream;

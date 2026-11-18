@@ -70,6 +70,11 @@ fn writes(contents: &str, before: &str) -> String {
     )
 }
 
+/// An agent that says it is done and leaves no verdict.
+fn writes_nothing() -> String {
+    format!("echo '{}'", json!({"agentMessage": {"text": "reviewed"}}))
+}
+
 fn review(rig: Rig, value: &Value, script: &str) -> common::Ran {
     let gh = stand_in_gh(&rig.scratch, 0);
     let arguments = [
@@ -106,10 +111,12 @@ fn a_verdict_that_passes_the_contract_is_kept_in_the_record() {
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     let events = ran.events();
     assert_eq!(finished(&events).0, Outcome::Completed);
-    assert_eq!(
-        serde_json::to_value(ran.record().review.expect("a verdict is kept")).expect("JSON"),
-        said
-    );
+    let kept = serde_json::to_value(ran.record().review.expect("a verdict is kept")).expect("JSON");
+    // A protobuf Struct holds every number as a double, so 0 comes back as 0.0.
+    assert_eq!(kept["schema_version"].as_f64(), Some(0.0));
+    for key in ["lens", "commit", "verdict", "findings", "notes"] {
+        assert_eq!(kept[key], said[key], "{key}");
+    }
 }
 
 #[test]
@@ -149,7 +156,7 @@ fn a_review_delivers_nothing_and_runs_no_gate() {
 fn a_review_that_leaves_no_verdict_fails() {
     let (rig, head) = rig_with_change("review-none", &manifest(&[]));
 
-    let ran = review(rig, &review_of(&head), "echo '{}'");
+    let ran = review(rig, &review_of(&head), &writes_nothing());
 
     failed_because(&ran, &["verdict"]);
 }

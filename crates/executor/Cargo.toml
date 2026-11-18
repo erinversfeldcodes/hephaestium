@@ -7,8 +7,10 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.17.0", version = "0.0.0" }
 contracts = { path = "../contracts" }
 heph = { path = "../heph" }
+jsonschema = { version = "0.61.2", default-features = false }
 pbjson-types = "0.9.0"
 serde_json = "1.0.154"
 

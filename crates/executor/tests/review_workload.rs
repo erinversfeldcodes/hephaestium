@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{IDENTITY, agent_script, manifest, rig, run_with_env, workload};
+use common::workload;
 use executor::workload::read;
 use serde_json::{Value, json};
 
@@ -113,28 +113,4 @@ fn the_lens_names_a_pack_so_letters_digits_dashes_and_underscores_are_allowed() 
 fn a_misspelt_field_in_a_review_is_refused_and_not_ignored() {
     let value = reviewing(|v| v["review"]["lense"] = json!("rust"));
     assert!(read(&value.to_string()).is_err());
-}
-
-#[test]
-fn until_the_executor_can_run_a_review_it_refuses_to_run_one_as_a_ticket() {
-    // A review run as a ticket would let the agent change code and open a pull
-    // request, which a review never does.
-    let rig = rig("review-refused", &manifest(&[]));
-    let head = common::git(&rig.source, &["rev-parse", "HEAD"]);
-    let mut value = workload(&head);
-    value["review"] = review();
-    let arguments = [
-        "--agent-command".to_owned(),
-        json!(["sh", "-c", agent_script("")]).to_string(),
-    ];
-    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
-
-    let ran = run_with_env(rig.scratch, &value, None, &refs, &IDENTITY);
-
-    assert_eq!(ran.code(), 1, "{}", ran.stderr());
-    assert_eq!(ran.output.stdout, b"", "events were written");
-    assert!(
-        !ran.scratch.path("work").exists(),
-        "a workspace was created"
-    );
 }

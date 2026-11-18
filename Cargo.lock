@@ -46,7 +46,7 @@ checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 [[package]]
 name = "athenaeum"
 version = "0.0.0"
-source = "git+https://github.com/erinversfeldcodes/athenaeum?tag=v0.14.0#97d926fc43a49b7eaba062b6bfcb9469318a986d"
+source = "git+https://github.com/erinversfeldcodes/athenaeum?tag=v0.17.0#d50a7782df587055be88441c76bbb0f056419e2c"
 
 [[package]]
 name = "autocfg"
@@ -195,8 +195,10 @@ dependencies = [
 name = "executor"
 version = "0.0.0"
 dependencies = [
+ "athenaeum",
  "contracts",
  "heph",
+ "jsonschema",
  "pbjson-types",
  "serde_json",
 ]
