@@ -327,6 +327,63 @@ fn a_manifest_that_is_not_valid_fails_the_workload() {
 }
 
 #[test]
+fn a_relative_work_dir_and_source_mean_relative_to_where_the_executor_was_started() {
+    // What the first real run did: it was started from the run's own directory
+    // with --work-dir work, and the clone landed in work/work/<id>.
+    let scratch = Scratch::new("relative");
+    let (_, commit) = source(&scratch, &manifest(&[]));
+    let workload = workload(&commit);
+    let id = workload["id"].as_str().expect("an id").to_owned();
+    scratch.write("workload.json", &workload.to_string());
+    scratch.write("transcript.jsonl", &transcript());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_executor"))
+        .current_dir(&scratch.0)
+        .args([
+            "run",
+            "--workload",
+            "workload.json",
+            "--work-dir",
+            "work",
+            "--record",
+            "record.json",
+            "--source",
+            "source",
+            "--transcript",
+            "transcript.jsonl",
+        ])
+        .output()
+        .expect("the executor to run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        scratch.path(&format!("work/{id}/README.md")).is_file(),
+        "the workspace is not where --work-dir says: {stderr}"
+    );
+    assert!(
+        !scratch.path("work/work").exists(),
+        "the clone landed inside the work directory a second time"
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("OUTCOME_COMPLETED"), "{events}");
+}
+
+#[test]
+fn a_bootstrap_step_that_cannot_be_started_says_what_the_system_said() {
+    let scratch = Scratch::new("bootstrap-missing");
+    let steps: [(&[&str], Option<&str>, u64); 1] = [(&["no-such-program-anywhere"], None, 30)];
+    let (_, commit) = source(&scratch, &manifest(&steps));
+
+    let ran = run_with(scratch, &workload(&commit), Some(&transcript()), &[]);
+
+    let (outcome, reason) = finished(&ran.events());
+    assert_eq!(outcome, Outcome::Failed);
+    assert!(reason.contains("could not be started"), "{reason}");
+    assert!(reason.contains("No such file or directory"), "{reason}");
+}
+
+#[test]
 fn a_missing_option_is_a_usage_error() {
     let output = Command::new(env!("CARGO_BIN_EXE_executor"))
         .args(["run", "--work-dir", "somewhere"])
