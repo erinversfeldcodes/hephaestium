@@ -58,6 +58,20 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   that a newer run replaced, or a check the ruleset does not require, is not re-run.
   A re-run GitHub refuses waits and is not counted. The final failure comment says
   the check was re-run.
+- Revision on red ([ADR 0024](../docs/adr/0024-a-failing-check-is-investigated-and-fixed-or-the-ticket-is-blocked.md))
+  is off by default. `HEPH_REVISIONS=N` lets settle, when a pull request's required
+  checks really fail (`failure` or `timed_out`, never `cancelled`), start a revision
+  instead of failing the ticket, at most N times per pull request. A revision is the
+  stored workload again with a new id, `parent_id` set to the workload it revises, its
+  base commit moved to the pull request's head, and a `revision` section: the pull
+  request, its branch, the attempt, and for each failing check its name, result and an
+  excerpt (the check's title and summary and the tail of its job's log, colour codes
+  removed, cut to 8,000 bytes). The first workload is marked settled and the revision
+  kept and queued in one transaction, so a revision starts once. The ticket's labels do
+  not change and a comment says revision k of N has started. A pull request that is not
+  on a `heph/` branch of the same repository is never revised. When no revisions are
+  left, the ticket is labelled `heph:failed` and the comment says what each revision
+  did. Nothing in the control plane merges a pull request.
 
 ## Running it
 

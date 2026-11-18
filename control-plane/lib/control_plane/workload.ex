@@ -15,6 +15,7 @@ defmodule ControlPlane.Workload do
     field :finished_at, :utc_datetime_usec
     field :settled_at, :utc_datetime_usec
     field :reruns, :map, default: %{}
+    field :parent_id, :binary_id
 
     timestamps()
   end

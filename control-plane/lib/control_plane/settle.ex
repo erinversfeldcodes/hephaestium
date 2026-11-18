@@ -34,16 +34,18 @@ defmodule ControlPlane.Settle do
   defp settle(workload) do
     with {:ok, number} <- pull_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
-         {:ok, verdict} <- verdict(workload, pull),
+         {:ok, verdict} <- verdict(workload, pull, number),
          :ok <- act(workload, verdict) do
-      if match?({:rerun, _}, verdict),
-        do: {:waiting, rerun_message(verdict)},
-        else: finish(workload, verdict)
+      outcome(workload, verdict)
     else
       {:error, reason} -> {:waiting, to_string(reason)}
       {:waiting, reason} -> {:waiting, reason}
     end
   end
+
+  defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
+  defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
+  defp outcome(workload, verdict), do: finish(workload, verdict)
 
   defp finish(workload, verdict) do
     Workloads.settle(workload.id)
@@ -71,6 +73,40 @@ defmodule ControlPlane.Settle do
     Enum.find(results, :ok, &match?({:error, _}, &1))
   end
 
+  # A revision: the stored workload again, on the pull request's head, told which
+  # checks failed and what they said. It is kept, queued and the first workload
+  # handed on in one step; the ticket is told afterwards, and a comment that
+  # cannot be written does not undo the revision.
+  defp act(workload, {:revise, runs, pull, number}) do
+    attempt = attempt(workload) + 1
+
+    failures =
+      for {name, run} <- runs do
+        %{"name" => name, "result" => run["conclusion"], "excerpt" => excerpt(workload, run)}
+      end
+
+    revision =
+      workload.workload
+      |> Map.put("id", Ecto.UUID.generate())
+      |> put_in(["repository", "baseCommit"], pull["head"]["sha"])
+      |> Map.put("revision", %{
+        "pullRequestNumber" => to_string(number),
+        "pullRequestUrl" => "https://github.com/#{workload.repository}/pull/#{number}",
+        "branch" => pull["head"]["ref"],
+        "attempt" => attempt,
+        "failures" => failures
+      })
+
+    case Workloads.hand_on(workload, revision) do
+      {:ok, _child} ->
+        Tickets.revising(workload, Enum.map(failures, & &1["name"]), attempt, revisions())
+        :ok
+
+      {:error, reason} ->
+        {:error, "could not start a revision: #{inspect(reason)}"}
+    end
+  end
+
   defp act(workload, verdict), do: write(workload, verdict)
 
   defp write(workload, verdict) do
@@ -89,18 +125,18 @@ defmodule ControlPlane.Settle do
     end
   end
 
-  defp verdict(_workload, %{"merged" => true}), do: {:ok, :done}
-  defp verdict(_workload, %{"state" => "closed"}), do: {:ok, :abandoned}
+  defp verdict(_workload, %{"merged" => true}, _number), do: {:ok, :done}
+  defp verdict(_workload, %{"state" => "closed"}, _number), do: {:ok, :abandoned}
 
-  defp verdict(workload, %{"head" => %{"sha" => sha}, "base" => %{"ref" => base}}) do
+  defp verdict(workload, %{"head" => %{"sha" => sha}, "base" => %{"ref" => base}} = pull, number) do
     with {:ok, rules} <- GitHub.get("repos/#{workload.repository}/rules/branches/#{base}"),
          {:ok, runs} <-
            GitHub.get("repos/#{workload.repository}/commits/#{sha}/check-runs?per_page=100") do
-      judge(workload, required(rules), newest(runs["check_runs"] || []))
+      judge(workload, required(rules), newest(runs["check_runs"] || []), {pull, number})
     end
   end
 
-  defp verdict(_workload, _pull), do: {:error, "the pull request has no head and base"}
+  defp verdict(_workload, _pull, _number), do: {:error, "the pull request has no head and base"}
 
   defp required(rules) do
     for %{
@@ -120,7 +156,62 @@ defmodule ControlPlane.Settle do
     |> Map.new(fn {name, rs} -> {name, Enum.max_by(rs, & &1["id"])} end)
   end
 
-  defp judge(workload, required, runs) do
+  # What a failing check said, for the agent: the check's own title and summary and the
+  # tail of its job's log, cut to what fits. A log that cannot be read is no reason
+  # not to revise, so the revision gets what there is, or says there was nothing.
+  @excerpt_bytes 8_000
+  @separator "\n--- the end of the job's log ---\n"
+
+  defp excerpt(workload, run) do
+    output = run["output"] || %{}
+
+    summary =
+      [output["title"], output["summary"]]
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.join("\n")
+      |> cut_start(1_500)
+
+    log =
+      case GitHub.text("repos/#{workload.repository}/actions/jobs/#{run["id"]}/logs") do
+        {:ok, text} ->
+          text
+          |> strip_colours()
+          |> tail(@excerpt_bytes - byte_size(summary) - byte_size(@separator))
+
+        {:error, _} ->
+          ""
+      end
+
+    cond do
+      summary != "" and log != "" -> summary <> @separator <> log
+      summary != "" -> summary
+      log != "" -> log
+      true -> "(no output was available for this check)"
+    end
+  end
+
+  defp cut_start(text, bytes) when byte_size(text) <= bytes, do: text
+
+  defp cut_start(text, bytes),
+    do: binary_part(text, 0, bytes) |> String.replace(~r/[^[:print:]\n]\z/u, "")
+
+  # The last `bytes` of the text, from the start of a line.
+  defp tail(text, bytes) when byte_size(text) <= bytes, do: String.trim(text)
+
+  defp tail(text, bytes) do
+    chunk = binary_part(text, byte_size(text) - bytes, bytes)
+
+    case :binary.split(chunk, "\n") do
+      [_partial, rest] -> String.trim(rest)
+      [whole] -> String.trim(whole)
+    end
+  end
+
+  defp strip_colours(text), do: String.replace(text, ~r/\e\[[0-9;]*[A-Za-z]/, "")
+
+  defp attempt(workload), do: get_in(workload.workload, ["revision", "attempt"]) || 0
+
+  defp judge(workload, required, runs, pull_and_number) do
     names = if required == [], do: Map.keys(runs), else: required
     looked_at = Enum.map(names, &{&1, runs[&1]})
 
@@ -134,12 +225,19 @@ defmodule ControlPlane.Settle do
     unfinished =
       for {name, run} <- looked_at, is_nil(run) or run["status"] != "completed", do: name
 
+    real = bad -- cancelled
+    revisable = revisable(workload, pull_and_number)
+
     cond do
       failed != [] and bad == cancelled and rerunnable?(workload, cancelled) ->
         {:ok, {:rerun, for({name, run} <- cancelled, do: {name, run["id"]})}}
 
+      real != [] and revisable == :yes ->
+        {pull, number} = pull_and_number
+        {:ok, {:revise, real, pull, number}}
+
       failed != [] ->
-        {:ok, {:failed, Enum.sort(failed)}}
+        {:ok, failed(workload, Enum.sort(failed), real != [], revisable)}
 
       names == [] ->
         {:waiting, "no checks have been reported yet"}
@@ -160,5 +258,56 @@ defmodule ControlPlane.Settle do
     max > 0 and Enum.all?(cancelled, fn {name, _} -> Map.get(done, name, 0) < max end)
   end
 
-  defp reruns, do: Application.get_env(:control_plane, :settle, []) |> Keyword.get(:reruns, 0)
+  # Whether a failing pull request is revised: revisions are on, there are some left,
+  # and the pull request is a branch of this repository that the runtime made. Anything
+  # else says why not.
+  defp revisable(workload, {pull, _number}) do
+    head = pull["head"] || %{}
+    ref = head["ref"] || ""
+
+    cond do
+      revisions() == 0 ->
+        :off
+
+      attempt(workload) >= revisions() ->
+        :exhausted
+
+      not String.starts_with?(ref, "heph/") ->
+        {:no, "its branch #{inspect(ref)} is not one the runtime made (heph/...)"}
+
+      get_in(head, ["repo", "full_name"]) != workload.repository ->
+        {:no, "its branch is in another repository"}
+
+      true ->
+        :yes
+    end
+  end
+
+  # The verdict that ends in failure. When revisions were on and the failure was a
+  # real one, it says why there was no revision, or what the revisions did.
+  defp failed(_workload, names, false, _revisable), do: {:failed, names}
+  defp failed(_workload, names, true, :off), do: {:failed, names}
+
+  defp failed(_workload, names, true, {:no, reason}),
+    do: {:failed, names, "It was not revised: #{reason}."}
+
+  defp failed(workload, names, true, :exhausted) do
+    lines =
+      for {w, index} <- Enum.with_index(Workloads.chain(workload)), index > 0 do
+        what = if w.reason in [nil, ""], do: w.state, else: "#{w.state}: #{w.reason}"
+        "- revision #{index}: #{what}"
+      end
+
+    {:failed, names,
+     "Revisions made: #{attempt(workload)} of #{revisions()}.\n" <> Enum.join(lines, "\n")}
+  end
+
+  defp revisions,
+    do: setting(:revisions)
+
+  defp reruns, do: setting(:reruns)
+
+  # A setting of settling, zero (none) unless set.
+  defp setting(name),
+    do: (Application.get_env(:control_plane, :settle) || []) |> Keyword.get(name, 0)
 end
