@@ -1,0 +1,16 @@
+[package]
+name = "executor"
+description = "The Hephaestium executor: runs one workload in a workspace of its own"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+contracts = { path = "../contracts" }
+heph = { path = "../heph" }
+pbjson-types = "0.9.0"
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

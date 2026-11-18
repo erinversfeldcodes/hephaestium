@@ -1,0 +1,32 @@
+//! The executor binary. The version it reports is compiled in from the
+//! environment when a release is built, as `heph`'s is.
+
+use std::process::ExitCode;
+
+use executor::cli;
+use executor::run::run;
+
+/// What a build reports when no version was compiled in.
+const DEVELOPMENT_VERSION: &str = "0.0.0-dev";
+
+const VERSION: &str = match option_env!("HEPHAESTIUM_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => DEVELOPMENT_VERSION,
+};
+
+fn main() -> ExitCode {
+    let options = match cli::parse(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("executor: {message}\n\n{}", cli::USAGE);
+            return ExitCode::from(2);
+        }
+    };
+    match run(&options, VERSION, &mut std::io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(refused) => {
+            eprintln!("executor: {refused}");
+            ExitCode::from(1)
+        }
+    }
+}
