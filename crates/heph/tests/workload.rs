@@ -385,3 +385,133 @@ fn gh_that_cannot_be_reached_is_a_reason_and_not_a_workload() {
     assert_eq!(stdout(&output), "");
     assert!(stderr(&output).contains("502"), "{}", stderr(&output));
 }
+
+#[test]
+fn the_approver_and_the_time_given_are_the_workloads_and_github_is_not_asked_who_is_signed_in() {
+    let scratch = Scratch::new("wl-approver");
+    let gh = github("wl-approver-gh");
+    // Nobody is signed in as far as this GitHub knows: the approver is given.
+    std::fs::remove_file(gh.scratch.0.join(format!("{}.json", Gh::file_for("user"))))
+        .expect("to remove");
+
+    let output = run(
+        &scratch.0,
+        &gh,
+        &[
+            "12",
+            "--repo",
+            REPO,
+            "--approver",
+            "a-labeller",
+            "--approved-at",
+            "2026-11-17T12:00:00Z",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let approval = workload_of(&output).approval.expect("an approval");
+    assert_eq!(approval.approved_by, "a-labeller");
+    assert_eq!(approval.approved_at.expect("a time").seconds, 1_794_916_800);
+    assert!(
+        !gh.calls().lines().any(|call| call.trim() == "api user"),
+        "GitHub was asked who is signed in:\n{}",
+        gh.calls()
+    );
+}
+
+#[test]
+fn each_of_the_two_works_alone() {
+    let scratch = Scratch::new("wl-approver-alone");
+    let gh = github("wl-approver-alone-gh");
+
+    let only_the_approver = run(
+        &scratch.0,
+        &gh,
+        &["12", "--repo", REPO, "--approver", "a-labeller"],
+    );
+    assert_eq!(
+        only_the_approver.status.code(),
+        Some(0),
+        "{}",
+        stderr(&only_the_approver)
+    );
+    let approval = workload_of(&only_the_approver)
+        .approval
+        .expect("an approval");
+    assert_eq!(approval.approved_by, "a-labeller");
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock")
+            .as_secs(),
+    )
+    .expect("seconds");
+    assert!(
+        (now - approval.approved_at.expect("a time").seconds).abs() < 120,
+        "the time is now"
+    );
+
+    let only_the_time = run(
+        &scratch.0,
+        &gh,
+        &[
+            "12",
+            "--repo",
+            REPO,
+            "--approved-at",
+            "2026-11-17T12:00:00Z",
+        ],
+    );
+    assert_eq!(
+        only_the_time.status.code(),
+        Some(0),
+        "{}",
+        stderr(&only_the_time)
+    );
+    let approval = workload_of(&only_the_time).approval.expect("an approval");
+    assert_eq!(
+        approval.approved_by, "a-maintainer",
+        "the signed-in user, as before"
+    );
+    assert_eq!(approval.approved_at.expect("a time").seconds, 1_794_916_800);
+}
+
+#[test]
+fn a_login_or_a_time_that_is_not_one_is_a_usage_error() {
+    let scratch = Scratch::new("wl-approver-usage");
+    let gh = github("wl-approver-usage-gh");
+    // A good login and a good time are accepted, so that the refusals below are
+    // about the values and not about the options.
+    let good = run(
+        &scratch.0,
+        &gh,
+        &[
+            "12",
+            "--repo",
+            REPO,
+            "--approver",
+            "a-labeller",
+            "--approved-at",
+            "2026-11-17T12:00:00+02:00",
+        ],
+    );
+    assert_eq!(good.status.code(), Some(0), "{}", stderr(&good));
+    for args in [
+        vec!["12", "--repo", REPO, "--approver", ""],
+        vec!["12", "--repo", REPO, "--approver", "two words"],
+        vec!["12", "--repo", REPO, "--approver", "-leading-hyphen"],
+        vec!["12", "--repo", REPO, "--approver", "a/b"],
+        vec!["12", "--repo", REPO, "--approved-at", "yesterday"],
+        vec!["12", "--repo", REPO, "--approved-at", "2026-11-17"],
+        vec!["12", "--repo", REPO, "--approved-at"],
+    ] {
+        let output = run(&scratch.0, &gh, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&output), "", "{args:?}");
+    }
+}

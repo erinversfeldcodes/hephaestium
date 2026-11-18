@@ -75,6 +75,7 @@ Commands:
 
   workload TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
                    [--timeout-seconds N] [--budget-usd X]
+                   [--approver LOGIN] [--approved-at TIME]
                          Build the workload for a ticket and print it as JSON,
                          which is what `executor run` takes. The repository is
                          --repo, or the origin of the checkout at --root
@@ -82,7 +83,8 @@ Commands:
                          default branch on GitHub, not from your checkout, and
                          a checkout at another commit is warned about. The
                          ticket must be an open issue. You are the approver:
-                         the signed-in GitHub user, now. Defaults: Claude Code
+                         the signed-in GitHub user, now, unless --approver
+                         names a login and --approved-at an RFC 3339 time. Defaults: Claude Code
                          on the Anthropic subscription, model sonnet, 1800
                          seconds, 5 dollars. Nothing is run or changed. Exits 0,
                          2 on a usage error, and 3 if no workload could be
@@ -821,6 +823,9 @@ struct WorkloadRequest {
     /// Only `run` takes these two.
     runs_dir: Option<String>,
     executor: Option<String>,
+    /// Only `workload` takes these two.
+    approver: Option<String>,
+    approved_at: Option<pbjson_types::Timestamp>,
 }
 
 impl WorkloadRequest {
@@ -831,6 +836,8 @@ impl WorkloadRequest {
         let mut repo = None;
         let mut runs_dir = None;
         let mut executor = None;
+        let mut approver = None;
+        let mut approved_at = None;
         let mut root = ".".to_owned();
         let mut model = workload::DEFAULT_MODEL.to_owned();
         let mut timeout_seconds = workload::DEFAULT_TIMEOUT_SECONDS;
@@ -843,6 +850,8 @@ impl WorkloadRequest {
                 "--root" => (*remaining.next()?).clone_into(&mut root),
                 "--runs-dir" if for_run => runs_dir = Some((*remaining.next()?).to_owned()),
                 "--executor" if for_run => executor = Some((*remaining.next()?).to_owned()),
+                "--approver" if !for_run => approver = Some(login(remaining.next()?)?),
+                "--approved-at" if !for_run => approved_at = Some(timestamp(remaining.next()?)?),
                 "--model" => (*remaining.next()?).clone_into(&mut model),
                 "--timeout-seconds" => {
                     timeout_seconds = remaining.next()?.parse().ok().filter(|n| *n > 0)?;
@@ -877,8 +886,26 @@ impl WorkloadRequest {
             budget_usd,
             runs_dir,
             executor,
+            approver,
+            approved_at,
         })
     }
+}
+
+/// A GitHub login: letters, digits and single hyphens, not starting or ending with one.
+fn login(text: &str) -> Option<String> {
+    let plain = !text.is_empty()
+        && text.len() <= 39
+        && !text.starts_with('-')
+        && !text.ends_with('-')
+        && !text.contains("--")
+        && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    plain.then(|| text.to_owned())
+}
+
+/// A time written as RFC 3339, with its offset.
+fn timestamp(text: &str) -> Option<pbjson_types::Timestamp> {
+    serde_json::from_value(serde_json::Value::String(text.to_owned())).ok()
 }
 
 fn workload_usage_error() -> ExitCode {
@@ -903,6 +930,8 @@ fn run_workload(request: &WorkloadRequest) -> ExitCode {
             model: &request.model,
             timeout_seconds: request.timeout_seconds,
             budget_usd: request.budget_usd,
+            approver: request.approver.as_deref(),
+            approved_at: request.approved_at,
         },
         local_head.as_deref(),
     );

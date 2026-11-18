@@ -483,6 +483,8 @@ fn an_executor_that_cannot_be_found_or_refuses_the_workload_exits_3_and_says_wha
 fn a_usage_error_is_exit_2() {
     let rig = rig("run-usage");
     for args in [
+        vec!["12", "--approver", "someone"],
+        vec!["12", "--approved-at", "2026-11-17T12:00:00Z"],
         vec![],
         vec!["twelve"],
         vec!["12", "--budget-usd", "0"],
