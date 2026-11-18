@@ -31,6 +31,7 @@ defmodule ControlPlane.StandInGitHub do
             --paginate) shift;;
             --slurp) slurp=1; shift;;
             -X) method="$2"; shift 2;;
+            -H) echo "header: $2" >> $d/gh-headers.log; shift 2;;
             -f|-F) case "$2" in number=*) number="${2#*=}";; esac; fields="$fields$2$sep"; shift 2;;
             *) endpoint="$1"; shift;;
           esac
@@ -66,6 +67,15 @@ defmodule ControlPlane.StandInGitHub do
     #!/bin/sh
     d=#{dir}
     echo "$*" >> $d/heph-calls.log
+    if [ "$1" = lenses ]; then
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in --manifest) cp "$2" $d/manifest-seen.toml; shift 2;; *) shift;; esac
+      done
+      if [ -f $d/heph-lenses.err ]; then cat $d/heph-lenses.err >&2; exit 3; fi
+      cat $d/heph-lenses.json
+      exit 0
+    fi
     if [ -f $d/heph.err ]; then cat $d/heph.err >&2; exit 1; fi
     if [ -f $d/heph.warning ]; then cat $d/heph.warning >&2; fi
     cat $d/heph.json
@@ -102,6 +112,19 @@ defmodule ControlPlane.StandInGitHub do
 
   @doc "Make the stand-in `heph` print this on its error output, as it does while succeeding."
   def heph_warns(%{dir: dir}, message), do: File.write!(Path.join(dir, "heph.warning"), message)
+
+  @doc "Make the stand-in `heph lenses` print this plan."
+  def heph_lenses(%{dir: dir}, plan) do
+    File.rm(Path.join(dir, "heph-lenses.err"))
+    File.write!(Path.join(dir, "heph-lenses.json"), Jason.encode!(plan))
+  end
+
+  @doc "Make the stand-in `heph lenses` fail, saying this."
+  def heph_lenses_fails(%{dir: dir}, message),
+    do: File.write!(Path.join(dir, "heph-lenses.err"), message)
+
+  @doc "The manifest the stand-in `heph lenses` was given, as text."
+  def manifest_seen(%{dir: dir}), do: File.read(Path.join(dir, "manifest-seen.toml"))
 
   @doc "Make the stand-in `heph` fail, saying this."
   def heph_fails(%{dir: dir}, message), do: File.write!(Path.join(dir, "heph.err"), message)

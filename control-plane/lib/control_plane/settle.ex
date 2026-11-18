@@ -19,7 +19,7 @@ defmodule ControlPlane.Settle do
   labels and comment were written; if they could not be, it is tried again.
   """
 
-  alias ControlPlane.{GitHub, Tickets, Workloads}
+  alias ControlPlane.{GitHub, Reviews, Tickets, Workloads}
 
   @good ["success", "skipped", "neutral"]
 
@@ -35,6 +35,7 @@ defmodule ControlPlane.Settle do
     with {:ok, number} <- pull_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
          {:ok, verdict} <- verdict(workload, pull, number),
+         {:ok, verdict} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
          :ok <- act(workload, verdict) do
       outcome(workload, verdict)
@@ -48,6 +49,22 @@ defmodule ControlPlane.Settle do
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, verdict), do: finish(workload, verdict)
 
+  # A pull request whose checks are all green is asked to be reviewed, for the
+  # repositories that opted in. If that cannot be done the ticket waits: it is not
+  # done on the strength of checks alone when a review was meant to happen.
+  defp reviews(workload, %{"state" => "open"} = pull, number, :done) do
+    if Reviews.enabled?(workload.repository) and pull["merged"] != true do
+      case Reviews.request(workload, pull, number) do
+        {:ok, _asked} -> {:ok, :done}
+        {:error, message} -> {:waiting, "could not ask for reviews: #{message}"}
+      end
+    else
+      {:ok, :done}
+    end
+  end
+
+  defp reviews(_workload, _pull, _number, verdict), do: {:ok, verdict}
+
   # Merging a pull request whose every check is green, for the repositories that
   # opted in (`HEPH_AUTOMERGE`). It is never a bypass: GitHub's own account of the pull
   # request has to be `clean`, which it is only when the repository's rules are met
@@ -55,7 +72,10 @@ defmodule ControlPlane.Settle do
   # those rules would otherwise merge a blocked pull request through the API without
   # anyone saying so. Anything else is reported on the ticket and left to a person.
   defp merge(workload, %{"state" => "open"} = pull, number, :done) when pull != %{} do
-    if automerge?(workload.repository) and pull["merged"] != true do
+    # Until the verdicts of the reviews that were asked for count, nothing is merged
+    # on the strength of the checks alone.
+    if automerge?(workload.repository) and not Reviews.enabled?(workload.repository) and
+         pull["merged"] != true do
       merge_open(workload, pull, number)
     else
       {:ok, :done}

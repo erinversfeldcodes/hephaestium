@@ -196,6 +196,23 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc """
+  Keep a review of a workload's pull request and put it on the queue, both or
+  neither. The workload it reviews is not settled by this: a review reads, and what
+  it says is for the pull request's own ticket to weigh.
+  """
+  @spec start_review(%Workload{}, map()) :: {:ok, %Workload{}} | {:error, term()}
+  def start_review(%Workload{} = workload, review) do
+    Repo.transaction(fn ->
+      with {:ok, child} <- create(review, parent: workload.id),
+           {:ok, _job} <- ControlPlane.Runner.enqueue(child.id) do
+        child
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc """
   Hand a workload's pull request on to a revision: keep the revision, put it on the
   queue, and mark the workload settled, all or none, so that a revision is started
   once and a workload that was handed on is never judged again.

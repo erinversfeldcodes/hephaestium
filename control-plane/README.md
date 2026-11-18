@@ -85,6 +85,20 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   and one whose merge GitHub refuses are left for a person, and the ticket says why
   (`Not merged: ...`). A state GitHub has not worked out yet, and a merge that failed
   for a reason that may pass, wait for the next pass. It is attempted once per ticket.
+- Asking for reviews is off by default and chosen per repository:
+  `HEPH_REVIEWS=owner/name,...`, with `HEPH_ATHENAEUM_REF=v0.17.0` naming the
+  Athenaeum release the lenses are read from (an operator's choice, never anything a
+  pull request can change; without it reviews are not asked for and the ticket waits).
+  For a listed repository, when every check on a pull request's head commit is green,
+  settle reads the pull request's changed files and its manifest at that commit,
+  asks `heph lenses` which lenses the change needs, and keeps and queues a review
+  workload (ADR 0025) for each lens that has none yet at this head. A review is
+  asked for once per pull request, head commit and lens; a new head is a new review.
+  A lens whose text is not in the release is reported, not skipped silently. If the
+  lenses cannot be worked out, the ticket waits. A review leaves the ticket alone.
+  **Interim:** until verdicts count (#105, slice 4), the ticket is still marked done
+  when its checks are green, and nothing is auto-merged for a repository whose
+  reviews are on.
 
 ## Running it
 
