@@ -176,17 +176,20 @@ pub fn describe_missing(missing: &[(String, Requirement)]) -> String {
 
 /// Whether a gate applies to a change.
 ///
-/// Without a list of changed files, every gate applies: not knowing what
-/// changed is no reason to skip a check. With one, a gate that names
-/// `when_paths` applies only if some changed file matches one of them.
+/// `changed` is `None` when what changed is not known: then every gate applies,
+/// because not knowing is no reason to skip a check. It is `Some` when it is
+/// known, even if the list is empty, and then a gate that names `when_paths`
+/// applies only if some changed file matches one of them, so nothing changing
+/// leaves it nothing to check. A gate that names no `when_paths` applies either
+/// way.
 ///
 /// # Errors
 ///
 /// Returns an error when a pattern in `when_paths` is not a valid glob.
-pub fn applies(gate: &Gate, changed: &[String]) -> Result<bool, CouldNotRun> {
-    match gate.when_paths.as_ref().filter(|_| !changed.is_empty()) {
-        Some(patterns) => matches_any(patterns, changed),
-        None => Ok(true),
+pub fn applies(gate: &Gate, changed: Option<&[String]>) -> Result<bool, CouldNotRun> {
+    match (gate.when_paths.as_ref(), changed) {
+        (Some(patterns), Some(changed)) => matches_any(patterns, changed),
+        _ => Ok(true),
     }
 }
 
@@ -383,7 +386,7 @@ impl std::fmt::Display for NotRun {
 pub fn run_named(
     manifest: &Manifest,
     name: &str,
-    changed: &[String],
+    changed: Option<&[String]>,
     directory: &Path,
     lookup: impl Fn(&str) -> Option<String>,
     notify: impl Fn(&str),

@@ -187,7 +187,7 @@ fn run_gates<W: Write>(
     let mut failures = Vec::new();
     for name in manifest.gates.keys() {
         stream.emit(Kind::GateStarted(GateStarted { name: name.clone() }))?;
-        match gate::run_named(manifest, name, &changed, workspace, environment, say) {
+        match gate::run_named(manifest, name, Some(&changed), workspace, environment, say) {
             Ok(result) => {
                 if matches!(
                     result.outcome,
