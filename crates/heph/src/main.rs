@@ -12,6 +12,7 @@ use heph::apply_settings;
 use heph::baseline;
 use heph::gate;
 use heph::github;
+use heph::lenses;
 use heph::lock;
 use heph::manifest::{self, Invalid};
 use heph::run;
@@ -55,6 +56,15 @@ Commands:
                          900 seconds unless --timeout-seconds says otherwise.
                          Exits 0 if all passed, 1 if any failed or timed out,
                          and 3 if linting could not be run.
+
+  lenses [--manifest PATH] --changed PATH [--changed PATH]...
+                         Say which review lenses a change needs, as one line of
+                         JSON: the packs of the components the files belong to,
+                         each with the components that named it, then the
+                         touched components that name no pack and the files no
+                         component owns, which no lens will look at. At least
+                         one --changed is required. Exits 0 when it says, 2 on
+                         a usage error and 3 if it could not be read.
 
   run TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
              [--timeout-seconds N] [--budget-usd X] [--runs-dir PATH]
@@ -189,6 +199,9 @@ fn main() -> ExitCode {
         }
         ["lint", rest @ ..] => {
             Lint::parse(rest).map_or_else(lint_usage_error, |request| run_lint(&request))
+        }
+        ["lenses", rest @ ..] => {
+            Lenses::parse(rest).map_or_else(lenses_usage_error, |request| run_lenses(&request))
         }
         ["manifest", "check"] => check_manifest(manifest::DEFAULT_PATH),
         ["manifest", "check", path] => check_manifest(path),
@@ -531,6 +544,57 @@ fn lint_usage_error() -> ExitCode {
         "heph: expected 'lint [--manifest PATH] [--changed PATH]... [--timeout-seconds N]'\n\n{USAGE}"
     );
     ExitCode::from(USAGE_ERROR)
+}
+
+/// The command line after `lenses` could not be understood.
+fn lenses_usage_error() -> ExitCode {
+    eprintln!(
+        "heph: expected 'lenses [--manifest PATH] --changed PATH [--changed PATH]...'\n\n{USAGE}"
+    );
+    ExitCode::from(USAGE_ERROR)
+}
+
+/// What `lenses` was asked to do.
+struct Lenses {
+    manifest: String,
+    changed: Vec<String>,
+}
+
+impl Lenses {
+    /// Read the arguments after `lenses`, or `None` if they are not the two
+    /// options with their values, or name no changed file: a change with no
+    /// files is not a change that needs every lens.
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut manifest = manifest::DEFAULT_PATH.to_owned();
+        let mut changed = Vec::new();
+        let mut remaining = arguments.iter();
+        while let Some(argument) = remaining.next() {
+            match *argument {
+                "--manifest" => (*remaining.next()?).clone_into(&mut manifest),
+                "--changed" => changed.push((*remaining.next()?).to_owned()),
+                _ => return None,
+            }
+        }
+        (!changed.is_empty()).then_some(Self { manifest, changed })
+    }
+}
+
+/// Say which lenses the change needs, on one line of standard output.
+fn run_lenses(request: &Lenses) -> ExitCode {
+    let manifest = match load_manifest(&request.manifest) {
+        Ok(manifest) => manifest,
+        Err(code) => return code,
+    };
+    match lenses::plan(&manifest, &request.changed) {
+        Ok(plan) => {
+            println!(
+                "{}",
+                serde_json::to_string(&plan).expect("a plan to serialise")
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => could_not_run(&error.to_string()),
+    }
 }
 
 /// How long a component's command may run when nothing says otherwise. The

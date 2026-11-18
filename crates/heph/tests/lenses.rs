@@ -72,7 +72,10 @@ fn a_change_to_one_component_needs_only_its_lens() {
 
     let (_, said) = lenses(&scratch, &["core/src/lib.rs"]);
 
-    assert_eq!(said["lenses"], json!([{"pack": "rust", "components": ["core"]}]));
+    assert_eq!(
+        said["lenses"],
+        json!([{"pack": "rust", "components": ["core"]}])
+    );
 }
 
 #[test]
@@ -108,7 +111,10 @@ fn a_file_no_component_owns_is_said_so_and_not_ignored() {
 
     let (_, said) = lenses(&scratch, &["core/src/lib.rs", "Makefile", "./scripts/x.sh"]);
 
-    assert_eq!(said["lenses"], json!([{"pack": "rust", "components": ["core"]}]));
+    assert_eq!(
+        said["lenses"],
+        json!([{"pack": "rust", "components": ["core"]}])
+    );
     assert_eq!(said["unowned"], json!(["Makefile", "./scripts/x.sh"]));
 }
 
@@ -118,7 +124,10 @@ fn a_leading_dot_slash_does_not_change_which_component_owns_a_file() {
 
     let (_, said) = lenses(&scratch, &["./web/lib/a.ex"]);
 
-    assert_eq!(said["lenses"], json!([{"pack": "elixir", "components": ["web"]}]));
+    assert_eq!(
+        said["lenses"],
+        json!([{"pack": "elixir", "components": ["web"]}])
+    );
     assert_eq!(said["unowned"], json!([]));
 }
 
@@ -149,7 +158,7 @@ fn naming_no_changed_file_is_a_usage_error_and_not_every_lens() {
     let output = heph_in(&scratch.0, &["lenses"]);
 
     assert_eq!(output.status.code(), Some(2), "stderr: {}", stderr(&output));
-    assert!(stdout(&output).is_empty(), "it must print no verdict");
+    assert_eq!(stdout(&output), "", "it must print no verdict");
 }
 
 #[test]
@@ -159,7 +168,7 @@ fn a_manifest_that_cannot_be_read_is_not_a_change_with_no_lenses() {
     let output = heph_in(&scratch.0, &["lenses", "--changed", "core/a.rs"]);
 
     assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
-    assert!(stdout(&output).is_empty());
+    assert_eq!(stdout(&output), "");
 }
 
 #[test]
@@ -170,7 +179,7 @@ fn a_glob_that_is_not_valid_is_could_not_run_and_not_no_lenses() {
     let output = heph_in(&scratch.0, &["lenses", "--changed", "core/a.rs"]);
 
     assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
-    assert!(stdout(&output).is_empty());
+    assert_eq!(stdout(&output), "");
 }
 
 #[test]
@@ -183,9 +192,18 @@ fn the_manifest_can_be_named() {
 
     let output = heph_in(
         &scratch.0,
-        &["lenses", "--manifest", "elsewhere.toml", "--changed", "web/a.ex"],
+        &[
+            "lenses",
+            "--manifest",
+            "elsewhere.toml",
+            "--changed",
+            "web/a.ex",
+        ],
     );
     let said: Value = serde_json::from_str(stdout(&output).trim()).expect("JSON");
 
-    assert_eq!(said["lenses"], json!([{"pack": "elixir", "components": ["web"]}]));
+    assert_eq!(
+        said["lenses"],
+        json!([{"pack": "elixir", "components": ["web"]}])
+    );
 }

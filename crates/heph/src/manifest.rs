@@ -53,6 +53,9 @@ pub struct BootstrapStep {
 pub struct Component {
     /// The directory its commands run in.
     pub root: String,
+    /// The Athenaeum pack that holds its stack's knowledge, and so the lens a
+    /// change to it is reviewed under.
+    pub pack: Option<String>,
     /// Globs for the files that belong to it.
     pub paths: Vec<String>,
     /// Its format and lint checks, each a command that changes nothing and

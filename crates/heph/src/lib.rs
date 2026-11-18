@@ -12,6 +12,7 @@ pub mod apply_settings;
 pub mod baseline;
 pub mod gate;
 pub mod github;
+pub mod lenses;
 pub mod lock;
 pub mod manifest;
 pub mod process;
