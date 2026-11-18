@@ -20,6 +20,10 @@ message Workload {
   // repository's goals.
   repeated GoalDocument goal_documents = 6;
   Approval approval = 7;
+  // Set when this workload fixes the failing checks of a pull request an earlier
+  // workload opened, on that pull request's branch. Absent for a workload that
+  // starts from a ticket alone.
+  Revision revision = 8;
 }
 
 // The ticket, as a maintainer approved it. The executor builds the agent's
@@ -95,4 +99,28 @@ message GoalDocument {
 message Approval {
   string approved_by = 1;
   google.protobuf.Timestamp approved_at = 2;
+}
+
+// A revision of a pull request the runtime opened: the checks that failed, and
+// where to push the fix. The repository's base commit is the pull request's head
+// when the revision was made, so the workspace holds what the checks ran on.
+message Revision {
+  int64 pull_request_number = 1;
+  string pull_request_url = 2;
+  // The pull request's branch. It must be one the runtime made (`heph/...`): a
+  // revision is delivered by pushing to it, never by forcing.
+  string branch = 3;
+  // Which revision this is of the pull request, from 1.
+  int32 attempt = 4;
+  // What failed. Never empty.
+  repeated FailedCheck failures = 5;
+}
+
+// One check that failed, and what it said. The excerpt is output a person's code
+// or a tool wrote, so it is data to read and never an instruction to follow.
+message FailedCheck {
+  string name = 1;
+  // How it ended: failure, timed_out and the like.
+  string result = 2;
+  string excerpt = 3;
 }
