@@ -4,111 +4,13 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-
-use common::{Ran, Scratch, finished, git, kinds, manifest, run_with_env, source, workload};
+use common::{
+    BRANCH, IDENTITY, MESSAGE, Rig, SUBJECT, Scratch, agent_script, finished, gh_was_called, git,
+    has_branch, kinds, manifest, rig, run, source,
+};
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use serde_json::json;
-
-const BRANCH: &str = "heph/12-make-the-reset-spec-wait-for-hydration";
-const SUBJECT: &str = "fix: make the reset spec wait for hydration";
-const MESSAGE: &str = "fix: make the reset spec wait for hydration\n\nThe spec clicked before the page was interactive.\n";
-
-const IDENTITY: [(&str, &str); 5] = [
-    ("HEPH_GITHUB_TOKEN", "a-github-token"),
-    ("GIT_AUTHOR_NAME", "A Person"),
-    ("GIT_AUTHOR_EMAIL", "person@example.invalid"),
-    ("GIT_COMMITTER_NAME", "A Person"),
-    ("GIT_COMMITTER_EMAIL", "person@example.invalid"),
-];
-
-/// A `gh` that records how it was called and prints a pull request's address.
-fn stand_in_gh(scratch: &Scratch, exit: i32) -> PathBuf {
-    let out = scratch.path("seen");
-    std::fs::create_dir_all(&out).expect("a directory");
-    let script = format!(
-        "#!/bin/sh\n\
-         printf '%s\\n' \"$@\" > {out}/gh-args.txt\n\
-         printf '%s\\n' \"${{GH_TOKEN:-none}}\" > {out}/gh-token.txt\n\
-         prev=''\n\
-         for a in \"$@\"; do if [ \"$prev\" = '--body-file' ]; then cp \"$a\" {out}/gh-body.txt; fi; prev=\"$a\"; done\n\
-         [ {exit} -eq 0 ] && echo https://github.com/erinversfeldcodes/gazebolang/pull/77\n\
-         exit {exit}\n",
-        out = out.display(),
-    );
-    let gh = scratch.path("gh");
-    std::fs::write(&gh, script).expect("a script");
-    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("to chmod");
-    gh
-}
-
-fn agent_script(extra: &str) -> String {
-    // printf turns the \n in the message into newlines, and the message has no %.
-    format!(
-        "mkdir -p web; echo changed > web/changed.txt; printf '{}' > .heph-commit-message; {extra} echo '{}'",
-        MESSAGE.replace('\n', "\\n"),
-        json!({"agentMessage": {"text": "done"}})
-    )
-}
-
-struct Rig {
-    scratch: Scratch,
-    commit: String,
-    source: PathBuf,
-}
-
-fn rig(name: &str, manifest_text: &str) -> Rig {
-    let scratch = Scratch::new(name);
-    let (source_dir, commit) = source(&scratch, manifest_text);
-    Rig {
-        scratch,
-        commit,
-        source: source_dir,
-    }
-}
-
-fn run(
-    rig: Rig,
-    script: &str,
-    deliver: bool,
-    gh_exit: i32,
-    env: &[(&str, &str)],
-) -> (Ran, PathBuf, String) {
-    let gh = stand_in_gh(&rig.scratch, gh_exit);
-    let mut arguments = vec![
-        "--agent-command".to_owned(),
-        json!(["sh", "-c", script]).to_string(),
-        "--gh".to_owned(),
-        gh.display().to_string(),
-    ];
-    if deliver {
-        arguments.push("--deliver".to_owned());
-    }
-    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let ran = run_with_env(rig.scratch, &workload(&rig.commit), None, &refs, env);
-    (ran, rig.source, rig.commit)
-}
-
-fn has_branch(source: &Path) -> bool {
-    std::process::Command::new("git")
-        .current_dir(source)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{BRANCH}"),
-        ])
-        .output()
-        .expect("git")
-        .status
-        .success()
-}
-
-fn gh_was_called(ran: &Ran) -> bool {
-    ran.scratch.path("seen/gh-args.txt").exists()
-}
 
 #[test]
 fn a_completed_workload_becomes_a_commit_a_branch_and_a_pull_request() {
@@ -198,8 +100,6 @@ fn a_completed_workload_becomes_a_commit_a_branch_and_a_pull_request() {
 
 #[test]
 fn the_token_reaches_the_pull_request_and_not_the_bootstrap_the_gates_or_the_agent() {
-    let scratch_for_paths = Scratch::new("deliver-paths-unused");
-    drop(scratch_for_paths);
     let rig = {
         let scratch = Scratch::new("deliver-token");
         let out = scratch.path("seen");

@@ -232,3 +232,105 @@ pub fn finished(events: &[Event]) -> (Outcome, String) {
         other => panic!("the stream does not end with finished: {other:?}"),
     }
 }
+
+// Delivery: a stand-in gh, a repository to push to, and an agent that does work.
+
+use std::os::unix::fs::PermissionsExt as _;
+
+pub const BRANCH: &str = "heph/12-make-the-reset-spec-wait-for-hydration";
+pub const SUBJECT: &str = "fix: make the reset spec wait for hydration";
+pub const MESSAGE: &str = "fix: make the reset spec wait for hydration\n\nThe spec clicked before the page was interactive.\n";
+
+pub const IDENTITY: [(&str, &str); 5] = [
+    ("HEPH_GITHUB_TOKEN", "a-github-token"),
+    ("GIT_AUTHOR_NAME", "A Person"),
+    ("GIT_AUTHOR_EMAIL", "person@example.invalid"),
+    ("GIT_COMMITTER_NAME", "A Person"),
+    ("GIT_COMMITTER_EMAIL", "person@example.invalid"),
+];
+
+/// A `gh` that records how it was called and prints a pull request's address.
+pub fn stand_in_gh(scratch: &Scratch, exit: i32) -> PathBuf {
+    let out = scratch.path("seen");
+    std::fs::create_dir_all(&out).expect("a directory");
+    let script = format!(
+        "#!/bin/sh\n\
+         printf '%s\\n' \"$@\" > {out}/gh-args.txt\n\
+         printf '%s\\n' \"${{GH_TOKEN:-none}}\" > {out}/gh-token.txt\n\
+         prev=''\n\
+         for a in \"$@\"; do if [ \"$prev\" = '--body-file' ]; then cp \"$a\" {out}/gh-body.txt; fi; prev=\"$a\"; done\n\
+         [ {exit} -eq 0 ] && echo https://github.com/erinversfeldcodes/gazebolang/pull/77\n\
+         exit {exit}\n",
+        out = out.display(),
+    );
+    let gh = scratch.path("gh");
+    std::fs::write(&gh, script).expect("a script");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("to chmod");
+    gh
+}
+
+pub fn agent_script(extra: &str) -> String {
+    // printf turns the \n in the message into newlines, and the message has no %.
+    format!(
+        "mkdir -p web; echo changed > web/changed.txt; printf '{}' > .heph-commit-message; {extra} echo '{}'",
+        MESSAGE.replace('\n', "\\n"),
+        json!({"agentMessage": {"text": "done"}})
+    )
+}
+
+pub struct Rig {
+    pub scratch: Scratch,
+    pub commit: String,
+    pub source: PathBuf,
+}
+
+pub fn rig(name: &str, manifest_text: &str) -> Rig {
+    let scratch = Scratch::new(name);
+    let (source_dir, commit) = source(&scratch, manifest_text);
+    Rig {
+        scratch,
+        commit,
+        source: source_dir,
+    }
+}
+
+pub fn run(
+    rig: Rig,
+    script: &str,
+    deliver: bool,
+    gh_exit: i32,
+    env: &[(&str, &str)],
+) -> (Ran, PathBuf, String) {
+    let gh = stand_in_gh(&rig.scratch, gh_exit);
+    let mut arguments = vec![
+        "--agent-command".to_owned(),
+        json!(["sh", "-c", script]).to_string(),
+        "--gh".to_owned(),
+        gh.display().to_string(),
+    ];
+    if deliver {
+        arguments.push("--deliver".to_owned());
+    }
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let ran = run_with_env(rig.scratch, &workload(&rig.commit), None, &refs, env);
+    (ran, rig.source, rig.commit)
+}
+
+pub fn has_branch(source: &Path) -> bool {
+    std::process::Command::new("git")
+        .current_dir(source)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{BRANCH}"),
+        ])
+        .output()
+        .expect("git")
+        .status
+        .success()
+}
+
+pub fn gh_was_called(ran: &Ran) -> bool {
+    ran.scratch.path("seen/gh-args.txt").exists()
+}

@@ -20,6 +20,7 @@ use crate::agent::{self, End};
 use crate::claude_code::ClaudeCode;
 use crate::cli::Options;
 use crate::deliver;
+use crate::secrets::{self, Secrets};
 use crate::stream::Stream;
 use crate::{transcript, workload};
 
@@ -56,7 +57,7 @@ impl From<std::io::Error> for Refused {
 pub fn run(
     options: &Options,
     executor_version: &str,
-    token: Option<&str>,
+    secrets: &Secrets,
     out: &mut impl Write,
 ) -> Result<(), Refused> {
     let text = fs::read_to_string(&options.workload)
@@ -86,10 +87,11 @@ pub fn run(
                 &workload,
                 &workspace,
                 options.heartbeat,
+                secrets,
                 &mut stream,
             )? {
                 End::Done => match run_gates(&manifest, &workload, &workspace, &mut stream)? {
-                    Ok(()) => match (options.deliver, token) {
+                    Ok(()) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) {
                         (true, Some(token)) => {
                             match deliver::deliver(&workload, &workspace, &options.gh, token) {
                                 Ok(pull_request) => {

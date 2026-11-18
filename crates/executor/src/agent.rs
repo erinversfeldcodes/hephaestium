@@ -12,6 +12,7 @@ use heph::process::{Go, Streamed, stream};
 
 use crate::adapter::Adapter;
 use crate::run::{Refused, say};
+use crate::secrets::Secrets;
 use crate::stream::Stream;
 
 /// How the agent's part of the run ended.
@@ -45,6 +46,7 @@ pub fn run<W: Write>(
     workload: &Workload,
     workspace: &Path,
     heartbeat: Duration,
+    secrets: &Secrets,
     stream_out: &mut Stream<'_, W>,
 ) -> Result<End, Refused> {
     if let Err(error) = adapter.prepare(workload, workspace) {
@@ -56,7 +58,13 @@ pub fn run<W: Write>(
     let environment: Vec<(String, String)> = plan
         .env_names
         .iter()
-        .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
+        .filter_map(|name| {
+            secrets
+                .get(name)
+                .map(str::to_owned)
+                .or_else(|| std::env::var(name).ok())
+                .map(|value| (name.clone(), value))
+        })
         .collect();
 
     let limits = workload.limits.as_ref().expect("checked when read");
