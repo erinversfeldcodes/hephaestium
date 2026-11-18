@@ -15,3 +15,19 @@ runner =
 if runner != [] do
   config :control_plane, :runner, runner
 end
+
+intake =
+  [
+    repositories:
+      "HEPH_REPOSITORIES"
+      |> System.get_env("")
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.trim/1),
+    heph: System.get_env("HEPH_BIN"),
+    gh: System.get_env("HEPH_GH")
+  ]
+  |> Enum.reject(fn {_key, value} -> value in [nil, "", []] end)
+
+if intake != [] do
+  config :control_plane, :intake, intake
+end

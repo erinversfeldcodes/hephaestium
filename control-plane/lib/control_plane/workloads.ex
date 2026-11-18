@@ -37,6 +37,16 @@ defmodule ControlPlane.Workloads do
 
   def create(_), do: {:error, :not_a_workload}
 
+  @doc "The workloads of a ticket, oldest first."
+  @spec for_ticket(String.t(), integer()) :: [%Workload{}]
+  def for_ticket(repository, number) do
+    Repo.all(
+      from w in Workload,
+        where: w.repository == ^repository and w.ticket_number == ^number,
+        order_by: w.inserted_at
+    )
+  end
+
   @doc "A workload, or nil."
   @spec get(Ecto.UUID.t()) :: %Workload{} | nil
   def get(id), do: Repo.get(Workload, id)
