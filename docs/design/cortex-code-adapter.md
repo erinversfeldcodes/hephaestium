@@ -1,7 +1,8 @@
 # The Cortex Code adapter
 
-Status: a specification, from Snowflake's published documentation only, for the
-maintainer to review before any of it is built.
+Status: a specification, from Snowflake's published documentation only. The
+maintainer has decided the four open points (see the end), and building waits
+until Hephaestium as a whole works well with Claude Code.
 
 Cortex Code (`cortex`, which Snowflake's own pages also call CoCo CLI) is the
 third agent runtime ADR 0005 names. This records what its documentation
@@ -85,24 +86,28 @@ and what it can say about cost.
 
 ### Launch
 
-`cortex -p PROMPT --output-format stream-json --private --mode code --workdir
-WORKSPACE --connection NAME --model MODEL --max-turns N`, with the prompt built
+`cortex -p PROMPT --output-format stream-json --private --workdir WORKSPACE
+--connection NAME --model MODEL --max-turns N`, with the prompt built
 from the ticket as the Claude Code adapter builds it. The connection is the one
 the workload names (`runtime.connection`), always, and a workload for this
 runtime that names none is refused when it is read: the contract says so and the
 adapter does not choose. `--private` keeps the run out of Snowflake's history.
 The number of turns is a fixed, generous bound until the workload can carry one.
 
-`--mode code` is chosen so the agent has a coding tool set and not the SQL and
-semantic-model tools of the full set. Those are also named in
-`--disallowed-tools` (the Snowflake SQL, object-search, semantic-model and
-notebook tools, and the web tools): a workload edits a repository and must not
-reach the maintainer's data.
+The full tool set is available, including the Snowflake tools and the web tools,
+and not the lean coding set. Cortex Code is the runtime a Snowflake workload
+would choose because it has Snowflake's context, and a workload that cannot use
+it is of no use there. The risk of the tools reaching the maintainer's data is
+met where it belongs, by the role of least privilege on the token (see
+Authentication), and not by taking the tools away. A workload is one runtime
+running on its own, and no tool of another runtime invokes Cortex Code, so there
+is no chain through which an instruction could arrive from somewhere else.
 
 ### What it may do
 
-`--allowed-tools` for read, edit, write, glob, grep and bash, so that anything
-else is denied and the run cannot wait. This is the same decision as for Claude
+`--allowed-tools` for read, edit, write, glob, grep and bash, and for the
+Snowflake and web tools the workload is meant to use, so that anything else is
+denied and the run cannot wait. This is the same decision as for Claude
 Code, with the same cost: bash is unrestricted inside the workspace. `--bypass`
 is never used. The identifiers' casing is gap 6: the first run settles it, and
 until then the adapter passes the lowercase form the tools page lists.
@@ -163,20 +168,27 @@ since each means a person has to do something.
 
 Cortex Code meters in credits, and the contract has a unit for credits. The
 documentation shows a dollar figure on the result (`total_cost_usd`, Python only)
-and no credits figure. The adapter reports what the runtime reports and converts
-nothing: `total_cost_usd` as dollars, reported by the runtime, and credits only if
-a recorded run shows a field for them. Until then its description lists dollars
-only. The workload's budget is in dollars or tokens and Cortex Code reports no
-tokens, so the executor can check a dollar budget at the end of a run and cannot
-stop a run during it: there is no spending flag, and no cost event before the
-result. The real control is the daily credit limit on the user that owns the
+and no credits figure, and a `usage` dictionary whose keys it does not name. The
+adapter reports what the runtime reports and converts nothing. The minimum is
+dollars, as `total_cost_usd`, reported by the runtime. The aim is to show token
+use as well, as Claude Code's run does: if `usage` carries token counts, as it
+does for Claude Code, they are reported as tokens, and a recorded run settles
+which keys they are under. Credits are reported only if a recorded run shows a
+field for them. Until then the adapter's description lists dollars, and tokens
+once they are shown.
+
+The workload's budget is in dollars or tokens, and Cortex Code reports nothing
+until the result, so the executor can check a budget at the end of a run and
+cannot stop a run during it: there is no spending flag, and no cost event before
+the result. The real control is the daily credit limit on the user that owns the
 token, a parameter the maintainer sets in SQL once, and the prerequisites below
 say so.
 
 ### The adapter's description
 
 Runtime Cortex Code, provider Snowflake, `requires_connection` true, cost units
-dollars, produced events agent message, tool call and tool result. It does not
+dollars (and tokens, once a recorded run shows them), produced events agent
+message, tool call and tool result. It does not
 produce a skill-loaded event: nothing in the documented output names one.
 
 ## What the maintainer provides
@@ -198,7 +210,7 @@ repository, with the standard output saved:
 
 ```
 cortex -p "Read hello.txt and tell me the magic word in one sentence." \
-  --output-format stream-json --private --mode code \
+  --output-format stream-json --private \
   --allowed-tools "read" --connection NAME > cortex-sample.jsonl
 ```
 
@@ -208,10 +220,27 @@ same prompt and one tool disallowed shows how a denial appears. The sample is
 sanitised as the Claude Code one was (paths, account and user names, identifiers)
 before it is committed as a fixture. A run is a few credits.
 
-## How it will be built and proven
+## When it will be built, and how
 
-As the Claude Code adapter was, in this order, each its own ticket and pull request
-with tests first:
+Not yet. The maintainer's decision is that it is built once Hephaestium as a
+whole (the dashboard and the rest of the runtime) is in place and works well with
+Claude Code. Cortex Code is the third runtime, and two things settle first that
+it would otherwise have to guess at: what a finished runtime looks like when it is
+working, and how a run is observed.
+
+Then a feedback strategy is agreed first, so that it can be built without the
+person or tool building it having access to the Snowflake account or to the code
+it is building against. The shape that follows from the constraint at the top:
+the builder writes the adapter and its tests against the documented shapes and a
+hand-written fixture; a person with an account runs a short, scripted set of
+recordings (the commands in the section above, and more as they are needed) and
+returns the sanitised output as files; the builder reads the output against the
+adapter and fixes what differs. What the strategy has to define is the script of
+recordings, how the output is sanitised, how it is returned, and how each
+difference is turned into a test before it is fixed.
+
+The build itself, when it comes, is in this order, each its own ticket and pull
+request with tests first:
 
 1. The adapter against the documented message shapes, with a fixture written by
    hand from them and marked as such, and a stand-in `cortex` that records how it
@@ -223,20 +252,18 @@ with tests first:
 3. The recorded run replaces the hand-written fixture, and whatever differs is
    fixed.
 
-## Decisions for the maintainer
+## Decisions
 
-1. **How a run gets its connection.** Recommended: copy the one named section into
-   a run-owned file, as above. The alternative is to point `SNOWFLAKE_HOME` at the
-   maintainer's own directory, which is simpler and gives every run the maintainer's
-   other connections, settings, hooks and memory.
-2. **Tool set.** Recommended: `--mode code`, with the Snowflake and web tools
-   disallowed. The alternative is the full set, which lets a workload query the
-   maintainer's data.
-3. **Cost.** Recommended: dollars only until a recorded run shows credits.
-4. **Whether to build before there is a recorded run.** Recommended: yes, as the
-   first step above, marked unverified, because the adapter is tolerant by design
-   and the work is not wasted. The alternative is to wait for a person with an
-   account, which costs nothing and delays the third runtime.
+Made by the maintainer on 2026-11-18.
+
+1. **How a run gets its connection.** One named section is copied into a file the
+   run owns, as above.
+2. **Tool set.** The full set, including the Snowflake and web tools. A workload
+   that uses Cortex Code is there for the Snowflake context, and no other tool
+   invokes it.
+3. **Cost.** Dollars at a minimum, and token use as well if the result reports it.
+4. **When to build.** After Hephaestium as a whole works well with Claude Code,
+   and after a feedback strategy is agreed (above).
 
 ## Sources
 
