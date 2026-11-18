@@ -1,0 +1,48 @@
+defmodule ControlPlane.GitHub do
+  @moduledoc """
+  Reading GitHub by running `gh`, which holds the credentials: the control plane
+  holds no token. Everything it reads, it reads through here.
+  """
+
+  @doc "The command that is run: `gh`, or what the configuration says."
+  def command, do: Application.get_env(:control_plane, :intake, []) |> Keyword.get(:gh, "gh")
+
+  @doc "Read one endpoint, as decoded JSON."
+  @spec get(String.t()) :: {:ok, term()} | {:error, String.t()}
+  def get(endpoint), do: run(["api", endpoint])
+
+  @doc "Read every page of a list endpoint, as one list."
+  @spec get_all(String.t()) :: {:ok, [term()]} | {:error, String.t()}
+  def get_all(endpoint) do
+    with {:ok, pages} <- run(["api", endpoint, "--paginate", "--slurp"]) do
+      {:ok, pages |> List.wrap() |> Enum.flat_map(&List.wrap/1)}
+    end
+  end
+
+  @doc "Run a GraphQL query with variables, as decoded JSON."
+  @spec graphql(String.t(), keyword()) :: {:ok, term()} | {:error, String.t()}
+  def graphql(query, variables) do
+    flags =
+      Enum.flat_map(variables, fn
+        {name, value} when is_integer(value) -> ["-F", "#{name}=#{value}"]
+        {name, value} -> ["-f", "#{name}=#{value}"]
+      end)
+
+    run(["api", "graphql", "-f", "query=#{query}" | flags])
+  end
+
+  defp run(arguments) do
+    case System.cmd(command(), arguments, stderr_to_stdout: true) do
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, decoded} -> {:ok, decoded}
+          {:error, _} -> {:error, "gh did not answer with JSON: #{String.slice(output, 0, 200)}"}
+        end
+
+      {output, _status} ->
+        {:error, String.trim(output)}
+    end
+  rescue
+    error in ErlangError -> {:error, "gh could not be run: #{inspect(error.original)}"}
+  end
+end

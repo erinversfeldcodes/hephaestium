@@ -8,7 +8,12 @@ config :control_plane, ControlPlane.Repo,
 
 config :control_plane, Oban,
   repo: ControlPlane.Repo,
-  queues: [workloads: 5]
+  queues: [workloads: 5, intake: 1],
+  plugins: [{Oban.Plugins.Cron, crontab: [{"* * * * *", ControlPlane.Jobs.Intake}]}]
+
+# The repositories whose tickets are taken in, and the programs intake reads
+# GitHub and builds workloads with: `gh` and `heph` on the path unless this says.
+config :control_plane, :intake, repositories: []
 
 # How the executor is run. The executor is the program on the path unless this
 # says which; the runs directory is where each run keeps its files.
