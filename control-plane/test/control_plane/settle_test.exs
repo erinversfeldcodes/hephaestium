@@ -286,4 +286,134 @@ defmodule ControlPlane.SettleTest do
     assert labels(gh) == ["labels[]=heph:done"]
     assert Workloads.get(id).settled_at
   end
+
+  describe "re-running cancelled checks" do
+    setup %{gh: gh} do
+      previous = Application.get_env(:control_plane, :settle)
+      on_exit(fn -> Application.put_env(:control_plane, :settle, previous) end)
+      StandInGitHub.respond(gh, @runs, runs([run(77, "ci", "completed", "cancelled")]))
+      :ok
+    end
+
+    defp reruns(n), do: Application.put_env(:control_plane, :settle, reruns: n)
+
+    defp rerun_writes(gh),
+      do:
+        for(
+          {"POST", "repos/" <> _ = endpoint, _} <- StandInGitHub.writes(gh),
+          String.ends_with?(endpoint, "/rerun"),
+          do: endpoint
+        )
+
+    test "by default a cancelled check is failed and nothing is re-run", %{gh: gh, id: id} do
+      Application.delete_env(:control_plane, :settle)
+
+      assert result(id) == {:failed, ["ci"]}
+      assert rerun_writes(gh) == []
+    end
+
+    test "zero re-runs is the same as the default", %{gh: gh, id: id} do
+      reruns(0)
+
+      assert result(id) == {:failed, ["ci"]}
+      assert rerun_writes(gh) == []
+    end
+
+    test "a cancelled check is re-run, and the ticket waits and is not labelled", %{
+      gh: gh,
+      id: id
+    } do
+      reruns(2)
+
+      assert {:waiting, message} = result(id)
+      assert message =~ "ci"
+      assert rerun_writes(gh) == ["repos/#{@repo}/actions/jobs/77/rerun"]
+      assert labels(gh) == []
+      assert removed(gh) == []
+      assert Workloads.get(id).reruns == %{"ci" => 1}
+      assert Workloads.get(id).settled_at == nil
+    end
+
+    test "the count is kept across passes and stops at the maximum, then the ticket fails", %{
+      gh: gh,
+      id: id
+    } do
+      reruns(2)
+
+      assert {:waiting, _} = result(id)
+      assert {:waiting, _} = result(id)
+      assert length(rerun_writes(gh)) == 2
+
+      assert result(id) == {:failed, ["ci"]}
+      assert length(rerun_writes(gh)) == 2
+      assert Workloads.get(id).reruns == %{"ci" => 2}
+      assert hd(comments(gh)) =~ "re-run 2 times"
+    end
+
+    test "a check that failed or timed out is never re-run", %{gh: gh, id: id} do
+      reruns(3)
+      StandInGitHub.respond(gh, @rules, [required(["ci", "e2e"])])
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(1, "ci", "completed", "failure"), run(2, "e2e", "completed", "timed_out")])
+      )
+
+      assert result(id) == {:failed, ["ci", "e2e"]}
+      assert rerun_writes(gh) == []
+    end
+
+    test "a real failure beside a cancelled check fails at once without spending a re-run", %{
+      gh: gh,
+      id: id
+    } do
+      reruns(3)
+      StandInGitHub.respond(gh, @rules, [required(["ci", "e2e"])])
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(1, "ci", "completed", "failure"), run(2, "e2e", "completed", "cancelled")])
+      )
+
+      assert result(id) == {:failed, ["ci", "e2e"]}
+      assert rerun_writes(gh) == []
+    end
+
+    test "a re-run GitHub refuses waits, and does not count", %{gh: gh, id: id} do
+      reruns(2)
+      StandInGitHub.fail_write(gh, "POST", "repos/#{@repo}/actions/jobs/77/rerun", "gh: HTTP 403")
+
+      assert {:waiting, _} = result(id)
+      assert Workloads.get(id).reruns in [nil, %{}]
+      assert Workloads.get(id).settled_at == nil
+    end
+
+    test "a cancelled run that a newer run replaced is not re-run", %{gh: gh, id: id} do
+      reruns(2)
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(9, "ci", "completed", "success"), run(4, "ci", "completed", "cancelled")])
+      )
+
+      assert result(id) == :done
+      assert rerun_writes(gh) == []
+    end
+
+    test "a cancelled check the ruleset does not require is not re-run", %{gh: gh, id: id} do
+      reruns(2)
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(1, "ci", "completed", "success"), run(5, "lint", "completed", "cancelled")])
+      )
+
+      assert result(id) == :done
+      assert rerun_writes(gh) == []
+    end
+  end
 end

@@ -31,3 +31,8 @@ intake =
 if intake != [] do
   config :control_plane, :intake, intake
 end
+
+# Settling a ticket: how many times a cancelled check is re-run (none unless set).
+if reruns = System.get_env("HEPH_RERUNS") do
+  config :control_plane, :settle, reruns: String.to_integer(reruns)
+end

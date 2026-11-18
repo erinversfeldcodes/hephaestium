@@ -146,4 +146,29 @@ defmodule ControlPlane.Workloads do
 
     :ok
   end
+
+  @doc "Record that the check of this name on the workload's pull request was re-run."
+  def count_rerun(id, name) do
+    Repo.update_all(
+      from(w in Workload,
+        where: w.id == ^id,
+        update: [
+          set: [
+            reruns:
+              fragment(
+                "jsonb_set(coalesce(?, '{}'::jsonb), ARRAY[?::text], to_jsonb(coalesce((? ->> ?)::int, 0) + 1))",
+                w.reruns,
+                ^name,
+                w.reruns,
+                ^name
+              ),
+            updated_at: ^DateTime.utc_now()
+          ]
+        ]
+      ),
+      []
+    )
+
+    :ok
+  end
 end
