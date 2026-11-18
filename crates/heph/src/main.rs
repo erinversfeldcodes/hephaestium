@@ -243,50 +243,24 @@ fn run_gate(request: &GateRun) -> ExitCode {
         Err(code) => return code,
     };
 
-    let Some(gate) = manifest.gates.get(&request.name) else {
-        let declared: Vec<&str> = manifest.gates.keys().map(String::as_str).collect();
-        return could_not_run(&format!(
-            "{}: has no gate '{}'; it declares: {}",
-            request.manifest,
-            request.name,
-            if declared.is_empty() {
-                "none".to_owned()
-            } else {
-                declared.join(", ")
-            }
-        ));
-    };
-
-    let command = gate::command_for(&manifest, gate, |name| std::env::var(name).ok());
-
-    let result = match gate::applies(gate, &request.changed) {
-        Ok(true) => {
-            let missing = gate::missing_requirements(gate, |name| std::env::var(name).ok());
-            if !missing.is_empty() {
-                return could_not_run(&format!(
-                    "gate {}: not run, because what it needs is not set: {}",
-                    request.name,
-                    gate::describe_missing(&missing)
-                ));
-            }
-            gate::run(
-                &request.name,
-                gate,
-                command,
-                std::path::Path::new("."),
-                |message| {
-                    eprintln!("heph: {message}");
-                },
-            )
-        }
-        Ok(false) => Ok(gate::skipped(&request.name, gate, command)),
-        Err(error) => Err(error),
-    };
+    let result = gate::run_named(
+        &manifest,
+        &request.name,
+        &request.changed,
+        std::path::Path::new("."),
+        |name| std::env::var(name).ok(),
+        |message| {
+            eprintln!("heph: {message}");
+        },
+    );
 
     match result {
         Ok(result) => {
             print_result(&result);
             ExitCode::from(result.exit_code_of_heph())
+        }
+        Err(error @ gate::NotRun::NoSuchGate { .. }) => {
+            could_not_run(&format!("{}: {error}", request.manifest))
         }
         Err(error) => could_not_run(&format!("gate {}: {error}", request.name)),
     }

@@ -109,6 +109,20 @@ pub fn command_for(
     gate: &Gate,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Vec<String> {
+    wrap(manifest, &gate.run, lookup)
+}
+
+/// A command with the toolchain wrapper in front of it, unless the caller is
+/// already inside the toolchain. A gate's command and a bootstrap step's are
+/// both run this way, so that each runs in the toolchain the repository pins.
+///
+/// `lookup` reads an environment variable, as for [`command_for`].
+#[must_use]
+pub fn wrap(
+    manifest: &Manifest,
+    command: &[String],
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
     let wrapper = manifest.toolchain.as_ref().filter(|toolchain| {
         let inside = toolchain
             .inside_env
@@ -122,7 +136,7 @@ pub fn command_for(
         .map(|toolchain| toolchain.wrapper.iter())
         .into_iter()
         .flatten()
-        .chain(gate.run.iter())
+        .chain(command.iter())
         .cloned()
         .collect()
 }
@@ -310,6 +324,86 @@ pub fn run(
         reason: None,
         report,
     })
+}
+
+/// Why a named gate was not run at all, as distinct from running and failing.
+#[derive(Debug)]
+pub enum NotRun {
+    /// The manifest declares no gate of that name.
+    NoSuchGate {
+        /// What was asked for.
+        name: String,
+        /// The gates the manifest does declare, in name order.
+        declared: Vec<String>,
+    },
+    /// The gate declares something it needs that is not set. Only names and
+    /// kinds are held, never a value.
+    Missing(Vec<(String, Requirement)>),
+    /// The gate could not be run, or reported unusably.
+    Could(CouldNotRun),
+}
+
+impl std::fmt::Display for NotRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSuchGate { name, declared } => write!(
+                formatter,
+                "has no gate '{name}'; it declares: {}",
+                if declared.is_empty() {
+                    "none".to_owned()
+                } else {
+                    declared.join(", ")
+                }
+            ),
+            Self::Missing(missing) => write!(
+                formatter,
+                "not run, because what it needs is not set: {}",
+                describe_missing(missing)
+            ),
+            Self::Could(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+/// Run the manifest's gate called `name`, from `directory`.
+///
+/// A gate whose `when_paths` match none of `changed` is skipped, and says so in
+/// its result. A gate that needs a variable or secret that is not set is not
+/// run: that is not a failure of the gate, and the caller must be able to tell
+/// them apart. Otherwise the gate runs, with the toolchain wrapper in front of
+/// its command unless the caller is already inside the toolchain.
+///
+/// `lookup` reads an environment variable, so a caller can say what the
+/// environment is without this function touching the real one.
+///
+/// # Errors
+///
+/// Returns why the gate was not run: it does not exist, something it needs is
+/// not set, or running it failed.
+pub fn run_named(
+    manifest: &Manifest,
+    name: &str,
+    changed: &[String],
+    directory: &Path,
+    lookup: impl Fn(&str) -> Option<String>,
+    notify: impl Fn(&str),
+) -> Result<GateResult, NotRun> {
+    let Some(gate) = manifest.gates.get(name) else {
+        return Err(NotRun::NoSuchGate {
+            name: name.to_owned(),
+            declared: manifest.gates.keys().cloned().collect(),
+        });
+    };
+
+    let command = command_for(manifest, gate, &lookup);
+    if !applies(gate, changed).map_err(NotRun::Could)? {
+        return Ok(skipped(name, gate, command));
+    }
+    let missing = missing_requirements(gate, &lookup);
+    if !missing.is_empty() {
+        return Err(NotRun::Missing(missing));
+    }
+    run(name, gate, command, directory, notify).map_err(NotRun::Could)
 }
 
 /// Read a gate's standard output as the JSON object it reports.
