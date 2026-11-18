@@ -250,3 +250,38 @@ fn a_program_that_does_not_exist_is_not_run_and_gets_the_code_a_shell_would() {
 
     assert_eq!(ended, Streamed::NotRun(127));
 }
+
+#[test]
+fn a_command_that_exits_and_leaves_a_child_that_escaped_its_group_is_not_waited_for_beyond_the_deadline()
+ {
+    let scratch = Scratch::new("stream-escaped");
+
+    // The child starts a session of its own, so it is outside the command's
+    // process group and holds standard output open after the command is gone.
+    let started = Instant::now();
+    let ended = stream(
+        &words(&[
+            "perl",
+            "-MPOSIX",
+            "-e",
+            "my $p = fork; if ($p == 0) { POSIX::setsid(); exec 'sleep', '60' } \
+             open F, '>child.pid'; print F $p; close F; print \"done\\n\";",
+        ]),
+        &scratch.0,
+        &[("PATH".to_owned(), std::env::var("PATH").unwrap_or_default())],
+        Duration::from_secs(2),
+        NEVER,
+        |_| Go::On,
+        || Go::On,
+        |_| {},
+    )
+    .expect("to run");
+
+    let pid = scratch.read("child.pid").trim().to_owned();
+    let _ = Command::new("kill").arg(&pid).status();
+    assert_eq!(ended, Streamed::Exited(0));
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "it waited for a process it could not reach"
+    );
+}
