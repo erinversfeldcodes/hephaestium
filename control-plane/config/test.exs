@@ -8,4 +8,7 @@ config :control_plane, ControlPlane.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10
 
+# Jobs are run by the tests, one at a time, and not by a queue of their own.
+config :control_plane, Oban, testing: :manual, queues: false, plugins: false
+
 config :logger, level: :warning

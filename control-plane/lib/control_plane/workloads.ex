@@ -1,6 +1,8 @@
 defmodule ControlPlane.Workloads do
   @moduledoc "Creating and reading workloads."
 
+  import Ecto.Query
+
   alias ControlPlane.{Repo, Workload}
 
   @doc """
@@ -50,4 +52,64 @@ defmodule ControlPlane.Workloads do
   end
 
   defp ticket_number(_), do: :error
+
+  @terminal ~w(completed failed blocked timed_out cancelled)
+
+  @doc "The states a workload does not leave."
+  def terminal_states, do: @terminal
+
+  @doc """
+  Take a queued workload to run, once. A workload that is not queued (it is
+  running, or has ended, or another job has it) is not taken again.
+  """
+  @spec claim(Ecto.UUID.t()) :: {:ok, %Workload{}} | :already_claimed | :unknown
+  def claim(id) do
+    {count, rows} =
+      Repo.update_all(
+        from(w in Workload, where: w.id == ^id and w.state == "queued", select: w),
+        set: [state: "preparing", updated_at: DateTime.utc_now()]
+      )
+
+    cond do
+      count == 1 -> {:ok, hd(rows)}
+      get(id) == nil -> :unknown
+      true -> :already_claimed
+    end
+  end
+
+  @doc "Put a claimed workload back on the queue, because the executor could not be started."
+  @spec release(Ecto.UUID.t()) :: :ok
+  def release(id) do
+    Repo.update_all(from(w in Workload, where: w.id == ^id and w.state == "preparing"),
+      set: [state: "queued", updated_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
+
+  @doc """
+  End a workload that has not ended as failed, with the reason. A workload that has
+  already ended keeps the end it has.
+  """
+  @spec fail(Ecto.UUID.t(), String.t()) :: :ok
+  def fail(id, reason) do
+    now = DateTime.utc_now()
+
+    Repo.update_all(
+      from(w in Workload, where: w.id == ^id and w.state not in ^@terminal),
+      set: [state: "failed", reason: reason, finished_at: now, updated_at: now]
+    )
+
+    :ok
+  end
+
+  @doc "Keep the run record the executor wrote."
+  @spec keep_record(Ecto.UUID.t(), map()) :: :ok
+  def keep_record(id, record) do
+    Repo.update_all(from(w in Workload, where: w.id == ^id),
+      set: [record: record, updated_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
 end
