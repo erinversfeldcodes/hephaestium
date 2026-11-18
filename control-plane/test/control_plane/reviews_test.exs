@@ -164,6 +164,52 @@ defmodule ControlPlane.ReviewsTest do
     assert length(reviews_of(id)) == 2
   end
 
+  test "a lens that was missing and is found later is asked for beside the one that exists", %{
+    gh: gh,
+    id: id
+  } do
+    path = "repos/#{@athenaeum}/contents/packs/elixir/review.md?ref=#{@ref}"
+    StandInGitHub.fail(gh, path, "gh: Not Found (HTTP 404)")
+    {:ok, %{requested: ["rust"]}} = request(id)
+
+    File.rm!(Path.join(gh.dir, "data/#{String.replace(path, ~r{[/?=&:%]}, "_")}.err"))
+    lens(gh, "elixir", "the elixir lens")
+
+    assert {:ok, result} = request(id)
+
+    assert result.requested == ["elixir"]
+    assert result.existing == ["rust"]
+    assert lenses_of(reviews_of(id)) == ["elixir", "rust"]
+  end
+
+  test "a review of a revision's pull request is not itself a revision", %{id: id} do
+    revision = %{
+      "pullRequestNumber" => "52",
+      "pullRequestUrl" => @pr_url,
+      "branch" => "heph/12-x",
+      "attempt" => 1,
+      "failures" => [%{"name" => "ci", "result" => "failure", "excerpt" => "x"}]
+    }
+
+    Repo.update_all(from(w in Workload, where: w.id == ^id),
+      set: [workload: Map.put(Workloads.get(id).workload, "revision", revision)]
+    )
+
+    {:ok, _} = request(id)
+
+    for review <- reviews_of(id), do: refute(Map.has_key?(review.workload, "revision"))
+    assert length(reviews_of(id)) == 2
+  end
+
+  test "an empty release name is no release", %{id: id} do
+    Application.put_env(:control_plane, :settle, reviews: [@repo], athenaeum_ref: "")
+
+    assert {:error, message} = request(id)
+
+    assert message =~ "HEPH_ATHENAEUM_REF"
+    assert reviews_of(id) == []
+  end
+
   test "a new head commit is a new review, and the old ones stay", %{gh: gh, id: id} do
     {:ok, _} = request(id)
     other = String.duplicate("b", 40)
