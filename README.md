@@ -174,6 +174,14 @@ outside any repository with mode 600; the executor takes it at start and removes
 from its environment. It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
 be run.
 
+A workload with a `revision` section is a revision of a pull request an earlier workload
+opened ([ADR 0024](./docs/adr/0024-a-failing-check-is-investigated-and-fixed-or-the-ticket-is-blocked.md)):
+the workspace is the pull request's head, the agent is told which checks failed and given
+what they printed as fenced, capped data that it is told is output and not instructions,
+and `--deliver` pushes to the pull request's own branch with a plain push, never forced,
+and opens nothing. The branch must be one the runtime made (`heph/...`), and a revision
+that names no failing check, no pull request or an attempt of zero is refused.
+
 ## What is different
 
 1. **Gates are run by the runtime, not requested in a prompt.** A workload is
