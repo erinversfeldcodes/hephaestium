@@ -336,7 +336,10 @@ fn running_with_no_agent_selected_is_refused() {
     let scratch = Scratch::new("agent-none");
     let (_, commit) = source(&scratch, &manifest(&[]));
 
-    let ran = run_with(scratch, &workload(&commit), None, &[]);
+    // A runtime with no adapter, so that the default is not a real agent.
+    let mut other = workload(&commit);
+    other["runtime"]["kind"] = json!("KIND_PI");
+    let ran = run_with(scratch, &other, None, &[]);
 
     assert_eq!(ran.code(), 1, "{}", ran.stderr());
     assert!(ran.stderr().contains("agent"), "{}", ran.stderr());

@@ -139,10 +139,12 @@ what each did; the workload is completed only if none failed, so nothing rests o
 agent's own word. The agent runs as a process behind an adapter, in an environment
 holding only the variables the adapter names, and is stopped, with everything it
 started, at the workload's timeout or when it has spent its budget; a workload with
-no timeout or no budget is refused. It is not finished: no agent runtime has an
-adapter yet, so a stub stands in for one (`--transcript` or `--agent-command`, for
-development), and the pull request is still to come. It exits 0 if the workload ran
-to an outcome, whatever it was, and 1 if it could not be run.
+no timeout or no budget is refused. A Claude Code workload runs Claude Code, with an
+empty configuration directory of its own and a token made for it, so nothing of the
+maintainer's own setup reaches it; the other runtimes have no adapter yet, and a stub
+stands in for any of them (`--transcript` or `--agent-command`, for development). The
+pull request is still to come. It exits 0 if the workload ran to an outcome, whatever
+it was, and 1 if it could not be run.
 
 ## What is different
 

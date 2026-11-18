@@ -13,6 +13,16 @@ use contracts::v1alpha1::{LaunchPlan, Workload};
 use crate::transcript;
 
 pub trait Adapter {
+    /// Make whatever the runtime needs to exist before it starts, in or beside
+    /// the workspace. Nothing by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if something could not be made.
+    fn prepare(&self, _workload: &Workload, _workspace: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+
     /// How to start the runtime for this workload in this workspace.
     fn plan(&self, workload: &Workload, workspace: &Path) -> LaunchPlan;
 
