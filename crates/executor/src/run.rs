@@ -19,6 +19,7 @@ use crate::adapter::{Adapter, Stub};
 use crate::agent::{self, End};
 use crate::claude_code::ClaudeCode;
 use crate::cli::Options;
+use crate::deliver;
 use crate::stream::Stream;
 use crate::{transcript, workload};
 
@@ -52,7 +53,12 @@ impl From<std::io::Error> for Refused {
 ///
 /// Returns why the workload could not be run, or why its events or its record
 /// could not be written.
-pub fn run(options: &Options, executor_version: &str, out: &mut impl Write) -> Result<(), Refused> {
+pub fn run(
+    options: &Options,
+    executor_version: &str,
+    token: Option<&str>,
+    out: &mut impl Write,
+) -> Result<(), Refused> {
     let text = fs::read_to_string(&options.workload)
         .map_err(|e| Refused(format!("{}: {e}", options.workload.display())))?;
     let workload = workload::read(&text)
@@ -83,7 +89,18 @@ pub fn run(options: &Options, executor_version: &str, out: &mut impl Write) -> R
                 &mut stream,
             )? {
                 End::Done => match run_gates(&manifest, &workload, &workspace, &mut stream)? {
-                    Ok(()) => (Outcome::Completed, String::new()),
+                    Ok(()) => match (options.deliver, token) {
+                        (true, Some(token)) => {
+                            match deliver::deliver(&workload, &workspace, &options.gh, token) {
+                                Ok(pull_request) => {
+                                    stream.emit(Kind::PullRequestOpened(pull_request))?;
+                                    (Outcome::Completed, String::new())
+                                }
+                                Err(reason) => (Outcome::Failed, reason),
+                            }
+                        }
+                        _ => (Outcome::Completed, String::new()),
+                    },
                     Err(reason) => (Outcome::Failed, reason),
                 },
                 End::Failed(reason) => (Outcome::Failed, reason),
@@ -241,7 +258,16 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
         ],
         workspace,
         "could not check out the base commit in the clone",
-    )
+    )?;
+
+    // Where the agent leaves its commit message is never a change.
+    let exclude = workspace.join(".git/info/exclude");
+    let mut text = fs::read_to_string(&exclude).unwrap_or_default();
+    text.push('\n');
+    text.push_str(deliver::MESSAGE_FILE);
+    text.push('\n');
+    fs::write(&exclude, text)
+        .map_err(|e| format!("could not keep the commit message out of the changes: {e}"))
 }
 
 /// Where what a command says about itself goes: standard error, because

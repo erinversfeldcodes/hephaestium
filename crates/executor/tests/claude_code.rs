@@ -183,6 +183,10 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
     );
     assert!(prompt.contains("#12"), "{prompt}");
     assert!(
+        prompt.contains(".heph-commit-message") && prompt.contains("fix:"),
+        "the agent must be told where to leave the commit message, and what it looks like: {prompt}"
+    );
+    assert!(
         prompt.to_lowercase().contains("do not commit"),
         "the agent must be told the runtime opens the pull request: {prompt}"
     );

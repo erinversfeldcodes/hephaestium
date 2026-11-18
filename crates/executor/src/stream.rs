@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
-use contracts::v1alpha1::{CostTotal, Event, Finished, GateRun, RunRecord, SkillLoaded, Workload};
+use contracts::v1alpha1::{
+    CostTotal, Event, Finished, GateRun, PullRequestOpened, RunRecord, SkillLoaded, Workload,
+};
 use pbjson_types::Timestamp;
 
 /// The name a kind has in the contract.
@@ -46,6 +48,7 @@ pub struct Stream<'a, W: Write> {
     costs: BTreeMap<(i32, i32), f64>,
     skills: Vec<SkillLoaded>,
     gates: Vec<GateRun>,
+    pull_request: Option<PullRequestOpened>,
 }
 
 impl<'a, W: Write> Stream<'a, W> {
@@ -59,6 +62,7 @@ impl<'a, W: Write> Stream<'a, W> {
             costs: BTreeMap::new(),
             skills: Vec::new(),
             gates: Vec::new(),
+            pull_request: None,
         }
     }
 
@@ -74,6 +78,7 @@ impl<'a, W: Write> Stream<'a, W> {
                 *self.costs.entry((cost.unit, cost.source)).or_insert(0.0) += cost.amount;
             }
             Kind::SkillLoaded(skill) => self.skills.push(skill.clone()),
+            Kind::PullRequestOpened(pr) => self.pull_request = Some(pr.clone()),
             Kind::GateFinished(gate) => self.gates.push(GateRun {
                 name: gate.name.clone(),
                 result: gate.result.clone(),
@@ -150,7 +155,7 @@ impl<'a, W: Write> Stream<'a, W> {
                 })
                 .collect(),
             skills: self.skills,
-            pull_request: None,
+            pull_request: self.pull_request,
             event_count: self.next - 1,
             executor_version: executor_version.to_owned(),
             configuration_sha256: String::new(),
