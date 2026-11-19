@@ -17,4 +17,8 @@ config :control_plane, Oban, testing: :manual, queues: false, plugins: false
 config :control_plane, :intake, gh: "false", heph: "false", repositories: []
 config :control_plane, refuse_real_programs: true
 
+# Workloads a stopped control plane left running are failed when one starts; tests make
+# their own workloads in every state, so the suite does not.
+config :control_plane, recover_on_start: false
+
 config :logger, level: :error
