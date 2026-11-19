@@ -124,6 +124,14 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   text says `blocking: false` is advisory: it is waited for and reported and never
   stops the change. A verdict for another head commit never counts. Merging, when
   it is on, happens only after that, and only when GitHub says `clean`.
+- Restart recovery ([#133](https://github.com/erinversfeldcodes/hephaestium/issues/133)).
+  When the control plane starts, every workload that was `preparing`, `running` or
+  `gating` and last updated before this start is failed, saying the control plane stopped
+  and the run was lost, and its ticket is told as for any failed workload (a lost review is
+  written on its pull request as "could not review"). A workload updated after the start
+  is left alone, and so is a `queued` one, whose job is still in the queue. A lost workload
+  is not re-run: re-approve the ticket, or resume its pull request. It is a setting,
+  `recover_on_start`, on unless set false, and off in the test suite.
 - Resume ([ADR 0030](../docs/adr/0030-re-approving-a-ticket-resumes-its-open-pull-request.md)).
   When a maintainer labels a ticket `heph:ready` again and its pull request is open and a
   `heph/` branch of the repository, intake resumes that pull request instead of starting
