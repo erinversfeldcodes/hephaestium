@@ -36,6 +36,9 @@ defmodule ControlPlane.DeferredTest do
     {:ok, _} = Events.append(id, event(id, 1, started()))
     {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
 
+    # It ended just now, unless a test says otherwise.
+    finished_minutes_ago(id, 0)
+
     # The workspace could not run `suite`, and left it to the check `ci / test`.
     Workloads.keep_record(id, %{
       "outcome" => "OUTCOME_COMPLETED",
@@ -154,7 +157,7 @@ defmodule ControlPlane.DeferredTest do
     finished_minutes_ago(id, 30)
     checks(gh, [run(1, "lint", "completed", "success")])
 
-    assert result(id) == {:failed, ["ci / test"]}
+    assert {:failed, ["ci / test"], _} = result(id)
 
     assert labels(gh) == ["labels[]=heph:failed"]
     assert [comment] = comments(gh)
