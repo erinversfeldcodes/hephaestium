@@ -678,6 +678,7 @@ fn run_lint(request: &Lint) -> ExitCode {
             timeout_seconds: request.timeout_seconds,
             result: None,
             requires: std::collections::BTreeMap::new(),
+            ci_check: None,
         };
         let wrapped =
             gate::command_for(&manifest, &as_gate, |variable| std::env::var(variable).ok());

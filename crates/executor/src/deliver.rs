@@ -140,6 +140,7 @@ pub fn deliver(
     workspace: &Path,
     gh: &str,
     token: &str,
+    deferred: &[Deferred],
 ) -> Result<PullRequestOpened, String> {
     let ticket = workload.ticket.clone().unwrap_or_default();
 
@@ -214,7 +215,7 @@ pub fn deliver(
         });
     }
 
-    open_pull_request(workload, workspace, gh, token, &branch, &message, &subject)
+    open_pull_request(workload, workspace, gh, token, &branch, &message, deferred)
 }
 
 /// Open the pull request for a branch that was pushed.
@@ -225,12 +226,13 @@ fn open_pull_request(
     token: &str,
     branch: &str,
     message: &str,
-    subject: &str,
+    deferred: &[Deferred],
 ) -> Result<PullRequestOpened, String> {
+    let subject = message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
     let ticket = workload.ticket.clone().unwrap_or_default();
     let body_path = workspace.with_file_name(format!("{}.pr-body.md", workload.id));
-    std::fs::write(&body_path, body(workload, message, ticket.number))
+    std::fs::write(&body_path, body(workload, message, ticket.number, deferred))
         .map_err(|e| format!("could not write the pull request's body: {e}"))?;
     let repository_name = format!("{}/{}", repository.owner, repository.name);
     let lines = run(
@@ -272,9 +274,21 @@ fn open_pull_request(
     })
 }
 
-/// The pull request's body: the message's body, who approved the ticket and
-/// when, and a last line that closes the ticket.
-fn body(workload: &Workload, message: &str, number: i64) -> String {
+/// A gate the workspace could not run and left to a check on the pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deferred {
+    /// The gate's name in the manifest.
+    pub gate: String,
+    /// Why it was not run.
+    pub reason: String,
+    /// The check that the repository says exercises the same work.
+    pub ci_check: String,
+}
+
+/// The pull request's body: the message's body, what the workspace could not run
+/// and left to the pull request's checks, who approved the ticket and when, and a
+/// last line that closes the ticket.
+fn body(workload: &Workload, message: &str, number: i64, deferred: &[Deferred]) -> String {
     let rest = message.split_once('\n').map_or("", |(_, rest)| rest.trim());
     let approval = workload.approval.clone().unwrap_or_default();
     let when = approval
@@ -285,6 +299,19 @@ fn body(workload: &Workload, message: &str, number: i64) -> String {
     if !rest.is_empty() {
         text.push_str(rest);
         text.push_str("\n\n");
+    }
+    if !deferred.is_empty() {
+        text.push_str(
+            "Gates not run in the workspace, left to the checks on this pull request:\n\n",
+        );
+        for left in deferred {
+            let _ = writeln!(
+                text,
+                "- `{}`: {}. The repository says the check `{}` runs the same work.",
+                left.gate, left.reason, left.ci_check
+            );
+        }
+        text.push('\n');
     }
     let _ = write!(
         text,

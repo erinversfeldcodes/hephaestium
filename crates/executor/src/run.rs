@@ -123,9 +123,16 @@ pub fn run(
                 }
                 End::Done => {
                     match run_gates(&manifest, &workload, &workspace, secrets, &mut stream)? {
-                        Ok(()) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) {
+                        Ok(deferred) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN))
+                        {
                             (true, Some(token)) => {
-                                match deliver::deliver(&workload, &workspace, &options.gh, token) {
+                                match deliver::deliver(
+                                    &workload,
+                                    &workspace,
+                                    &options.gh,
+                                    token,
+                                    &deferred,
+                                ) {
                                     Ok(pull_request) => {
                                         stream.emit(Kind::PullRequestOpened(pull_request))?;
                                         (Outcome::Completed, String::new())
@@ -257,7 +264,7 @@ fn run_gates<W: Write>(
     workspace: &Path,
     secrets: &Secrets,
     stream: &mut Stream<'_, W>,
-) -> Result<Result<(), String>, Refused> {
+) -> Result<Result<Vec<deliver::Deferred>, String>, Refused> {
     let base = &workload
         .repository
         .as_ref()
@@ -269,7 +276,8 @@ fn run_gates<W: Write>(
     };
 
     let mut failures = Vec::new();
-    for name in manifest.gates.keys() {
+    let mut deferred = Vec::new();
+    for (name, declared) in &manifest.gates {
         if heph::process::cancelled() {
             break;
         }
@@ -281,13 +289,48 @@ fn run_gates<W: Write>(
                 .map(str::to_owned)
                 .or_else(|| environment(variable))
         };
-        match gate::run_named(manifest, name, Some(&changed), workspace, lookup, say) {
+        let command = gate::command_for(manifest, declared, lookup);
+        let outcome = match gate::run_named(manifest, name, Some(&changed), workspace, lookup, say)
+        {
+            // A gate the workspace could not run, that the repository says a check on
+            // the pull request runs too, is left to that check.
+            Err(gate::NotRun::Missing(missing)) => gate::deferred(
+                name,
+                declared,
+                command,
+                0,
+                format!(
+                    "what it needs is not set: {}",
+                    gate::describe_missing(&missing)
+                ),
+            )
+            .map_or_else(|| Err(gate::NotRun::Missing(missing)), Ok),
+            Ok(result) if result.outcome == gate::Outcome::TimedOut => gate::deferred(
+                name,
+                declared,
+                result.command.clone(),
+                result.duration_ms,
+                format!("timed out after {}s", declared.timeout_seconds),
+            )
+            .map_or(Ok(result), Ok),
+            other => other,
+        };
+        match outcome {
             Ok(result) => {
                 if matches!(
                     result.outcome,
                     gate::Outcome::Failed | gate::Outcome::TimedOut
                 ) {
                     failures.push(format!("gate {name} {}", result.outcome));
+                }
+                if let (gate::Outcome::Deferred, Some(check), Some(reason)) =
+                    (result.outcome, &result.ci_check, &result.reason)
+                {
+                    deferred.push(deliver::Deferred {
+                        gate: name.clone(),
+                        reason: reason.clone(),
+                        ci_check: check.clone(),
+                    });
                 }
                 let value = serde_json::to_value(&result).map_err(|e| Refused(e.to_string()))?;
                 let result = serde_json::from_value(value).map_err(|e| Refused(e.to_string()))?;
@@ -304,7 +347,7 @@ fn run_gates<W: Write>(
         failures.push("cancelled while the gates ran".to_owned());
     }
     Ok(if failures.is_empty() {
-        Ok(())
+        Ok(deferred)
     } else {
         Err(failures.join("; "))
     })
