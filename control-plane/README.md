@@ -121,6 +121,18 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   text says `blocking: false` is advisory: it is waited for and reported and never
   stops the change. A verdict for another head commit never counts. Merging, when
   it is on, happens only after that, and only when GitHub says `clean`.
+- On the pull request ([#127](https://github.com/erinversfeldcodes/hephaestium/issues/127)).
+  When a review ends, one comment on the pull request says which lens read which commit,
+  its verdict, and each finding with its severity, whether it blocks, where it is
+  (`path:line`), its evidence and what to revise; a review that could not run, or left
+  no verdict, says that, and that it is no approval. When a revision ends, its account
+  is written there as well as on the ticket. Comments only: nothing is submitted as a
+  GitHub review, an approval or a request for changes, because the repository's approval
+  is for a person. What an agent wrote is in a fenced block it cannot end, cleaned and
+  cut; the verdict word, severity, lens name, commit and pull request number are
+  checked before they are repeated. Each is written once (`reported_at` is claimed
+  before the write and given back if it fails), and a write that fails is logged and
+  never changes how a workload ended.
 
 ## Running it
 

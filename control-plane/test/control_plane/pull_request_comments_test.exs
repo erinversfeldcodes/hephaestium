@@ -199,6 +199,7 @@ defmodule ControlPlane.PullRequestCommentsTest do
     assert body =~ "rust"
     assert body =~ "could not review"
     assert body =~ "the agent changed a file"
+    assert body =~ "That is no approval."
     refute body =~ "approved"
   end
 
@@ -209,6 +210,17 @@ defmodule ControlPlane.PullRequestCommentsTest do
 
     assert [body] = pr_comments(gh)
     assert body =~ "left no verdict"
+    assert body =~ "That is no approval."
+  end
+
+  test "a lens name that is not a pack name is not repeated as it is", %{gh: gh, parent: parent} do
+    review = review(parent, "rust` @someone ```", "OUTCOME_COMPLETED", verdict("approved"))
+
+    assert :ok = Tickets.ended(review)
+
+    assert [body] = pr_comments(gh)
+    refute body =~ "@someone"
+    assert body =~ "`a lens`"
   end
 
   test "a review writes its comment once, however often it is ended", %{gh: gh, parent: parent} do
