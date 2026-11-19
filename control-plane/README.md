@@ -124,6 +124,14 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   text says `blocking: false` is advisory: it is waited for and reported and never
   stops the change. A verdict for another head commit never counts. Merging, when
   it is on, happens only after that, and only when GitHub says `clean`.
+- Resume ([ADR 0030](../docs/adr/0030-re-approving-a-ticket-resumes-its-open-pull-request.md)).
+  When a maintainer labels a ticket `heph:ready` again and its pull request is open and a
+  `heph/` branch of the repository, intake resumes that pull request instead of starting
+  a workload: the workload that completed with it is unsettled again, so settling looks at
+  it as it is now; the ticket's state labels become `heph:running` and a comment says who
+  resumed it. A resume grants a fresh `HEPH_REVISIONS`, counted from the attempt the pull
+  request had reached. An approval resumes once. A merged or closed pull request, one the
+  runtime did not make, and one GitHub cannot be asked about are skipped with the reason.
 - On the pull request ([#127](https://github.com/erinversfeldcodes/hephaestium/issues/127)).
   When a review ends, one comment on the pull request says which lens read which commit,
   its verdict, and each finding with its severity, whether it blocks, where it is

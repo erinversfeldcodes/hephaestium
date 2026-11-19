@@ -49,7 +49,7 @@ defmodule ControlPlane.Settle do
   end
 
   defp settle(workload) do
-    with {:ok, number} <- pull_number(workload),
+    with {:ok, number} <- Workloads.pull_request_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
          {:ok, verdict} <- verdict(workload, pull, number),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
@@ -127,7 +127,7 @@ defmodule ControlPlane.Settle do
   defp not_revised(_workload, {:no, reason}), do: "It was not revised: #{reason}."
 
   defp not_revised(workload, :exhausted) do
-    "It was not revised again: revisions made #{attempt(workload)} of #{revisions()}."
+    "It was not revised again: revisions made #{used(workload)} of #{revisions()}."
   end
 
   # Merging a pull request whose every check is green, for the repositories that
@@ -268,7 +268,13 @@ defmodule ControlPlane.Settle do
 
     case Workloads.hand_on(workload, revision) do
       {:ok, _child} ->
-        tell.(workload, Enum.map(failures, & &1["name"]), attempt, revisions())
+        tell.(
+          workload,
+          Enum.map(failures, & &1["name"]),
+          attempt - workload.budget_base,
+          revisions()
+        )
+
         :ok
 
       {:error, reason} ->
@@ -296,15 +302,6 @@ defmodule ControlPlane.Settle do
     case result do
       :ok -> :ok
       {:error, message} -> {:error, "could not write to the ticket: #{message}"}
-    end
-  end
-
-  defp pull_number(workload) do
-    url = get_in(workload.record, ["pullRequest", "url"]) || ""
-
-    case Regex.run(~r{^https://github\.com/([^/]+/[^/]+)/pull/(\d+)$}, url) do
-      [_, repository, number] when repository == workload.repository -> {:ok, number}
-      _ -> {:error, "the pull request #{inspect(url)} is not one of #{workload.repository}"}
     end
   end
 
@@ -393,6 +390,10 @@ defmodule ControlPlane.Settle do
   defp strip_colours(text), do: String.replace(text, ~r/\e\[[0-9;]*[A-Za-z]/, "")
 
   defp attempt(workload), do: get_in(workload.workload, ["revision", "attempt"]) || 0
+
+  # The revisions used toward the budget: counted from the attempt the pull request had
+  # reached when a maintainer last resumed it, so a resume grants a fresh budget.
+  defp used(workload), do: attempt(workload) - workload.budget_base
 
   defp judge(workload, required, runs, pull_and_number) do
     # Every check on the commit counts, not only the ones the ruleset requires: a
@@ -518,7 +519,7 @@ defmodule ControlPlane.Settle do
       revisions() == 0 ->
         :off
 
-      attempt(workload) >= revisions() ->
+      used(workload) >= revisions() ->
         :exhausted
 
       not String.starts_with?(ref, "heph/") ->
@@ -548,7 +549,7 @@ defmodule ControlPlane.Settle do
       end
 
     {:failed, names,
-     "Revisions made: #{attempt(workload)} of #{revisions()}.\n\n" <> Enum.join(lines, "\n\n")}
+     "Revisions made: #{used(workload)} of #{revisions()}.\n\n" <> Enum.join(lines, "\n\n")}
   end
 
   defp revisions,
