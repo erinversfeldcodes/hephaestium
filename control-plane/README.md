@@ -124,6 +124,17 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   text says `blocking: false` is advisory: it is waited for and reported and never
   stops the change. A verdict for another head commit never counts. Merging, when
   it is on, happens only after that, and only when GitHub says `clean`.
+- Lenses that apply to every change ([#135](https://github.com/erinversfeldcodes/hephaestium/issues/135)).
+  A component names one pack, so a lens about the change itself (`spec`: does it do what
+  its ticket asked) or about the system it runs in (`system`: a bound moved without a
+  measurement) cannot be chosen by a path. A lens whose front matter says
+  `applies: always` is asked for on every change that is reviewed, beside the ones the
+  diff selected, once each, and is reviewed, deduplicated, assessed and counted like any
+  other. The control plane lists the packs of the pinned release (`HEPH_ATHENAEUM_REF`)
+  and reads each lens to find the flag, so a listing or a lens it cannot read means
+  nothing is asked for until it can be. A change with no changed files asks for nothing,
+  and a pack directory with no `review.md` is ignored. The flag counts only in the front
+  matter.
 - Restart recovery ([#133](https://github.com/erinversfeldcodes/hephaestium/issues/133)).
   When the control plane starts, every workload that was `preparing`, `running` or
   `gating` and last updated before this start is failed, saying the control plane stopped

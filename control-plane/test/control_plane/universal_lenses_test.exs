@@ -168,6 +168,15 @@ defmodule ControlPlane.UniversalLensesTest do
     assert reviews_of(id) == []
   end
 
+  test "a listing that is not a list of packs asks for nothing, and says so", %{gh: gh, id: id} do
+    StandInGitHub.respond(gh, @packs, %{"message" => "Not Found"})
+
+    assert {:error, message} = request(id)
+
+    assert message =~ "not a list of packs"
+    assert reviews_of(id) == []
+  end
+
   test "a lens that cannot be read asks for nothing, and says why", %{gh: gh, id: id} do
     StandInGitHub.fail(
       gh,
@@ -198,6 +207,7 @@ defmodule ControlPlane.UniversalLensesTest do
       %{"name" => "rust", "type" => "dir"},
       %{"name" => "spec", "type" => "dir"},
       %{"name" => "README.md", "type" => "file"},
+      %{"name" => "stray", "type" => "file"},
       %{"name" => "../../etc", "type" => "dir"},
       %{"name" => "Bad Name", "type" => "dir"}
     ])
@@ -207,6 +217,7 @@ defmodule ControlPlane.UniversalLensesTest do
     for call <- StandInGitHub.gh_calls(gh) do
       refute call =~ "etc", call
       refute call =~ "README", call
+      refute call =~ "stray", call
     end
   end
 
