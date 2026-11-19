@@ -136,7 +136,9 @@ defmodule ControlPlane.UniversalLensesTest do
       packs(gh, ["rust", "spec"])
       lens(gh, "spec", "---\nname: spec\napplies: #{value}\nblocking: true\n---\nx")
 
-      assert {:ok, %{requested: ["rust"]}} = request(id), value
+      # Whichever pass it is, `rust` is the only lens: spec was not asked for.
+      assert {:ok, %{requested: requested, existing: existing}} = request(id), value
+      assert Enum.sort(requested ++ existing) == ["rust"], value
     end
   end
 
