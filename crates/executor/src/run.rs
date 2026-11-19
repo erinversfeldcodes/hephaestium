@@ -121,21 +121,23 @@ pub fn run(
                         Err(reason) => (Outcome::Failed, reason),
                     }
                 }
-                End::Done => match run_gates(&manifest, &workload, &workspace, &mut stream)? {
-                    Ok(()) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) {
-                        (true, Some(token)) => {
-                            match deliver::deliver(&workload, &workspace, &options.gh, token) {
-                                Ok(pull_request) => {
-                                    stream.emit(Kind::PullRequestOpened(pull_request))?;
-                                    (Outcome::Completed, String::new())
+                End::Done => {
+                    match run_gates(&manifest, &workload, &workspace, secrets, &mut stream)? {
+                        Ok(()) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) {
+                            (true, Some(token)) => {
+                                match deliver::deliver(&workload, &workspace, &options.gh, token) {
+                                    Ok(pull_request) => {
+                                        stream.emit(Kind::PullRequestOpened(pull_request))?;
+                                        (Outcome::Completed, String::new())
+                                    }
+                                    Err(reason) => (Outcome::Failed, reason),
                                 }
-                                Err(reason) => (Outcome::Failed, reason),
                             }
-                        }
-                        _ => (Outcome::Completed, String::new()),
-                    },
-                    Err(reason) => (Outcome::Failed, reason),
-                },
+                            _ => (Outcome::Completed, String::new()),
+                        },
+                        Err(reason) => (Outcome::Failed, reason),
+                    }
+                }
                 End::Failed(reason) => (Outcome::Failed, reason),
                 End::TimedOut(reason) => (Outcome::TimedOut, reason),
                 End::Cancelled => (Outcome::Failed, String::new()),
@@ -253,6 +255,7 @@ fn run_gates<W: Write>(
     manifest: &Manifest,
     workload: &Workload,
     workspace: &Path,
+    secrets: &Secrets,
     stream: &mut Stream<'_, W>,
 ) -> Result<Result<(), String>, Refused> {
     let base = &workload
@@ -271,7 +274,14 @@ fn run_gates<W: Write>(
             break;
         }
         stream.emit(Kind::GateStarted(GateStarted { name: name.clone() }))?;
-        match gate::run_named(manifest, name, Some(&changed), workspace, environment, say) {
+        // A gate's secret is the one the executor holds, or else the environment's.
+        let lookup = |variable: &str| {
+            secrets
+                .gate(variable)
+                .map(str::to_owned)
+                .or_else(|| environment(variable))
+        };
+        match gate::run_named(manifest, name, Some(&changed), workspace, lookup, say) {
             Ok(result) => {
                 if matches!(
                     result.outcome,

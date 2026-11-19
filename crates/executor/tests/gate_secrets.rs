@@ -102,12 +102,19 @@ fn a_gate_gets_the_secret_it_declares_from_a_variable_or_a_file_and_nothing_else
         );
         let needs = seen(&ran, "needs-env.txt");
         assert!(
-            needs.lines().any(|l| l == format!("PIXABAY_API_KEY={VALUE}")),
+            needs
+                .lines()
+                .any(|l| l == format!("PIXABAY_API_KEY={VALUE}")),
             "{kind}: the gate did not get it exactly:\n{needs}"
         );
         for file in ["bootstrap-env.txt", "plain-env.txt", "agent-env.txt"] {
             let env = seen(&ran, file);
-            for forbidden in [VALUE, "PIXABAY_API_KEY", "HEPH_GATE_SECRET", "secrets/pixabay"] {
+            for forbidden in [
+                VALUE,
+                "PIXABAY_API_KEY",
+                "HEPH_GATE_SECRET",
+                "secrets/pixabay",
+            ] {
                 assert!(
                     !env.contains(forbidden),
                     "{kind}: {file} shows {forbidden}:\n{env}"
@@ -159,12 +166,19 @@ fn the_value_is_in_no_event_no_record_and_no_output() {
     let (rig, script) = rig("gate-secret-nowhere");
     let file = secret_file(&rig.scratch, VALUE, 0o600);
 
-    let ran = run(rig, &script, &[("HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE", &file)]);
+    let ran = run(
+        rig,
+        &script,
+        &[("HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE", &file)],
+    );
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     let record = std::fs::read_to_string(ran.scratch.path("record.json")).expect("a record");
     for (what, text) in [
-        ("events", String::from_utf8_lossy(&ran.output.stdout).into_owned()),
+        (
+            "events",
+            String::from_utf8_lossy(&ran.output.stdout).into_owned(),
+        ),
         ("record", record),
         ("stderr", ran.stderr()),
     ] {
@@ -206,16 +220,27 @@ fn a_file_others_can_read_or_one_that_is_missing_or_empty_is_refused_and_nothing
             ),
         };
 
-        let ran = run(rig, &script, &[("HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE", &path)]);
+        let ran = run(
+            rig,
+            &script,
+            &[("HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE", &path)],
+        );
 
         assert_eq!(ran.code(), 1, "{kind}: {}", ran.stderr());
         assert!(
-            ran.stderr().contains("HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE"),
+            ran.stderr()
+                .contains("HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE"),
             "{kind}: {}",
             ran.stderr()
         );
-        assert!(!ran.stderr().contains(VALUE), "{kind}: the secret was printed");
-        assert!(!ran.scratch.path("work").exists(), "{kind}: a workspace was created");
+        assert!(
+            !ran.stderr().contains(VALUE),
+            "{kind}: the secret was printed"
+        );
+        assert!(
+            !ran.scratch.path("work").exists(),
+            "{kind}: a workspace was created"
+        );
     }
 }
 
@@ -233,7 +258,13 @@ fn a_name_that_cannot_be_a_variable_is_refused_and_nothing_is_created() {
 
         assert_eq!(ran.code(), 1, "{name}: {}", ran.stderr());
         assert!(ran.stderr().contains(name), "{name}: {}", ran.stderr());
-        assert!(!ran.stderr().contains(VALUE), "{name}: the secret was printed");
-        assert!(!ran.scratch.path("work").exists(), "{name}: a workspace was created");
+        assert!(
+            !ran.stderr().contains(VALUE),
+            "{name}: the secret was printed"
+        );
+        assert!(
+            !ran.scratch.path("work").exists(),
+            "{name}: a workspace was created"
+        );
     }
 }

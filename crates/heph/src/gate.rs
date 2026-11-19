@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::manifest::{Gate, Manifest, Requirement, ResultKind};
-use crate::process::{Ended, execute};
+use crate::process::{Ended, execute_with_env};
 
 /// How a gate ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -288,13 +288,31 @@ pub fn run(
     directory: &Path,
     notify: impl Fn(&str),
 ) -> Result<GateResult, CouldNotRun> {
+    run_with_env(name, gate, command, directory, &[], notify)
+}
+
+/// [`run`], with these variables set in the gate's environment on top of this
+/// process's own.
+///
+/// # Errors
+///
+/// As for [`run`].
+pub fn run_with_env(
+    name: &str,
+    gate: &Gate,
+    command: Vec<String>,
+    directory: &Path,
+    environment: &[(String, String)],
+    notify: impl Fn(&str),
+) -> Result<GateResult, CouldNotRun> {
     let wants_report = gate.result == Some(ResultKind::Json);
     let started = Instant::now();
-    let (ended, captured) = execute(
+    let (ended, captured) = execute_with_env(
         &command,
         directory,
         Duration::from_secs(gate.timeout_seconds),
         wants_report,
+        environment,
         notify,
     )
     .map_err(CouldNotRun::Wait)?;
@@ -410,7 +428,15 @@ pub fn run_named(
     if !missing.is_empty() {
         return Err(NotRun::Missing(missing));
     }
-    run(name, gate, command, directory, notify).map_err(NotRun::Could)
+    // What the gate declares it needs is given to it by name, wherever `lookup`
+    // found it, and nothing else is: a secret held by the caller, and not in this
+    // process's environment, reaches only the gate that asked for it.
+    let needed: Vec<(String, String)> = gate
+        .requires
+        .keys()
+        .filter_map(|variable| lookup(variable).map(|value| (variable.clone(), value)))
+        .collect();
+    run_with_env(name, gate, command, directory, &needed, notify).map_err(NotRun::Could)
 }
 
 /// Read a gate's standard output as the JSON object it reports.
