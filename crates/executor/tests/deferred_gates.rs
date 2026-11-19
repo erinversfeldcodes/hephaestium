@@ -63,16 +63,19 @@ fn delivered(name: &str, gates: &str) -> (common::Ran, String) {
 
 #[test]
 fn an_unmet_requirement_on_a_gate_with_a_ci_check_defers_it_and_the_pull_request_opens() {
-    let (ran, body) = delivered("defer-unmet", &needs_what_is_absent("test", Some("test")));
+    let (ran, body) = delivered(
+        "defer-unmet",
+        &needs_what_is_absent("suite", Some("ci / test")),
+    );
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     let events = ran.events();
     assert_eq!(finished(&events).0, Outcome::Completed, "{}", ran.stderr());
     assert!(gh_was_called(&ran), "no pull request was opened");
     let results = gate_results(&events);
-    let result = result_of(&results, "test");
+    let result = result_of(&results, "suite");
     assert_eq!(result["outcome"], json!("deferred"), "{result}");
-    assert_eq!(result["ci_check"], json!("test"));
+    assert_eq!(result["ci_check"], json!("ci / test"));
     assert!(
         result["reason"]
             .as_str()
@@ -88,20 +91,23 @@ fn an_unmet_requirement_on_a_gate_with_a_ci_check_defers_it_and_the_pull_request
     let recorded = record
         .gates
         .iter()
-        .find(|run| run.name == "test")
+        .find(|run| run.name == "suite")
         .expect("the gate is in the record");
     let recorded = serde_json::to_value(recorded.result.as_ref().expect("a result")).expect("JSON");
     assert_eq!(recorded["outcome"], json!("deferred"), "{recorded}");
-    assert_eq!(recorded["ci_check"], json!("test"));
+    assert_eq!(recorded["ci_check"], json!("ci / test"));
     // And the pull request says it, with why and which check covers it.
     assert!(
         body.contains("Gates not run in the workspace"),
         "the pull request does not say what was not run:\n{body}"
     );
-    assert!(body.contains("`test`"), "{body}");
+    assert!(body.contains("`suite`"), "{body}");
     assert!(body.contains(ABSENT), "{body}");
-    assert!(body.contains("check `test`"), "{body}");
-    assert!(body.contains("Closes #"), "the body lost its closing line:\n{body}");
+    assert!(body.contains("check `ci / test`"), "{body}");
+    assert!(
+        body.contains("Closes #"),
+        "the body lost its closing line:\n{body}"
+    );
 }
 
 #[test]
@@ -140,7 +146,10 @@ fn a_gate_that_timed_out_and_names_a_ci_check_is_deferred_and_one_that_does_not_
         &gate("slow", "sleep 30", 1, "ci_check = \"slow\"\n"),
     );
 
-    assert!(started.elapsed() < Duration::from_secs(25), "the gate was not stopped");
+    assert!(
+        started.elapsed() < Duration::from_secs(25),
+        "the gate was not stopped"
+    );
     let events = ran.events();
     assert_eq!(finished(&events).0, Outcome::Completed, "{}", ran.stderr());
     let results = gate_results(&events);
