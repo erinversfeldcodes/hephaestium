@@ -68,6 +68,11 @@ defmodule ControlPlane.ReviewsTest do
     lens(gh, "rust", "the rust lens")
     lens(gh, "elixir", "the elixir lens")
 
+    StandInGitHub.respond(gh, "repos/#{@athenaeum}/contents/packs?ref=#{@ref}", [
+      %{"name" => "elixir", "type" => "dir"},
+      %{"name" => "rust", "type" => "dir"}
+    ])
+
     %{gh: gh, id: id}
   end
 

@@ -52,6 +52,7 @@ defmodule ControlPlane.Reviews do
          {:ok, changed} <- changed_files(repository, number),
          {:ok, manifest} <- manifest(repository, sha),
          {:ok, plan} <- lenses(manifest, changed),
+         {:ok, plan} <- with_universal(plan, ref),
          {:ok, texts, missing} <- lens_texts(plan["lenses"], ref) do
       asked(workload, pull, number, texts, missing, plan)
     end
@@ -238,6 +239,64 @@ defmodule ControlPlane.Reviews do
       end
     after
       File.rm(path)
+    end
+  end
+
+  # The lenses a component cannot name: a lens says in its own front matter that it
+  # `applies: always`, and is then asked for on every change that is reviewed, once, beside
+  # the ones the diff selected (#135). A change with nothing selected has no files to
+  # review, and asks for nothing. The release's packs are listed, and each lens read, so
+  # a listing or a lens that cannot be read means nothing is asked for until it can be.
+  defp with_universal(%{"lenses" => []} = plan, _ref), do: {:ok, plan}
+
+  defp with_universal(%{"lenses" => selected} = plan, ref) do
+    chosen = for %{"pack" => pack} <- selected, do: pack
+
+    with {:ok, packs} <- pack_names(ref) do
+      results =
+        for pack <- packs, pack not in chosen do
+          endpoint = "repos/#{@athenaeum}/contents/packs/#{pack}/review.md?ref=#{ref}"
+
+          case GitHub.raw(endpoint) do
+            {:ok, text} -> if applies_always?(text), do: {:ok, pack}, else: :no
+            {:error, message} -> if message =~ "404", do: :no, else: {:error, pack, message}
+          end
+        end
+
+      case Enum.find(results, &match?({:error, _, _}, &1)) do
+        {:error, pack, message} ->
+          {:error, "could not read the #{pack} lens from #{@athenaeum} at #{ref}: #{message}"}
+
+        nil ->
+          extra = for {:ok, pack} <- results, do: %{"pack" => pack, "components" => []}
+          {:ok, %{plan | "lenses" => selected ++ extra}}
+      end
+    end
+  end
+
+  defp pack_names(ref) do
+    case GitHub.get("repos/#{@athenaeum}/contents/packs?ref=#{ref}") do
+      {:ok, entries} when is_list(entries) ->
+        {:ok,
+         for(
+           %{"type" => "dir", "name" => name} <- entries,
+           is_binary(name) and Regex.match?(~r/\A[a-z0-9][a-z0-9-]{0,40}\z/, name),
+           do: name
+         )}
+
+      {:ok, _} ->
+        {:error, "could not list the lenses of #{@athenaeum} at #{ref}: not a list of packs"}
+
+      {:error, message} ->
+        {:error, "could not list the lenses of #{@athenaeum} at #{ref}: #{message}"}
+    end
+  end
+
+  # Only the front matter counts: `applies: always`, with any spaces around it.
+  defp applies_always?(text) do
+    case Regex.run(~r/\A---\n(.*?)\n---/s, text) do
+      [_, front] -> Regex.match?(~r/^applies:[ \t]*always[ \t]*$/m, front)
+      _ -> false
     end
   end
 

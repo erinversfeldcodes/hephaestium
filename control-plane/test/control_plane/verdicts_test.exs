@@ -72,6 +72,11 @@ defmodule ControlPlane.VerdictsTest do
     lens(gh, "rust", "---\nname: rust\nblocking: true\n---\nthe rust lens")
     lens(gh, "elixir", "---\nname: elixir\nblocking: true\n---\nthe elixir lens")
 
+    StandInGitHub.respond(gh, "repos/#{@athenaeum}/contents/packs?ref=#{@ref}", [
+      %{"name" => "elixir", "type" => "dir"},
+      %{"name" => "rust", "type" => "dir"}
+    ])
+
     %{gh: gh, id: id}
   end
 
