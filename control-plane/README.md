@@ -59,6 +59,14 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   that a newer run replaced, or a check the ruleset does not require, is not re-run.
   A re-run GitHub refuses waits and is not counted. The final failure comment says
   the check was re-run.
+- Gates left to CI ([ADR 0028](../docs/adr/0028-a-gate-the-workspace-cannot-run-is-left-to-the-ci-check-that-exercises-it.md)).
+  When the executor could not run a gate in the workspace and the repository names a
+  `ci_check` for it, the run record says so, and settle adds that check to the ones
+  that must have appeared and passed on the head commit. It is judged like any check
+  (a failure is revised or fails the ticket). If it has not appeared once every other
+  check is done and twenty minutes have passed since the workload ended, the ticket
+  fails and the comment names the gate and the check, instead of waiting for ever. A
+  done ticket's comment lists what was left to CI.
 - Revision on red ([ADR 0024](../docs/adr/0024-a-failing-check-is-investigated-and-fixed-or-the-ticket-is-blocked.md))
   is off by default. `HEPH_REVISIONS=N` lets settle, when a pull request's required
   checks really fail (`failure` or `timed_out`, never `cancelled`), start a revision

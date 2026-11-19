@@ -10,7 +10,10 @@ defmodule ControlPlane.Settle do
     * merged: done. Closed without merging: abandoned.
     * any check ended as anything but success, skipped or neutral: failed, naming
       it. A failure is not waited on while others still run.
-    * every check ended well, and every required one has appeared: done.
+    * every check ended well, and every required one has appeared: done. So has every
+      check a gate was left to (ADR 0028): the workspace could not run the gate, the
+      repository says that check runs the same work, and the ticket is not done on
+      the strength of a gate nobody ran.
     * anything else (a check still running or not yet seen, no checks at all, or
       GitHub unable to say) waits, and nothing is written: unknown is never green.
 
@@ -37,6 +40,7 @@ defmodule ControlPlane.Settle do
          {:ok, verdict} <- verdict(workload, pull, number),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
+         notes = with_left_to_ci(workload, pull, verdict, notes),
          :ok <- act(workload, verdict, notes) do
       outcome(workload, verdict)
     else
@@ -380,7 +384,9 @@ defmodule ControlPlane.Settle do
     # Every check on the commit counts, not only the ones the ruleset requires: a
     # failing check is investigated whether or not it blocks a merge (ADR 0024). The
     # required ones must also have appeared.
-    names = Enum.uniq(required ++ Map.keys(runs))
+    deferred = deferred(workload)
+    left_to = Enum.map(deferred, & &1.check)
+    names = Enum.uniq(required ++ left_to ++ Map.keys(runs))
     looked_at = Enum.map(names, &{&1, runs[&1]})
 
     ended =
@@ -396,6 +402,9 @@ defmodule ControlPlane.Settle do
     real = bad -- cancelled
     revisable = revisable(workload, pull_and_number)
 
+    # The checks a gate was left to that no run of has appeared for.
+    absent = for check <- Enum.uniq(left_to), runs[check] == nil, do: check
+
     cond do
       failed != [] and bad == cancelled and rerunnable?(workload, cancelled) ->
         {:ok, {:rerun, for({name, run} <- cancelled, do: {name, run["id"]})}}
@@ -410,6 +419,11 @@ defmodule ControlPlane.Settle do
       names == [] ->
         {:waiting, "no checks have been reported yet"}
 
+      # Only a check a gate was left to is missing, and it has had long enough to
+      # appear: nothing has run that gate, so the ticket does not wait for ever.
+      absent != [] and Enum.sort(unfinished) == Enum.sort(absent) and past_grace?(workload) ->
+        {:ok, {:failed, Enum.sort(absent), never_appeared(deferred, absent)}}
+
       unfinished != [] ->
         {:waiting, "still waiting for: #{Enum.join(Enum.sort(unfinished), ", ")}"}
 
@@ -417,6 +431,59 @@ defmodule ControlPlane.Settle do
         {:ok, :done}
     end
   end
+
+  # How long a check a gate was left to has to appear after the workload ended.
+  @deferred_grace_seconds 20 * 60
+
+  defp past_grace?(%{finished_at: %DateTime{} = finished}),
+    do: DateTime.diff(DateTime.utc_now(), finished) >= @deferred_grace_seconds
+
+  defp past_grace?(_workload), do: false
+
+  defp never_appeared(deferred, absent) do
+    lines =
+      for %{gate: gate, check: check} <- deferred, check in absent do
+        "- the gate `#{gate}` was left to the check `#{check}`"
+      end
+
+    "The workspace could not run these gates, and the checks they were left to never appeared on the pull request within #{div(@deferred_grace_seconds, 60)} minutes of the workload ending, so nothing has run them:\n" <>
+      Enum.join(lines, "\n")
+  end
+
+  # The gates the workspace left to a check on the pull request: each gate, the
+  # check, and why it was not run in the workspace.
+  defp deferred(workload) do
+    for %{"name" => gate, "result" => %{"outcome" => "deferred", "ci_check" => check} = result} <-
+          get_in(workload.record || %{}, ["gates"]) || [],
+        is_binary(check) and check != "",
+        do: %{gate: gate, check: check, reason: result["reason"]}
+  end
+
+  # What was left to CI is said on the ticket when it is done, because the check it
+  # was left to has been seen to pass. A pull request that was merged before it was
+  # looked at has not been checked, so nothing is claimed for it.
+  defp with_left_to_ci(workload, %{"state" => "open", "merged" => merged}, verdict, notes)
+       when merged != true do
+    case {done?(verdict), deferred(workload)} do
+      {true, [_ | _] = left} ->
+        lines =
+          for %{gate: gate, check: check, reason: reason} <- left do
+            "- `#{gate}`, left to the check `#{check}`, which passed: #{reason}"
+          end
+
+        text = "Left to CI (not run in the workspace):\n" <> Enum.join(lines, "\n")
+        if notes, do: notes <> "\n\n" <> text, else: text
+
+      _ ->
+        notes
+    end
+  end
+
+  defp with_left_to_ci(_workload, _pull, _verdict, notes), do: notes
+
+  defp done?(:done), do: true
+  defp done?({:done, _}), do: true
+  defp done?(_), do: false
 
   # Every cancelled check has re-runs left. With none allowed (the default) none has.
   defp rerunnable?(workload, cancelled) do
