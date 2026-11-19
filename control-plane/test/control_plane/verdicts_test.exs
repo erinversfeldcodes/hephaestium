@@ -164,7 +164,8 @@ defmodule ControlPlane.VerdictsTest do
       "title" => title,
       "evidence" => "src/lib.rs:12 unwraps a Result",
       "revision" => "Return the error instead of unwrapping it.",
-      "location" => "src/lib.rs:12"
+      # As the review contract has it, and as a protobuf Struct keeps a number: a float.
+      "location" => %{"path" => "src/lib.rs", "line" => 12.0}
     }
 
   defp approve_all(id) do
@@ -233,9 +234,57 @@ defmodule ControlPlane.VerdictsTest do
     assert failure["excerpt"] =~ "P1"
     assert failure["excerpt"] =~ "src/lib.rs:12 unwraps a Result"
     assert failure["excerpt"] =~ "Return the error instead of unwrapping it."
+    assert failure["excerpt"] =~ "Location: src/lib.rs:12\n"
+    refute failure["excerpt"] =~ "12.0"
     assert Workloads.get(id).settled_at
     assert hd(comments(gh)) =~ "review"
     assert labels(gh) == []
+  end
+
+  test "a finding's location is told as it is when it is a string, and left out when it is not usable",
+       %{id: id} do
+    cases = [
+      {"a string", "src/lib.rs:12", "Location: src/lib.rs:12\n"},
+      {"missing", :none, nil},
+      {"null", nil, nil},
+      {"a number", 12, nil},
+      {"a list", ["src/lib.rs", 12], nil},
+      {"an object without a line", %{"path" => "src/lib.rs"}, nil},
+      {"an object with a non-number line", %{"path" => "src/lib.rs", "line" => "twelve"}, nil},
+      {"an object with no path", %{"line" => 12.0}, nil}
+    ]
+
+    for {name, location, expected} <- cases do
+      {:ok, workload} = Workloads.create(ControlPlane.Fixtures.workload())
+      finding = blocking("A finding")
+
+      finding =
+        if location == :none,
+          do: Map.delete(finding, "location"),
+          else: Map.put(finding, "location", location)
+
+      asked(workload.id)
+      ended(workload.id, "rust", "completed", verdict("rust", "needs_revision", [finding]))
+
+      assert result(workload.id) == {:revising, 1}, name
+      assert [revision] = revisions_of(workload.id), name
+      assert [%{"excerpt" => excerpt}] = revision.workload["revision"]["failures"], name
+
+      if expected,
+        do: assert(excerpt =~ expected, name),
+        else: refute(excerpt =~ "Location:", name)
+    end
+  end
+
+  test "a location with a fractional line is not rounded to something it is not", %{id: id} do
+    asked(id)
+    finding = Map.put(blocking("A finding"), "location", %{"path" => "a.rs", "line" => 12.5})
+    ended(id, "rust", "completed", verdict("rust", "needs_revision", [finding]))
+
+    assert result(id) == {:revising, 1}
+    assert [revision] = revisions_of(id)
+    assert [%{"excerpt" => excerpt}] = revision.workload["revision"]["failures"]
+    assert excerpt =~ "Location: a.rs:12.5\n"
   end
 
   test "a finding that is not blocking is not sent to the revision", %{id: id} do
