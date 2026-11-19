@@ -20,13 +20,27 @@ pub const KNOWN: [&str; 2] = [GITHUB_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN"];
 
 /// The secrets taken from the environment.
 #[derive(Debug, Default)]
-pub struct Secrets(BTreeMap<String, String>);
+pub struct Secrets {
+    named: BTreeMap<String, String>,
+    gate: BTreeMap<String, String>,
+}
+
+/// What a variable that gives a gate's secret starts with: the rest of its name
+/// is the secret's, and a trailing `_FILE` makes it the path of a file that holds
+/// it.
+pub const GATE_PREFIX: &str = "HEPH_GATE_SECRET_";
 
 impl Secrets {
     /// What a secret is, if it was given.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.0.get(name).map(String::as_str)
+        self.named.get(name).map(String::as_str)
+    }
+
+    /// A secret a gate declares, if it was given.
+    #[must_use]
+    pub fn gate(&self, name: &str) -> Option<&str> {
+        self.gate.get(name).map(String::as_str)
     }
 
     /// Take each named secret from the environment, from the variable or from
@@ -47,27 +61,80 @@ impl Secrets {
     pub unsafe fn take(names: &[&str]) -> Result<Self, String> {
         let mut secrets = BTreeMap::new();
         for name in names {
-            let pointer = format!("{name}_FILE");
-            let variable = std::env::var(name).ok().filter(|value| !value.is_empty());
-            let file = std::env::var(&pointer)
-                .ok()
-                .filter(|value| !value.is_empty());
-            // SAFETY: the caller guarantees there is no other thread.
-            unsafe {
-                std::env::remove_var(name);
-                std::env::remove_var(&pointer);
+            if let Some(value) = take_one(name, &format!("{name}_FILE"))? {
+                secrets.insert((*name).to_owned(), value);
             }
-            let value = match (variable, file) {
-                (Some(_), Some(_)) => {
-                    return Err(format!("{name} and {pointer} are both set: give one"));
-                }
-                (Some(value), None) => value,
-                (None, Some(path)) => read(&pointer, &path)?,
-                (None, None) => continue,
-            };
-            secrets.insert((*name).to_owned(), value);
         }
-        Ok(Self(secrets))
+        Ok(Self {
+            named: secrets,
+            gate: BTreeMap::new(),
+        })
+    }
+
+    /// Take the secrets that gates declare: every variable that starts with
+    /// [`GATE_PREFIX`], or whose file the variable names, held under the name that
+    /// follows the prefix. They are removed from this process's environment, as
+    /// the others are, and are given to a gate only when it declares them.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Secrets::take`], and a name that cannot be a variable's. A
+    /// secret's value is never part of the message.
+    ///
+    /// # Safety
+    ///
+    /// As for [`Secrets::take`].
+    pub unsafe fn take_gate(&mut self) -> Result<(), String> {
+        let mut names = std::collections::BTreeSet::new();
+        for (key, _) in std::env::vars_os() {
+            let Some(key) = key.to_str() else { continue };
+            let Some(rest) = key.strip_prefix(GATE_PREFIX) else {
+                continue;
+            };
+            let name = rest.strip_suffix("_FILE").unwrap_or(rest);
+            let mut characters = name.chars();
+            let valid = characters
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && characters.all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !valid {
+                return Err(format!(
+                    "{key}: the secret's name is not one a variable can have"
+                ));
+            }
+            names.insert(name.to_owned());
+        }
+        for name in names {
+            if let Some(value) = take_one(
+                &format!("{GATE_PREFIX}{name}"),
+                &format!("{GATE_PREFIX}{name}_FILE"),
+            )? {
+                self.gate.insert(name, value);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One secret, from the variable or the file its pointer names, with both removed
+/// from the environment.
+///
+/// The caller must be the only thread, as for [`Secrets::take`].
+fn take_one(name: &str, pointer: &str) -> Result<Option<String>, String> {
+    let variable = std::env::var(name).ok().filter(|value| !value.is_empty());
+    let file = std::env::var(pointer)
+        .ok()
+        .filter(|value| !value.is_empty());
+    // SAFETY: the caller guarantees there is no other thread.
+    unsafe {
+        std::env::remove_var(name);
+        std::env::remove_var(pointer);
+    }
+    match (variable, file) {
+        (Some(_), Some(_)) => Err(format!("{name} and {pointer} are both set: give one")),
+        (Some(value), None) => Ok(Some(value)),
+        (None, Some(path)) => read(pointer, &path).map(Some),
+        (None, None) => Ok(None),
     }
 }
 

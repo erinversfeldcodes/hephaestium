@@ -24,13 +24,18 @@ fn main() -> ExitCode {
         }
     };
     // SAFETY: nothing has started a thread yet.
-    let secrets = match unsafe { Secrets::take(&secrets::KNOWN) } {
+    let mut secrets = match unsafe { Secrets::take(&secrets::KNOWN) } {
         Ok(secrets) => secrets,
         Err(message) => {
             eprintln!("executor: {message}");
             return ExitCode::from(1);
         }
     };
+    // SAFETY: nothing has started a thread yet.
+    if let Err(message) = unsafe { secrets.take_gate() } {
+        eprintln!("executor: {message}");
+        return ExitCode::from(1);
+    }
     // From here a signal asks the executor to stop what it is running, and does
     // not end it: the agent and everything else it started would be left behind.
     if let Err(error) = heph::process::install_cancellation() {

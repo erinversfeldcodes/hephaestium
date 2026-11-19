@@ -101,6 +101,27 @@ pub fn execute(
     capture_stdout: bool,
     notify: impl Fn(&str),
 ) -> Result<(Ended, Option<Vec<u8>>), std::io::Error> {
+    execute_with_env(argv, directory, timeout, capture_stdout, &[], notify)
+}
+
+/// [`execute`], with these variables set in the command's environment on top of
+/// this process's own.
+///
+/// # Errors
+///
+/// Returns the I/O error if waiting for the command failed.
+///
+/// # Panics
+///
+/// If `argv` is empty, as for [`execute`].
+pub fn execute_with_env(
+    argv: &[String],
+    directory: &Path,
+    timeout: Duration,
+    capture_stdout: bool,
+    environment: &[(String, String)],
+    notify: impl Fn(&str),
+) -> Result<(Ended, Option<Vec<u8>>), std::io::Error> {
     let (program, arguments) = argv
         .split_first()
         .expect("a command to have a program: the schema requires at least one element");
@@ -113,6 +134,7 @@ pub fn execute(
     command
         .args(arguments)
         .current_dir(directory)
+        .envs(environment.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .process_group(0);
