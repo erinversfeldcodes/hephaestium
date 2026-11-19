@@ -241,38 +241,54 @@ defmodule ControlPlane.VerdictsTest do
     assert labels(gh) == []
   end
 
-  test "a finding's location is told as it is when it is a string, and left out when it is not usable",
-       %{id: id} do
-    cases = [
-      {"a string", "src/lib.rs:12", "Location: src/lib.rs:12\n"},
-      {"missing", :none, nil},
-      {"null", nil, nil},
-      {"a number", 12, nil},
-      {"a list", ["src/lib.rs", 12], nil},
-      {"an object without a line", %{"path" => "src/lib.rs"}, nil},
-      {"an object with a non-number line", %{"path" => "src/lib.rs", "line" => "twelve"}, nil},
-      {"an object with no path", %{"line" => 12.0}, nil}
-    ]
+  # The locations a verdict may carry: the contract's object, and what it must survive.
+  defp location_case(name) do
+    %{
+      "a string" => {"src/lib.rs:12", "Location: src/lib.rs:12\n"},
+      "missing" => {:none, nil},
+      "null" => {nil, nil},
+      "a number" => {12, nil},
+      "a list" => {["src/lib.rs", 12], nil},
+      "an object without a line" => {%{"path" => "src/lib.rs"}, nil},
+      "an object with a non-number line" => {%{"path" => "src/lib.rs", "line" => "twelve"}, nil},
+      "an object with no path" => {%{"line" => 12.0}, nil},
+      "an object with an empty path" => {%{"path" => "", "line" => 12.0}, nil}
+    }
+    |> Map.fetch!(name)
+  end
 
-    for {name, location, expected} <- cases do
-      {:ok, workload} = Workloads.create(ControlPlane.Fixtures.workload())
+  for name <- [
+        "a string",
+        "missing",
+        "null",
+        "a number",
+        "a list",
+        "an object without a line",
+        "an object with a non-number line",
+        "an object with no path",
+        "an object with an empty path"
+      ] do
+    test "a finding whose location is #{name} still starts a revision, and tells it only if usable",
+         %{id: id} do
+      {location, expected} = location_case(unquote(name))
       finding = blocking("A finding")
 
       finding =
-        if location == :none,
-          do: Map.delete(finding, "location"),
-          else: Map.put(finding, "location", location)
+        case location do
+          :none -> Map.delete(finding, "location")
+          other -> Map.put(finding, "location", other)
+        end
 
-      asked(workload.id)
-      ended(workload.id, "rust", "completed", verdict("rust", "needs_revision", [finding]))
+      asked(id)
+      ended(id, "rust", "completed", verdict("rust", "needs_revision", [finding]))
 
-      assert result(workload.id) == {:revising, 1}, name
-      assert [revision] = revisions_of(workload.id), name
-      assert [%{"excerpt" => excerpt}] = revision.workload["revision"]["failures"], name
+      assert result(id) == {:revising, 1}
+      assert [revision] = revisions_of(id)
+      assert [%{"excerpt" => excerpt}] = revision.workload["revision"]["failures"]
 
       if expected,
-        do: assert(excerpt =~ expected, name),
-        else: refute(excerpt =~ "Location:", name)
+        do: assert(excerpt =~ expected),
+        else: refute(excerpt =~ "Location:")
     end
   end
 
