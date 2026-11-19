@@ -192,3 +192,10 @@ because a test that ran the real ones would act on a real repository.
 
 `DATABASE_URL` (for example `ecto://user:password@host/database`) says where the
 database is when it is not the local default.
+
+`HEPH_PG_SOCKET_DIR` (for example `/tmp`) makes the control plane, and the tests, connect
+through the Unix socket in that directory instead of TCP. Set it when another project's
+script on the same machine stops every process that holds a TCP connection to Postgres on
+port 5432 (thestacks' `scripts/test-elixir.sh` does, and stopped the control plane six
+times in a day): a socket connection is not one. Postgres shows it by a connection with no
+client address in `pg_stat_activity`.
