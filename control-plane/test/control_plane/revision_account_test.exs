@@ -98,6 +98,7 @@ defmodule ControlPlane.RevisionAccountTest do
 
     assert {"POST", _, ["labels[]=heph:failed"]} = hd(StandInGitHub.writes(gh))
     body = comment(gh)
+    assert body =~ "the revision failed"
     assert body =~ "the agent changed nothing"
     assert body =~ "The agent's account"
     assert body =~ "The failing spec is invite.spec.ts. I made no change."
@@ -152,7 +153,7 @@ defmodule ControlPlane.RevisionAccountTest do
     assert :ok =
              revision_ended(
                id,
-               ["red \e[31mtext\e[0m and a bell \a and a null \0 end"],
+               ["red \e[31mtext\e[0m and a bell \a and a form feed \f end"],
                "OUTCOME_FAILED",
                "the agent changed nothing"
              )
@@ -160,7 +161,7 @@ defmodule ControlPlane.RevisionAccountTest do
     body = comment(gh)
     refute body =~ "\e"
     refute body =~ "\a"
-    refute body =~ <<0>>
+    refute body =~ "\f"
     assert body =~ "red"
     assert body =~ "text"
   end
