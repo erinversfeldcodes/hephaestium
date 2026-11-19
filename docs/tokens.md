@@ -147,6 +147,26 @@ chmod 600 ~/.config/hephaestium/*
 - The executor reads each token once, at the start, and removes both the variable
   and its `_FILE` pointer from its own environment.
 
+## Secrets a repository's gates need
+
+A gate in a repository's manifest can declare a secret it needs (`NAME = "secret"`
+under `[gates.<gate>.requires]`). Give it to the executor as
+`HEPH_GATE_SECRET_<NAME>`, or as `HEPH_GATE_SECRET_<NAME>_FILE` naming a file kept
+as above, and it is given to the gates that declare it and to nothing else:
+
+```
+( umask 077; pbpaste | tr -d '\n' > ~/.config/hephaestium/pixabay-key )
+HEPH_GATE_SECRET_PIXABAY_API_KEY_FILE=~/.config/hephaestium/pixabay-key
+```
+
+The same rules apply as for the tokens (a file only you can read, not both a
+variable and a file), and the executor removes both from its environment, so a
+bootstrap step, another gate and the agent never see the value or where it is
+kept. A variable the gate declares as `env` is read from the executor's own
+environment, and a control plane started with it set passes it on. These values are
+the executor's, not a repository's: every repository the control plane takes in
+sees the same ones. See [ADR 0027](adr/0027-a-gate-gets-the-secrets-it-declares-and-the-agent-never-does.md).
+
 ## When one is wrong
 
 | What you see | What it means | What to do |
