@@ -5,6 +5,14 @@ if url = System.get_env("DATABASE_URL") do
   config :control_plane, ControlPlane.Repo, url: url
 end
 
+# Connect through Postgres's Unix socket in this directory instead of TCP (#140). Another
+# project's script on the same machine stops every BEAM that holds a TCP connection to port
+# 5432, whichever project it belongs to; a socket connection is not one.
+case System.get_env("HEPH_PG_SOCKET_DIR") do
+  dir when dir in [nil, ""] -> :ok
+  dir -> config :control_plane, ControlPlane.Repo, socket_dir: dir
+end
+
 runner =
   [
     executor: System.get_env("HEPH_EXECUTOR"),
