@@ -83,8 +83,7 @@ defmodule ControlPlane.Tickets do
       remove_label(workload, @running),
       note(
         workload,
-        "the pull request's checks are green. The ticket is done." <>
-          merged(merge) <> if(notes, do: "\n\n" <> notes, else: "")
+        ready_text(notes) <> merged(merge) <> if(notes, do: "\n\n" <> notes, else: "")
       )
     ])
   end
@@ -149,6 +148,20 @@ defmodule ControlPlane.Tickets do
       workload,
       "the pull request's review found problems that block it: #{Enum.join(names, ", ")}. Starting revision #{attempt} of #{max}: the agent will address the blocking findings on the same branch."
     )
+  end
+
+  # What a green, approved pull request claims: that its checks are green and, if reviews
+  # were asked for, that they approved it. Neither says the ticket's goal is met, so the
+  # comment says it is for a person to judge, and says when no review was asked for.
+  defp ready_text(notes) do
+    reviewed? = is_binary(notes) and String.contains?(notes, "Reviews:\n")
+
+    if(
+      reviewed?,
+      do: "the pull request's checks are green and its reviews approved it.",
+      else: "the pull request's checks are green. No review was asked for."
+    ) <>
+      " Hephaestium has not judged whether the ticket's goal is met: that is for a person, against the ticket."
   end
 
   defp merged(nil), do: ""
