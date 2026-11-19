@@ -88,6 +88,9 @@ pub struct Gate {
     /// The environment variables it needs, by name.
     #[serde(default)]
     pub requires: BTreeMap<String, Requirement>,
+    /// The check on a pull request that exercises the same work. A runner that cannot
+    /// run the gate where it is may leave it to that check.
+    pub ci_check: Option<String>,
 }
 
 /// What a gate needs from its environment.

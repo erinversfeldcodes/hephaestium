@@ -26,6 +26,9 @@ pub enum Outcome {
     TimedOut,
     /// The command was not run.
     Skipped,
+    /// The command could not be run where it was, and was left to the check on the
+    /// pull request that the manifest names for it.
+    Deferred,
 }
 
 impl std::fmt::Display for Outcome {
@@ -35,6 +38,7 @@ impl std::fmt::Display for Outcome {
             Self::Failed => "failed",
             Self::TimedOut => "timed out",
             Self::Skipped => "skipped",
+            Self::Deferred => "deferred",
         })
     }
 }
@@ -55,7 +59,10 @@ pub struct GateResult {
     pub exit_code: Option<i32>,
     /// How long it took, in milliseconds.
     pub duration_ms: u64,
-    /// Why it was skipped.
+    /// The check a deferred gate was left to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_check: Option<String>,
+    /// Why it was skipped or deferred.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// The gate's own structured result, when it gives one.
@@ -65,12 +72,13 @@ pub struct GateResult {
 
 impl GateResult {
     /// The exit code `heph` itself ends with: 0 when the gate passed or was
-    /// skipped, 1 when it failed or timed out.
+    /// skipped, 1 when it failed, timed out or was deferred. `heph` never defers a
+    /// gate itself, and a deferral is not a pass.
     #[must_use]
     pub fn exit_code_of_heph(&self) -> u8 {
         match self.outcome {
             Outcome::Passed | Outcome::Skipped => 0,
-            Outcome::Failed | Outcome::TimedOut => 1,
+            Outcome::Failed | Outcome::TimedOut | Outcome::Deferred => 1,
         }
     }
 }
@@ -242,6 +250,7 @@ pub fn reported(
         command,
         exit_code: Some(i32::from(failed)),
         duration_ms,
+        ci_check: None,
         reason: None,
         report: Some(report),
     }
@@ -258,12 +267,41 @@ pub fn skipped(name: &str, gate: &Gate, command: Vec<String>) -> GateResult {
         command,
         exit_code: None,
         duration_ms: 0,
+        ci_check: None,
         reason: Some(format!(
             "no changed file matches the gate's when_paths ({})",
             gate.when_paths.as_deref().unwrap_or_default().join(", ")
         )),
         report: None,
     }
+}
+
+/// The result for a gate that could not be run where it was and is left to the check
+/// the manifest names for it, or `None` if the manifest names none: a gate with no
+/// equivalent check is never left to anything.
+///
+/// `result` is what running the gate said, if it ran and was stopped, so the time it
+/// took is kept.
+#[must_use]
+pub fn deferred(
+    name: &str,
+    gate: &Gate,
+    command: Vec<String>,
+    duration_ms: u64,
+    reason: String,
+) -> Option<GateResult> {
+    let ci_check = gate.ci_check.clone()?;
+    Some(GateResult {
+        schema_version: 0,
+        gate: name.to_owned(),
+        outcome: Outcome::Deferred,
+        command,
+        exit_code: None,
+        duration_ms,
+        ci_check: Some(ci_check),
+        reason: Some(reason),
+        report: None,
+    })
 }
 
 /// Run a gate's command and report how it ended.
@@ -346,6 +384,7 @@ pub fn run_with_env(
         command,
         exit_code,
         duration_ms,
+        ci_check: None,
         reason: None,
         report,
     })

@@ -174,3 +174,34 @@ fn the_manifest_check_accepts_requirements() {
 
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
 }
+
+#[test]
+fn the_manifest_check_accepts_a_gate_that_names_its_ci_check() {
+    let scratch = scratch_with(
+        "req-ci-check",
+        "HEPH_TEST_NEEDS_DB = \"env\"",
+        "ci_check = \"test\"",
+    );
+
+    let output = heph_in(&scratch.0, &["manifest", "check"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+}
+
+#[test]
+fn heph_never_leaves_a_gate_to_a_check_itself_a_missing_variable_still_stops_it() {
+    // Leaving a gate to CI is a choice for whoever opens a pull request that CI will
+    // judge. `heph gate run` is the pipeline's own gate, and a pipeline that went green
+    // because it deferred to itself would have checked nothing (ADR 0014).
+    let scratch = scratch_with(
+        "req-ci-check-run",
+        "HEPH_TEST_NEEDS_DB = \"env\"",
+        "ci_check = \"test\"",
+    );
+
+    let output = heph_in(&scratch.0, &["gate", "run", "needy"]);
+
+    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    assert!(!scratch.exists("ran"));
+}
