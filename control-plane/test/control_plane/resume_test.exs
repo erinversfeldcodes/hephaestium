@@ -313,6 +313,51 @@ defmodule ControlPlane.ResumeTest do
     assert Workloads.get(revision.id).budget_base == 1
   end
 
+  test "a review of the pull request is not what is resumed, however late it ended", %{
+    original: original
+  } do
+    review =
+      original.workload
+      |> Map.put("id", Ecto.UUID.generate())
+      |> Map.put("review", %{
+        "pullRequestNumber" => "52",
+        "pullRequestUrl" => @pr_url,
+        "lens" => "rust",
+        "lensDocument" => "x"
+      })
+
+    {:ok, record} = Workloads.create(review, parent: original.id)
+    completed(record.id, "OUTCOME_COMPLETED", %{"pullRequest" => %{"url" => @pr_url}})
+    Workloads.settle(record.id)
+
+    Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^record.id),
+      set: [inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(), 3600, :second)]
+    )
+
+    assert [%{result: :resumed}] = Run.run(@repo)
+
+    refute settled?(original.id)
+    assert settled?(record.id)
+  end
+
+  test "a workload that did not complete is not what is resumed, even with a pull request", %{
+    original: original
+  } do
+    # A revision that pushed and then failed to end well: its record names the pull request.
+    failed =
+      revision_of(original, 2, "OUTCOME_FAILED", %{"pullRequest" => %{"url" => @pr_url}})
+
+    Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^failed.id),
+      set: [state: "failed"]
+    )
+
+    assert [%{result: :resumed}] = Run.run(@repo)
+
+    refute settled?(original.id)
+    assert settled?(failed.id)
+    assert Workloads.get(original.id).budget_base == 0
+  end
+
   describe "settling what was resumed" do
     defp run(id, name, conclusion),
       do: %{"id" => id, "name" => name, "status" => "completed", "conclusion" => conclusion}
