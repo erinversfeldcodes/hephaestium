@@ -128,6 +128,28 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
+  @resume_removes ["heph:ready", "heph:failed", "heph:done", "heph:blocked"]
+
+  @doc """
+  A maintainer re-approved a ticket whose pull request is open, and it is being worked on
+  again (#131): the running label is added, whichever state labels the ticket has are
+  removed (and no label it does not have is asked to go), and a comment says who resumed
+  which pull request.
+  """
+  @spec resumed(%Workload{}, [String.t()], String.t(), String.t() | nil) ::
+          :ok | {:error, String.t()}
+  def resumed(%Workload{} = workload, labels, login, url) do
+    first_error(
+      [add_label(workload, @running)] ++
+        for(label <- @resume_removes, label in labels, do: remove_label(workload, label)) ++
+        [
+          write("POST", issue(workload) <> "/comments", [
+            "body=**Hephaestium:** resumed by #{login}. The pull request #{url || get_in(workload.record || %{}, ["pullRequest", "url"])} will be looked at again, and revised if its checks or its reviews call for it."
+          ])
+        ]
+    )
+  end
+
   @doc """
   The pull request's checks really failed and a revision has been started: the ticket
   says which, and that the agent will investigate on the same branch. The labels do

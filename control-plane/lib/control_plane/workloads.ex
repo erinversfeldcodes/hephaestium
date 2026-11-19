@@ -28,7 +28,8 @@ defmodule ControlPlane.Workloads do
         ticket_number: number,
         state: "queued",
         workload: workload,
-        parent_id: options[:parent]
+        parent_id: options[:parent],
+        budget_base: options[:budget_base] || 0
       }
       |> Ecto.Changeset.change()
       |> Ecto.Changeset.unique_constraint(:id, name: :workloads_pkey)
@@ -43,6 +44,57 @@ defmodule ControlPlane.Workloads do
   end
 
   def create(_, _options), do: {:error, :not_a_workload}
+
+  @doc """
+  The workload of a ticket whose pull request is the one to look at: the latest that
+  completed with a pull request in its record, which is not a review. Latest is by revision
+  attempt, since workloads made in the same second cannot be told apart by when.
+  """
+  @spec pull_request_workload(String.t(), integer()) :: %Workload{} | nil
+  def pull_request_workload(repository, number) do
+    Repo.one(
+      from w in Workload,
+        where:
+          w.repository == ^repository and w.ticket_number == ^number and w.state == "completed" and
+            fragment("?->'review' IS NULL", w.workload) and
+            fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
+        order_by: [
+          desc: fragment("COALESCE((?->'revision'->>'attempt')::int, 0)", w.workload),
+          desc: w.inserted_at
+        ],
+        limit: 1
+    )
+  end
+
+  @doc """
+  Resume a workload's pull request: it is unsettled again, so settling looks at the pull
+  request as it is now, and the revisions it may have are counted from the attempt it had
+  reached. `approval_at` is the approval this was done for.
+  """
+  @spec resume(%Workload{}, DateTime.t()) :: :ok
+  def resume(%Workload{} = workload, approval_at) do
+    Repo.update_all(from(w in Workload, where: w.id == ^workload.id),
+      set: [
+        settled_at: nil,
+        resumed_for: approval_at,
+        budget_base: get_in(workload.workload, ["revision", "attempt"]) || 0,
+        updated_at: DateTime.utc_now()
+      ]
+    )
+
+    :ok
+  end
+
+  @doc "The number of a workload's pull request, from the address its record holds."
+  @spec pull_request_number(%Workload{}) :: {:ok, String.t()} | {:error, String.t()}
+  def pull_request_number(%Workload{} = workload) do
+    url = get_in(workload.record || %{}, ["pullRequest", "url"]) || ""
+
+    case Regex.run(~r{^https://github\.com/([^/]+/[^/]+)/pull/(\d+)$}, url) do
+      [_, repository, number] when repository == workload.repository -> {:ok, number}
+      _ -> {:error, "the pull request #{inspect(url)} is not one of #{workload.repository}"}
+    end
+  end
 
   @doc "The workloads of a ticket, oldest first."
   @spec for_ticket(String.t(), integer()) :: [%Workload{}]
@@ -244,7 +296,8 @@ defmodule ControlPlane.Workloads do
   @spec hand_on(%Workload{}, map()) :: {:ok, %Workload{}} | {:error, term()}
   def hand_on(%Workload{} = workload, revision) do
     Repo.transaction(fn ->
-      with {:ok, child} <- create(revision, parent: workload.id),
+      with {:ok, child} <-
+             create(revision, parent: workload.id, budget_base: workload.budget_base),
            {:ok, _job} <- ControlPlane.Runner.enqueue(child.id) do
         settle(workload.id)
         child

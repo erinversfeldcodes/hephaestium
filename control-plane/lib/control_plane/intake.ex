@@ -14,7 +14,7 @@ defmodule ControlPlane.Intake do
   about, is not an approval.
   """
 
-  alias ControlPlane.{GitHub, Programs, Runner, Workloads}
+  alias ControlPlane.{GitHub, Programs, Runner, Tickets, Workloads}
 
   @label "heph:ready"
   @writers ~w(admin maintain write)
@@ -31,7 +31,7 @@ defmodule ControlPlane.Intake do
   }
   """
 
-  @type result :: :started | {:skipped, term()}
+  @type result :: :started | :resumed | {:skipped, term()}
 
   @doc "Check every approved ticket of a repository, and start a workload for each that stands."
   @spec run(String.t()) :: [%{ticket: integer(), result: result()}] | {:error, String.t()}
@@ -39,7 +39,7 @@ defmodule ControlPlane.Intake do
     case GitHub.get_all(ready_endpoint(repo)) do
       {:ok, issues} ->
         for issue <- issues, open_issue?(issue) do
-          %{ticket: issue["number"], result: consider(repo, issue["number"])}
+          %{ticket: issue["number"], result: consider(repo, issue)}
         end
 
       {:error, message} ->
@@ -49,16 +49,16 @@ defmodule ControlPlane.Intake do
 
   defp open_issue?(issue), do: issue["state"] == "open" and is_nil(issue["pull_request"])
 
-  defp consider(repo, number) do
+  defp consider(repo, issue) do
+    number = issue["number"]
+
     with {:ok, events} <- fetch(GitHub.get_all(events_endpoint(repo, number))),
          {:ok, approval} <- approval(events),
          {:ok, true} <- writer(repo, approval.login, :approver_cannot_write),
          :ok <- not_started(repo, number, approval.at),
          :ok <- not_edited_since(repo, number, events, approval),
-         {:ok, workload} <- build(repo, number, approval),
-         {:ok, record} <- create(workload),
-         {:ok, _job} <- Runner.enqueue(record.id) do
-      :started
+         {:ok, plan} <- plan(repo, number) do
+      act(plan, repo, issue, approval)
     else
       {:ok, false, reason} -> {:skipped, reason}
       {:skip, reason} -> {:skipped, reason}
@@ -66,6 +66,63 @@ defmodule ControlPlane.Intake do
       {:could_not_build, message} -> {:skipped, {:could_not_build, message}}
       other -> {:skipped, {:unexpected, inspect(other)}}
     end
+  end
+
+  # A new workload, unless the ticket's pull request is open: then that pull request is
+  # resumed (#131). A ticket whose pull request is merged, closed, or not one the runtime
+  # made is left to a person: a new run would collide with its branch.
+  defp plan(repo, number) do
+    case Workloads.pull_request_workload(repo, number) do
+      nil ->
+        {:ok, :build}
+
+      workload ->
+        with {:ok, pull_number} <- pull_request_number(workload),
+             {:ok, pull} <- fetch(GitHub.get("repos/#{repo}/pulls/#{pull_number}")),
+             :ok <- resumable(repo, pull) do
+          {:ok, {:resume, workload, pull}}
+        end
+    end
+  end
+
+  defp pull_request_number(workload) do
+    case Workloads.pull_request_number(workload) do
+      {:ok, number} -> {:ok, number}
+      {:error, _} -> {:skip, :not_a_runtime_pull_request}
+    end
+  end
+
+  defp resumable(_repo, %{"merged" => true}), do: {:skip, :pull_request_merged}
+  defp resumable(_repo, %{"state" => "closed"}), do: {:skip, :pull_request_closed}
+
+  defp resumable(repo, %{"state" => "open", "head" => head}) do
+    if String.starts_with?(head["ref"] || "", "heph/") and
+         get_in(head, ["repo", "full_name"]) == repo,
+       do: :ok,
+       else: {:skip, :not_a_runtime_pull_request}
+  end
+
+  defp resumable(_repo, _pull), do: {:skip, :not_a_runtime_pull_request}
+
+  defp act(:build, repo, issue, approval) do
+    number = issue["number"]
+
+    with {:ok, workload} <- build(repo, number, approval),
+         {:ok, record} <- create(workload),
+         {:ok, _job} <- Runner.enqueue(record.id) do
+      :started
+    else
+      {:github_error, message} -> {:skipped, {:github_error, message}}
+      {:could_not_build, message} -> {:skipped, {:could_not_build, message}}
+      other -> {:skipped, {:unexpected, inspect(other)}}
+    end
+  end
+
+  defp act({:resume, workload, pull}, _repo, issue, approval) do
+    :ok = Workloads.resume(workload, approval.at)
+    labels = for %{"name" => name} <- issue["labels"] || [], do: name
+    _ = Tickets.resumed(workload, labels, approval.login, pull["html_url"])
+    :resumed
   end
 
   defp fetch({:ok, value}), do: {:ok, value}
@@ -103,6 +160,11 @@ defmodule ControlPlane.Intake do
     end
   end
 
+  defp resumed_for?(%{resumed_for: %DateTime{} = given}, at),
+    do: DateTime.compare(given, at) == :eq
+
+  defp resumed_for?(_workload, _at), do: false
+
   defp not_started(repo, number, at) do
     started? =
       repo
@@ -113,7 +175,7 @@ defmodule ControlPlane.Intake do
           DateTime.compare(given, at) == :eq
         else
           _ -> false
-        end
+        end or resumed_for?(workload, at)
       end)
 
     if started?, do: {:skip, :already_started}, else: :ok
