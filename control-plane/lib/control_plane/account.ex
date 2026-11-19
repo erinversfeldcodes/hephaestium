@@ -47,7 +47,16 @@ defmodule ControlPlane.Account do
     end
   end
 
-  defp clean(text) do
+  @doc """
+  Agent text as data to show: cleaned of terminal escapes and control characters, cut to
+  a length a comment can hold, and fenced so that its own text cannot end the block.
+  """
+  @spec block(String.t()) :: String.t()
+  def block(text) when is_binary(text), do: text |> clean() |> String.trim() |> fenced()
+
+  @doc "Agent text without terminal escapes and control characters."
+  @spec clean(String.t()) :: String.t()
+  def clean(text) do
     text
     |> String.replace(~r/\e\[[0-9;?]*[A-Za-z]/, "")
     |> String.replace(~r/[\x00-\x08\x0B-\x1F\x7F]/u, "")

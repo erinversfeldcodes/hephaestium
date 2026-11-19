@@ -154,6 +154,30 @@ defmodule ControlPlane.Workloads do
     :ok
   end
 
+  @doc """
+  Claim the writing of what this workload found on its pull request. `:ok` for the one
+  caller that gets it, `:already` for any other, so it is written once.
+  """
+  @spec claim_report(Ecto.UUID.t()) :: :ok | :already
+  def claim_report(id) do
+    now = DateTime.utc_now()
+
+    case Repo.update_all(
+           from(w in Workload, where: w.id == ^id and is_nil(w.reported_at)),
+           set: [reported_at: now, updated_at: now]
+         ) do
+      {1, _} -> :ok
+      _ -> :already
+    end
+  end
+
+  @doc "Give the claim back, because the comment could not be written, so it is tried again."
+  @spec release_report(Ecto.UUID.t()) :: :ok
+  def release_report(id) do
+    Repo.update_all(from(w in Workload, where: w.id == ^id), set: [reported_at: nil])
+    :ok
+  end
+
   @doc "Record that the check of this name on the workload's pull request was re-run."
   def count_rerun(id, name) do
     Repo.update_all(
