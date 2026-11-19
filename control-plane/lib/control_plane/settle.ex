@@ -22,7 +22,7 @@ defmodule ControlPlane.Settle do
   labels and comment were written; if they could not be, it is tried again.
   """
 
-  alias ControlPlane.{GitHub, Reviews, Tickets, Workloads}
+  alias ControlPlane.{Account, GitHub, Reviews, Tickets, Workloads}
 
   @good ["success", "skipped", "neutral"]
 
@@ -530,11 +530,11 @@ defmodule ControlPlane.Settle do
     lines =
       for {w, index} <- Enum.with_index(Workloads.chain(workload)), index > 0 do
         what = if w.reason in [nil, ""], do: w.state, else: "#{w.state}: #{w.reason}"
-        "- revision #{index}: #{what}"
+        "- revision #{index}: #{what}\n\n" <> Account.section(w.id)
       end
 
     {:failed, names,
-     "Revisions made: #{attempt(workload)} of #{revisions()}.\n" <> Enum.join(lines, "\n")}
+     "Revisions made: #{attempt(workload)} of #{revisions()}.\n\n" <> Enum.join(lines, "\n\n")}
   end
 
   defp revisions,

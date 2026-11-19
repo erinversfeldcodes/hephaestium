@@ -670,6 +670,74 @@ defmodule ControlPlane.SettleTest do
       assert labels(gh) == ["labels[]=heph:failed"]
     end
 
+    test "the last failure lists what each revision's agent said, quoted as data", %{
+      gh: gh,
+      id: id
+    } do
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+      {:ok, _} = Events.append(first.id, event(first.id, 1, started()))
+
+      {:ok, _} =
+        Events.append(
+          first.id,
+          event(
+            first.id,
+            2,
+            agent_message("The failing spec is invite. I changed nothing @someone.")
+          )
+        )
+
+      {:ok, _} =
+        Events.append(first.id, event(first.id, 3, finished("OUTCOME_FAILED", "nothing")))
+
+      Workloads.keep_record(first.id, %{"outcome" => "OUTCOME_FAILED"})
+      Workloads.fail(first.id, "the agent changed nothing, so there is nothing to deliver")
+      {:ok, second} = Workloads.create(revision_workload(first.id, 2), parent: first.id)
+      {:ok, _} = Events.append(second.id, event(second.id, 1, started()))
+
+      {:ok, _} =
+        Events.append(second.id, event(second.id, 2, agent_message("I pushed a longer wait.")))
+
+      {:ok, _} = Events.append(second.id, event(second.id, 3, finished("OUTCOME_COMPLETED", "")))
+
+      Workloads.keep_record(second.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      Workloads.settle(id)
+
+      assert {:failed, ["ci"], note} =
+               Enum.find(Settle.run(), &(&1.workload_id == second.id)).result
+
+      assert note =~ "revision 1"
+      assert note =~ "The failing spec is invite. I changed nothing @someone."
+      assert note =~ "revision 2"
+      assert note =~ "I pushed a longer wait."
+      assert note =~ "`text\n"
+    end
+
+    test "a revision whose agent said nothing is listed as giving no account", %{id: id} do
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+      Workloads.keep_record(first.id, %{"outcome" => "OUTCOME_FAILED"})
+      Workloads.fail(first.id, "the agent changed nothing, so there is nothing to deliver")
+      {:ok, second} = Workloads.create(revision_workload(first.id, 2), parent: first.id)
+
+      Workloads.keep_record(second.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      complete(second.id)
+      Workloads.settle(id)
+
+      assert {:failed, ["ci"], note} =
+               Enum.find(Settle.run(), &(&1.workload_id == second.id)).result
+
+      assert note =~ "revision 1: failed"
+      assert note =~ "gave no account"
+    end
+
     test "a revision that pushed is judged like any workload, and settles when green", %{
       gh: gh,
       id: id

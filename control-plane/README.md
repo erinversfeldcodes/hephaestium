@@ -80,7 +80,13 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   not change and a comment says revision k of N has started. A pull request that is not
   on a `heph/` branch of the same repository is never revised. When no revisions are
   left, the ticket is labelled `heph:failed` and the comment says what each revision
-  did. Nothing in the control plane merges a pull request.
+  did. When a revision ends, its comment carries the agent's last message, as the
+  agent's account of what it found and did (or says it gave none): cleaned of control
+  characters, cut at 2,000 characters, and in a fenced block its own text cannot end,
+  so a mention or a command in it does nothing. A revision that changed nothing but
+  said why is still `heph:failed`: the ticket's goal (a change with green checks) was
+  not met, and `heph:blocked` is for a workload that stopped to ask a person
+  something (ADR 0020). Nothing in the control plane merges a pull request.
 - Merging a green pull request is off by default and chosen per repository:
   `HEPH_AUTOMERGE=owner/name,owner/name`. For a listed repository, when every check
   on the head commit is green (see above) and the pull request is open, settle merges

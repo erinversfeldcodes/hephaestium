@@ -12,7 +12,7 @@ defmodule ControlPlane.Tickets do
 
   require Logger
 
-  alias ControlPlane.{GitHub, Workload}
+  alias ControlPlane.{Account, GitHub, Workload}
 
   @ready "heph:ready"
   @running "heph:running"
@@ -208,6 +208,7 @@ defmodule ControlPlane.Tickets do
       "**Hephaestium:** #{headline(workload.state, revision?(workload))}",
       reason(workload),
       question(workload.state, record),
+      account(workload),
       pull_request(record),
       cost(record)
     ]
@@ -219,7 +220,9 @@ defmodule ControlPlane.Tickets do
     do: "a revision completed and pushed to the pull request's branch."
 
   defp headline("completed", _), do: "the workload completed and opened a pull request."
+  defp headline("failed", true), do: "the revision failed."
   defp headline("failed", _), do: "the workload failed."
+  defp headline("timed_out", true), do: "the revision timed out."
   defp headline("timed_out", _), do: "the workload timed out."
   defp headline("blocked", _), do: "the workload is blocked."
   defp headline("cancelled", _), do: "the workload was cancelled."
@@ -227,6 +230,15 @@ defmodule ControlPlane.Tickets do
 
   defp revision?(%Workload{workload: %{"revision" => _}}), do: true
   defp revision?(_), do: false
+
+  # A revision says what its agent found and did, in the agent's words: a person reading
+  # the ticket should not have to look in the run's events. A revision that stopped to
+  # ask has its question instead.
+  defp account(%Workload{state: state} = workload) when state != "blocked" do
+    if revision?(workload), do: Account.section(workload.id)
+  end
+
+  defp account(_workload), do: nil
 
   defp reason(%{reason: reason}) when reason not in [nil, ""], do: "Why: #{reason}"
   defp reason(_), do: nil
