@@ -293,6 +293,81 @@ defmodule ControlPlane.PullRequestCommentsTest do
     assert [_] = writes(gh, @ticket_comments)
   end
 
+  test "a revision that stopped to ask, or was cancelled, writes no account on the pull request",
+       %{gh: gh, parent: parent} do
+    for outcome <- ["OUTCOME_BLOCKED", "OUTCOME_CANCELLED"] do
+      revision =
+        parent.workload
+        |> Map.put("id", Ecto.UUID.generate())
+        |> Map.put("revision", %{
+          "pullRequestNumber" => "52",
+          "pullRequestUrl" => @pr_url,
+          "branch" => "heph/12-x",
+          "attempt" => 1,
+          "failures" => []
+        })
+
+      {:ok, record} = Workloads.create(revision, parent: parent.id)
+      {:ok, _} = Events.append(record.id, event(record.id, 1, started()))
+      {:ok, _} = Events.append(record.id, event(record.id, 2, agent_message("an account")))
+      {:ok, _} = Events.append(record.id, event(record.id, 3, finished(outcome, "x")))
+      Workloads.keep_record(record.id, %{"outcome" => outcome, "question" => "Which one?"})
+
+      Tickets.ended(Workloads.get(record.id))
+    end
+
+    assert pr_comments(gh) == []
+  end
+
+  test "a pull request number that is not a number writes nothing, and is an error", %{
+    gh: gh,
+    parent: parent
+  } do
+    for bad <- ["52/../../x", "", "0", "-1", "52 ", "5e2", nil, 52] do
+      review =
+        parent.workload
+        |> Map.put("id", Ecto.UUID.generate())
+        |> Map.put("review", %{
+          "pullRequestNumber" => bad,
+          "pullRequestUrl" => @pr_url,
+          "lens" => "rust",
+          "lensDocument" => "x"
+        })
+
+      {:ok, record} = Workloads.create(review, parent: parent.id)
+      {:ok, _} = Events.append(record.id, event(record.id, 1, started()))
+      {:ok, _} = Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", "")))
+
+      Workloads.keep_record(record.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "review" => verdict("approved")
+      })
+
+      assert {:error, message} = Tickets.ended(Workloads.get(record.id)), inspect(bad)
+      assert message =~ "is not one", inspect(bad)
+    end
+
+    assert StandInGitHub.writes(gh) == []
+  end
+
+  test "a lens name, a commit and a verdict word that are not what the contract says are not repeated",
+       %{gh: gh, parent: parent} do
+    odd =
+      Map.merge(verdict("approved"), %{
+        "commit" => "```@someone",
+        "verdict" => "approved @someone"
+      })
+
+    review = review(parent, "rust", "OUTCOME_COMPLETED", odd)
+
+    assert :ok = Tickets.ended(review)
+
+    assert [body] = pr_comments(gh)
+    refute body =~ "@someone"
+    assert body =~ "an unrecognised verdict"
+    assert body =~ "a commit"
+  end
+
   test "a workload that is neither a review nor a revision writes nothing on the pull request",
        %{gh: gh, parent: parent} do
     {:ok, _} = Events.append(parent.id, event(parent.id, 1, started()))
