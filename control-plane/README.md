@@ -44,7 +44,9 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   request's required checks are. It reads the pull request, the checks the base
   branch's ruleset requires, and the check runs on the head commit. Every check on the
   commit counts, required or not, and the required ones must have appeared. All green (or
-  skipped): `heph:done`. Any failed, cancelled or timed out: `heph:failed`, naming
+  skipped): `heph:done`, which means the pull request is ready for a person's decision:
+  its checks are green and any reviews approved it. It does not mean the ticket's goal is
+  verified, and the comment says so, and says when no review was asked for. Any failed, cancelled or timed out: `heph:failed`, naming
   them, without waiting for the rest. Merged: done. Closed unmerged: the running
   label goes and a comment says so. A check still running or not yet seen, no
   checks at all, or GitHub unable to say waits and writes nothing. Only the newest
@@ -117,7 +119,8 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   was found; a lens that could not review (its run did not end well, it left no
   verdict, or its text is not in the release) fails the ticket, and is never an
   approval; a review still running makes the ticket wait; and when every lens that
-  blocks approved, the ticket is done and says what each lens said. A lens whose own
+  blocks approved, the ticket is labelled `heph:done` and says what each lens said, and
+  what no lens looked at. A lens whose own
   text says `blocking: false` is advisory: it is waited for and reported and never
   stops the change. A verdict for another head commit never counts. Merging, when
   it is on, happens only after that, and only when GitHub says `clean`.
