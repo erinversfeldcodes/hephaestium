@@ -22,6 +22,8 @@ defmodule ControlPlane.Settle do
   labels and comment were written; if they could not be, it is tried again.
   """
 
+  require Logger
+
   alias ControlPlane.{Account, GitHub, Reviews, Tickets, Workloads}
 
   @good ["success", "skipped", "neutral"]
@@ -30,8 +32,20 @@ defmodule ControlPlane.Settle do
   @spec run() :: [%{workload_id: String.t(), result: term()}]
   def run do
     for workload <- Workloads.awaiting_settlement() do
-      %{workload_id: workload.id, result: settle(workload)}
+      %{workload_id: workload.id, result: settle_safely(workload)}
     end
+  end
+
+  # One workload that cannot be settled is that workload's result and nothing more: the
+  # others behind it are still settled, and the job does not crash for every ticket
+  # because of one. The failure is logged, and the workload is looked at again next time.
+  defp settle_safely(workload) do
+    settle(workload)
+  rescue
+    exception ->
+      message = "could not settle #{workload.id}: " <> Exception.message(exception)
+      Logger.error(message)
+      {:error, message}
   end
 
   defp settle(workload) do
@@ -262,10 +276,26 @@ defmodule ControlPlane.Settle do
     end
   end
 
+  # Where a finding is, as the review contract has it: an object with a path and a line.
+  # A number out of a protobuf Struct is a float, so a whole line is written without its
+  # fraction. A location that is a plain string is written as it is, and anything else is
+  # left out: what a reviewer said about where must never stop the ticket being settled.
+  defp location_line(%{"path" => path, "line" => line})
+       when is_binary(path) and path != "" and is_number(line),
+       do: "Location: #{path}:#{line_number(line)}"
+
+  defp location_line(location) when is_binary(location) and location != "",
+    do: "Location: #{location}"
+
+  defp location_line(_), do: nil
+
+  defp line_number(line) when is_float(line) and line == trunc(line), do: trunc(line)
+  defp line_number(line), do: line
+
   defp finding_text(finding) do
     [
       "[#{finding["severity"]}] #{finding["title"]}",
-      if(finding["location"], do: "Location: #{finding["location"]}"),
+      location_line(finding["location"]),
       "Evidence: #{finding["evidence"]}",
       if(finding["revision"], do: "What to revise: #{finding["revision"]}")
     ]

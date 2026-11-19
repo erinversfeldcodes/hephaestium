@@ -164,7 +164,8 @@ defmodule ControlPlane.VerdictsTest do
       "title" => title,
       "evidence" => "src/lib.rs:12 unwraps a Result",
       "revision" => "Return the error instead of unwrapping it.",
-      "location" => "src/lib.rs:12"
+      # As the review contract has it, and as a protobuf Struct keeps a number: a float.
+      "location" => %{"path" => "src/lib.rs", "line" => 12.0}
     }
 
   defp approve_all(id) do
@@ -233,9 +234,73 @@ defmodule ControlPlane.VerdictsTest do
     assert failure["excerpt"] =~ "P1"
     assert failure["excerpt"] =~ "src/lib.rs:12 unwraps a Result"
     assert failure["excerpt"] =~ "Return the error instead of unwrapping it."
+    assert failure["excerpt"] =~ "Location: src/lib.rs:12\n"
+    refute failure["excerpt"] =~ "12.0"
     assert Workloads.get(id).settled_at
     assert hd(comments(gh)) =~ "review"
     assert labels(gh) == []
+  end
+
+  # The locations a verdict may carry: the contract's object, and what it must survive.
+  defp location_case(name) do
+    %{
+      "a string" => {"src/lib.rs:12", "Location: src/lib.rs:12\n"},
+      "missing" => {:none, nil},
+      "null" => {nil, nil},
+      "a number" => {12, nil},
+      "a list" => {["src/lib.rs", 12], nil},
+      "an object without a line" => {%{"path" => "src/lib.rs"}, nil},
+      "an object with a non-number line" => {%{"path" => "src/lib.rs", "line" => "twelve"}, nil},
+      "an object with no path" => {%{"line" => 12.0}, nil},
+      "an object with an empty path" => {%{"path" => "", "line" => 12.0}, nil}
+    }
+    |> Map.fetch!(name)
+  end
+
+  for name <- [
+        "a string",
+        "missing",
+        "null",
+        "a number",
+        "a list",
+        "an object without a line",
+        "an object with a non-number line",
+        "an object with no path",
+        "an object with an empty path"
+      ] do
+    test "a finding whose location is #{name} still starts a revision, and tells it only if usable",
+         %{id: id} do
+      {location, expected} = location_case(unquote(name))
+      finding = blocking("A finding")
+
+      finding =
+        case location do
+          :none -> Map.delete(finding, "location")
+          other -> Map.put(finding, "location", other)
+        end
+
+      asked(id)
+      ended(id, "rust", "completed", verdict("rust", "needs_revision", [finding]))
+
+      assert result(id) == {:revising, 1}
+      assert [revision] = revisions_of(id)
+      assert [%{"excerpt" => excerpt}] = revision.workload["revision"]["failures"]
+
+      if expected,
+        do: assert(excerpt =~ expected),
+        else: refute(excerpt =~ "Location:")
+    end
+  end
+
+  test "a location with a fractional line is not rounded to something it is not", %{id: id} do
+    asked(id)
+    finding = Map.put(blocking("A finding"), "location", %{"path" => "a.rs", "line" => 12.5})
+    ended(id, "rust", "completed", verdict("rust", "needs_revision", [finding]))
+
+    assert result(id) == {:revising, 1}
+    assert [revision] = revisions_of(id)
+    assert [%{"excerpt" => excerpt}] = revision.workload["revision"]["failures"]
+    assert excerpt =~ "Location: a.rs:12.5\n"
   end
 
   test "a finding that is not blocking is not sent to the revision", %{id: id} do

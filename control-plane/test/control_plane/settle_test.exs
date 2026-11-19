@@ -316,6 +316,32 @@ defmodule ControlPlane.SettleTest do
     assert Enum.count(StandInGitHub.gh_calls(gh), &String.contains?(&1, "/pulls/")) == 1
   end
 
+  test "a workload that raises while it is settled does not stop the others", %{gh: gh, id: id} do
+    # An older one whose record the settling cannot read: its pull request is not a string.
+    {:ok, bad} = Workloads.create(workload())
+    {:ok, _} = Events.append(bad.id, event(bad.id, 1, started()))
+    {:ok, _} = Events.append(bad.id, event(bad.id, 2, finished("OUTCOME_COMPLETED", "")))
+
+    Workloads.keep_record(bad.id, %{
+      "outcome" => "OUTCOME_COMPLETED",
+      "pullRequest" => %{"url" => %{"x" => 1}}
+    })
+
+    ControlPlane.Repo.update_all(
+      from(w in ControlPlane.Workload, where: w.id == ^bad.id),
+      set: [inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(), -3600, :second)]
+    )
+
+    results = Settle.run()
+
+    assert %{result: {:error, message}} = Enum.find(results, &(&1.workload_id == bad.id))
+    assert message =~ bad.id
+    assert Enum.find(results, &(&1.workload_id == id)).result == :done
+    assert Workloads.get(id).settled_at
+    assert [_] = comments(gh)
+    refute Workloads.get(bad.id).settled_at
+  end
+
   test "the job settles what is awaiting", %{gh: gh, id: id} do
     assert :ok = perform_job(SettleTickets, %{})
     assert labels(gh) == ["labels[]=heph:done"]
