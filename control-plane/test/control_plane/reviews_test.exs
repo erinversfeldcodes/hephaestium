@@ -410,12 +410,18 @@ defmodule ControlPlane.ReviewsTest do
       assert StandInGitHub.writes(gh) == []
     end
 
-    test "ending one, however it ended, does not touch the ticket", %{review: review, gh: gh} do
+    test "ending one, however it ended, does not touch the ticket: only the pull request hears of it",
+         %{review: review, gh: gh} do
       for state <- ["completed", "failed", "timed_out", "blocked", "cancelled"] do
         assert Tickets.ended(%{review | state: state}) == :ok
       end
 
-      assert StandInGitHub.writes(gh) == []
+      # No label and no comment on the ticket (issue 12). What a review found goes on the
+      # pull request (52), which is the same API's issue 52, as a comment and nothing else.
+      for {method, endpoint, _fields} <- StandInGitHub.writes(gh) do
+        refute endpoint =~ "issues/12", "#{method} #{endpoint}"
+        assert {method, endpoint} == {"POST", "repos/#{@repo}/issues/52/comments"}
+      end
     end
 
     test "a review that completed is not a pull request awaiting settlement", %{review: review} do

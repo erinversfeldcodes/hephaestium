@@ -12,7 +12,7 @@ defmodule ControlPlane.Tickets do
 
   require Logger
 
-  alias ControlPlane.{Account, GitHub, Workload}
+  alias ControlPlane.{Account, GitHub, PullRequestComments, Workload}
 
   @ready "heph:ready"
   @running "heph:running"
@@ -37,10 +37,16 @@ defmodule ControlPlane.Tickets do
   @doc "The workload has ended: leave the label that says how, and a comment."
   @spec ended(%Workload{}) :: :ok | {:error, String.t()}
   # A review reads a pull request and says nothing on the ticket by itself: what its
-  # verdict means for the ticket is decided where the verdicts are counted.
-  def ended(%Workload{workload: %{"review" => _}}), do: :ok
+  # verdict means for the ticket is decided where the verdicts are counted. What it found
+  # is written on the pull request, where a person reviewing it looks.
+  def ended(%Workload{workload: %{"review" => _}} = workload),
+    do: PullRequestComments.review(workload)
 
-  def ended(%Workload{state: state} = workload) when state in ["failed", "timed_out"] do
+  # A revision's account is on the pull request as well as the ticket.
+  def ended(%Workload{} = workload),
+    do: first_error([end_ticket(workload), PullRequestComments.revision(workload)])
+
+  defp end_ticket(%Workload{state: state} = workload) when state in ["failed", "timed_out"] do
     first_error([
       add_label(workload, @failed),
       remove_label(workload, @running),
@@ -48,7 +54,7 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
-  def ended(%Workload{state: "blocked"} = workload) do
+  defp end_ticket(%Workload{state: "blocked"} = workload) do
     first_error([
       add_label(workload, @blocked),
       remove_label(workload, @running),
@@ -56,13 +62,13 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
-  def ended(%Workload{state: "cancelled"} = workload) do
+  defp end_ticket(%Workload{state: "cancelled"} = workload) do
     first_error([remove_label(workload, @running), comment(workload)])
   end
 
-  def ended(%Workload{state: "completed"} = workload), do: first_error([comment(workload)])
+  defp end_ticket(%Workload{state: "completed"} = workload), do: first_error([comment(workload)])
 
-  def ended(_workload), do: :ok
+  defp end_ticket(_workload), do: :ok
 
   @done "heph:done"
 

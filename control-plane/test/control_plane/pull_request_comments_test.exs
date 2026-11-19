@@ -245,10 +245,16 @@ defmodule ControlPlane.PullRequestCommentsTest do
     workload = review(parent, "rust", "OUTCOME_COMPLETED", verdict("approved"))
     StandInGitHub.fail_write(gh, "POST", @pr_comments, "gh: HTTP 403 Forbidden")
 
-    assert {:error, _} = Tickets.ended(workload)
+    assert {:error, message} = Tickets.ended(workload)
 
+    assert message =~ "403"
     assert Workloads.get(workload.id).state == "completed"
-    assert pr_comments(gh) == []
+    # The claim was given back, so the next attempt is not turned away.
+    refute Workloads.get(workload.id).reported_at
+    assert length(pr_comments(gh)) == 1, "one attempt"
+
+    assert {:error, _} = Tickets.ended(Workloads.get(workload.id))
+    assert length(pr_comments(gh)) == 2, "the second attempt was made"
   end
 
   test "a revision's account is on the pull request as well as the ticket", %{

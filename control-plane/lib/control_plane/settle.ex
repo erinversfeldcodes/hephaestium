@@ -24,7 +24,7 @@ defmodule ControlPlane.Settle do
 
   require Logger
 
-  alias ControlPlane.{Account, GitHub, Reviews, Tickets, Workloads}
+  alias ControlPlane.{Account, Finding, GitHub, Reviews, Tickets, Workloads}
 
   @good ["success", "skipped", "neutral"]
 
@@ -276,26 +276,10 @@ defmodule ControlPlane.Settle do
     end
   end
 
-  # Where a finding is, as the review contract has it: an object with a path and a line.
-  # A number out of a protobuf Struct is a float, so a whole line is written without its
-  # fraction. A location that is a plain string is written as it is, and anything else is
-  # left out: what a reviewer said about where must never stop the ticket being settled.
-  defp location_line(%{"path" => path, "line" => line})
-       when is_binary(path) and path != "" and is_number(line),
-       do: "Location: #{path}:#{line_number(line)}"
-
-  defp location_line(location) when is_binary(location) and location != "",
-    do: "Location: #{location}"
-
-  defp location_line(_), do: nil
-
-  defp line_number(line) when is_float(line) and line == trunc(line), do: trunc(line)
-  defp line_number(line), do: line
-
   defp finding_text(finding) do
     [
       "[#{finding["severity"]}] #{finding["title"]}",
-      location_line(finding["location"]),
+      Finding.location_line(finding["location"]),
       "Evidence: #{finding["evidence"]}",
       if(finding["revision"], do: "What to revise: #{finding["revision"]}")
     ]
