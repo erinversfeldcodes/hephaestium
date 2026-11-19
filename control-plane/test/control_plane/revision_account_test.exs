@@ -162,8 +162,18 @@ defmodule ControlPlane.RevisionAccountTest do
     refute body =~ "\e"
     refute body =~ "\a"
     refute body =~ "\f"
-    assert body =~ "red"
-    assert body =~ "text"
+    # The whole escape sequence goes, not only its first byte.
+    refute body =~ "[31m"
+    refute body =~ "[0m"
+    assert body =~ "red text and a bell"
+  end
+
+  test "a message that is only whitespace is no account", %{gh: gh, id: id} do
+    assert :ok = revision_ended(id, ["  \n\t \n"], "OUTCOME_FAILED", "the agent changed nothing")
+
+    body = comment(gh)
+    assert body =~ "gave no account"
+    refute body =~ "The agent's account"
   end
 
   test "a workload that is not a revision gets no account", %{gh: gh, id: id} do
