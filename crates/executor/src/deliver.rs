@@ -21,6 +21,11 @@ use crate::run::say;
 /// executor keeps it out of the workspace's changes.
 pub const MESSAGE_FILE: &str = ".heph-commit-message";
 
+/// Where the agent says whether its change resolves the whole ticket: `complete`, or
+/// `partial` and what remains. A ticket is closed only when every item that affects it
+/// is resolved, so only `complete` lets the pull request close it.
+pub const RESOLUTION_FILE: &str = ".heph-resolution";
+
 /// How long one git or gh command may take.
 const TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -215,7 +220,13 @@ pub fn deliver(
         });
     }
 
-    open_pull_request(workload, workspace, gh, token, &branch, &message, deferred)
+    let resolution = read_resolution(workspace);
+    let description = Description {
+        message: &message,
+        deferred,
+        resolution: &resolution,
+    };
+    open_pull_request(workload, workspace, gh, token, &branch, &description)
 }
 
 /// Open the pull request for a branch that was pushed.
@@ -225,14 +236,13 @@ fn open_pull_request(
     gh: &str,
     token: &str,
     branch: &str,
-    message: &str,
-    deferred: &[Deferred],
+    description: &Description<'_>,
 ) -> Result<PullRequestOpened, String> {
-    let subject = message.lines().next().unwrap_or_default();
+    let subject = description.message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
     let ticket = workload.ticket.clone().unwrap_or_default();
     let body_path = workspace.with_file_name(format!("{}.pr-body.md", workload.id));
-    std::fs::write(&body_path, body(workload, message, ticket.number, deferred))
+    std::fs::write(&body_path, body(workload, description, ticket.number))
         .map_err(|e| format!("could not write the pull request's body: {e}"))?;
     let repository_name = format!("{}/{}", repository.owner, repository.name);
     let lines = run(
@@ -274,6 +284,44 @@ fn open_pull_request(
     })
 }
 
+/// What the agent said about how much of the ticket its change resolves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// Everything the ticket asks, and nothing remains: the pull request may close it.
+    Complete,
+    /// Some of it. What remains, if the agent said.
+    Partial(Option<String>),
+    /// The agent did not say, or said something else: the pull request only refers to the
+    /// ticket.
+    Unsaid,
+}
+
+/// Read what the agent left in [`RESOLUTION_FILE`]. Only the single word `complete`, in
+/// any case and with any whitespace around it, is a claim that the ticket is resolved:
+/// anything else (more words, another word, an empty file, no file) is not.
+fn read_resolution(workspace: &Path) -> Resolution {
+    let Ok(text) = std::fs::read_to_string(workspace.join(RESOLUTION_FILE)) else {
+        return Resolution::Unsaid;
+    };
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("complete") {
+        return Resolution::Complete;
+    }
+    let (word, rest) = text.split_once(':').unwrap_or((text, ""));
+    if word.trim().eq_ignore_ascii_case("partial") {
+        let rest = rest.trim();
+        return Resolution::Partial((!rest.is_empty()).then(|| rest.to_owned()));
+    }
+    Resolution::Unsaid
+}
+
+/// What goes in the pull request's description besides the agent's message.
+struct Description<'a> {
+    message: &'a str,
+    deferred: &'a [Deferred],
+    resolution: &'a Resolution,
+}
+
 /// A gate the workspace could not run and left to a check on the pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deferred {
@@ -286,9 +334,15 @@ pub struct Deferred {
 }
 
 /// The pull request's body: the message's body, what the workspace could not run
-/// and left to the pull request's checks, who approved the ticket and when, and a
-/// last line that closes the ticket.
-fn body(workload: &Workload, message: &str, number: i64, deferred: &[Deferred]) -> String {
+/// and left to the pull request's checks, what the agent says is not resolved, who
+/// approved the ticket and when, and a last line that closes the ticket or only refers
+/// to it.
+fn body(workload: &Workload, description: &Description<'_>, number: i64) -> String {
+    let Description {
+        message,
+        deferred,
+        resolution,
+    } = description;
     let rest = message.split_once('\n').map_or("", |(_, rest)| rest.trim());
     let approval = workload.approval.clone().unwrap_or_default();
     let when = approval
@@ -304,7 +358,7 @@ fn body(workload: &Workload, message: &str, number: i64, deferred: &[Deferred]) 
         text.push_str(
             "Gates not run in the workspace, left to the checks on this pull request:\n\n",
         );
-        for left in deferred {
+        for left in *deferred {
             let _ = writeln!(
                 text,
                 "- `{}`: {}. The repository says the check `{}` runs the same work.",
@@ -313,9 +367,25 @@ fn body(workload: &Workload, message: &str, number: i64, deferred: &[Deferred]) 
         }
         text.push('\n');
     }
+    // The last line closes the ticket only when the agent says it resolves all of it.
+    // Otherwise it refers to the ticket, and says what the agent said remains.
+    if let Resolution::Partial(remaining) = resolution {
+        let _ = writeln!(
+            text,
+            "Not resolved: {}\n",
+            remaining
+                .as_deref()
+                .unwrap_or("the agent did not say what remains")
+        );
+    }
+    let keyword = if matches!(resolution, Resolution::Complete) {
+        "Closes"
+    } else {
+        "Refs"
+    };
     let _ = write!(
         text,
-        "Approved by {} at {when}.\n\nCloses #{number}\n",
+        "Approved by {} at {when}.\n\n{keyword} #{number}\n",
         approval.approved_by
     );
     text

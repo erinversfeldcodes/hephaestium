@@ -63,7 +63,7 @@ fn prompt(workload: &Workload) -> String {
         text.push_str(&revision_section(revision));
     }
     text.push_str(
-        "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `.heph-commit-message` in the current directory: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body saying what you changed and why. Then say in one short paragraph what you changed.",
+        "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `.heph-commit-message` in the current directory: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body saying what you changed and why. Also write `.heph-resolution` in the current directory: the single word `complete` if your change resolves everything the ticket asks, done and shown to work and not only passing the checks, or `partial: ` followed by what remains. A pull request that says `complete` closes its ticket when it merges, and a ticket is closed only when every item that affects it is resolved, so say `complete` only if it is true. Then say in one short paragraph what you changed.",
     );
     text
 }
