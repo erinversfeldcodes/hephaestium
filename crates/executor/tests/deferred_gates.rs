@@ -105,7 +105,7 @@ fn an_unmet_requirement_on_a_gate_with_a_ci_check_defers_it_and_the_pull_request
     assert!(body.contains(ABSENT), "{body}");
     assert!(body.contains("check `ci / test`"), "{body}");
     assert!(
-        body.contains("Closes #"),
+        body.contains("Refs #"),
         "the body lost its closing line:\n{body}"
     );
 }
