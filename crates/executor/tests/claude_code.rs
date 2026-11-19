@@ -187,6 +187,12 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
         "the agent must be told where to leave the commit message, and what it looks like: {prompt}"
     );
     assert!(
+        prompt.contains(".heph-resolution")
+            && prompt.contains("complete")
+            && prompt.contains("partial"),
+        "the agent must be told how to say whether the ticket is resolved: {prompt}"
+    );
+    assert!(
         prompt.to_lowercase().contains("do not commit"),
         "the agent must be told the runtime opens the pull request: {prompt}"
     );

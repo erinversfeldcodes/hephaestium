@@ -16,7 +16,7 @@ use serde_json::json;
 fn a_completed_workload_becomes_a_commit_a_branch_and_a_pull_request() {
     let (ran, source, base) = run(
         rig("deliver-ok", &manifest(&[])),
-        &agent_script(""),
+        &agent_script("printf 'complete\\n' > .heph-resolution;"),
         true,
         0,
         &IDENTITY,
