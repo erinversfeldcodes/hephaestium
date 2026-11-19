@@ -182,7 +182,9 @@ defmodule ControlPlane.Tickets do
   # were asked for, that they approved it. Neither says the ticket's goal is met, so the
   # comment says it is for a person to judge, and says when no review was asked for.
   defp ready_text(notes) do
-    reviewed? = is_binary(notes) and String.contains?(notes, "Reviews:\n")
+    # A review approved it only if the notes carry a verdict line for a lens. The header
+    # alone is also written when nothing ran, with only what no lens looked at.
+    reviewed? = is_binary(notes) and Regex.match?(~r/^- [a-z0-9][a-z0-9-]*: /m, notes)
 
     if(
       reviewed?,

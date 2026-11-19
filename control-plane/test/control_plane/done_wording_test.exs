@@ -88,6 +88,31 @@ defmodule ControlPlane.DoneWordingTest do
     refute body =~ "ticket is done"
   end
 
+  test "reviews on but no lens ran: it does not say reviews approved it", %{
+    gh: gh,
+    workload: workload
+  } do
+    # What Settle writes when the change selected no lens and none applied to it: the
+    # header and what nothing looked at, with no verdict line.
+    notes = "Reviews:\nNo lens applied to the components: platform."
+
+    assert :ok = Tickets.settled(workload, :done, notes)
+
+    body = comment(gh)
+    refute body =~ "reviews approved"
+    assert body =~ "No review was asked for"
+    assert body =~ "No lens applied to the components: platform."
+    assert body =~ "has not judged whether the ticket's goal is met"
+  end
+
+  test "a verdict line is what makes it say reviews approved it", %{gh: gh, workload: workload} do
+    notes = "Reviews:\n- spec: approved\nNo lens applied to the components: platform."
+
+    assert :ok = Tickets.settled(workload, :done, notes)
+
+    assert comment(gh) =~ "checks are green and its reviews approved it"
+  end
+
   test "no reviews asked for, with a gate left to CI: both are said", %{
     gh: gh,
     workload: workload

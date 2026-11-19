@@ -52,7 +52,7 @@ defmodule ControlPlane.Reviews do
          {:ok, changed} <- changed_files(repository, number),
          {:ok, manifest} <- manifest(repository, sha),
          {:ok, plan} <- lenses(manifest, changed),
-         {:ok, plan} <- with_universal(plan, ref),
+         {:ok, plan} <- with_universal(plan, changed, ref),
          {:ok, texts, missing} <- lens_texts(plan["lenses"], ref) do
       asked(workload, pull, number, texts, missing, plan)
     end
@@ -244,12 +244,14 @@ defmodule ControlPlane.Reviews do
 
   # The lenses a component cannot name: a lens says in its own front matter that it
   # `applies: always`, and is then asked for on every change that is reviewed, once, beside
-  # the ones the diff selected (#135). A change with nothing selected has no files to
-  # review, and asks for nothing. The release's packs are listed, and each lens read, so
-  # a listing or a lens that cannot be read means nothing is asked for until it can be.
-  defp with_universal(%{"lenses" => []} = plan, _ref), do: {:ok, plan}
+  # the ones the diff selected (#135). A change with no changed files has nothing to
+  # review, and asks for nothing; a change whose files select no lens (they belong to a
+  # component that names no pack, or to none) is exactly the case for them, and gets
+  # them. The release's packs are listed, and each lens read, so a listing or a lens
+  # that cannot be read means nothing is asked for until it can be.
+  defp with_universal(plan, [], _ref), do: {:ok, plan}
 
-  defp with_universal(%{"lenses" => selected} = plan, ref) do
+  defp with_universal(%{"lenses" => selected} = plan, _changed, ref) do
     chosen = for %{"pack" => pack} <- selected, do: pack
 
     with {:ok, packs} <- pack_names(ref) do
