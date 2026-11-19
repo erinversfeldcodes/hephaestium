@@ -34,11 +34,11 @@ defmodule ControlPlane.RuntimeConfigTest do
   end
 
   test "without one the Repo's configuration is as it was" do
-    assert repo_config([])[:socket_dir] == nil
+    refute Keyword.has_key?(repo_config([]), :socket_dir)
   end
 
   test "an empty setting is no setting" do
-    assert repo_config([{"HEPH_PG_SOCKET_DIR", ""}])[:socket_dir] == nil
+    refute Keyword.has_key?(repo_config([{"HEPH_PG_SOCKET_DIR", ""}]), :socket_dir)
   end
 
   test "a connection URL is still honoured beside it" do
