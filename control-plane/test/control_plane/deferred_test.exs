@@ -161,8 +161,7 @@ defmodule ControlPlane.DeferredTest do
 
     assert labels(gh) == ["labels[]=heph:failed"]
     assert [comment] = comments(gh)
-    assert comment =~ "suite"
-    assert comment =~ "ci / test"
+    assert comment =~ "the gate `suite` was left to the check `ci / test`"
     assert comment =~ "never appeared"
     assert Workloads.get(id).settled_at
   end
