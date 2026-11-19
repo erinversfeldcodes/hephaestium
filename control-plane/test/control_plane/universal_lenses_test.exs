@@ -221,6 +221,31 @@ defmodule ControlPlane.UniversalLensesTest do
     end
   end
 
+  test "a change that selects no lens still gets the lenses that apply to every change", %{
+    gh: gh,
+    id: id
+  } do
+    # The files belong to a component that names no pack: heph says no lens is selected.
+    StandInGitHub.respond(gh, @files, [%{"filename" => ".github/workflows/ci.yml"}])
+
+    StandInGitHub.heph_lenses(gh, %{
+      "lenses" => [],
+      "unpacked" => ["platform"],
+      "unowned" => []
+    })
+
+    assert {:ok, %{requested: ["spec"], unpacked: ["platform"]}} = request(id)
+    assert lenses_of(reviews_of(id)) == ["spec"]
+  end
+
+  test "a change whose files belong to no component at all gets them too", %{gh: gh, id: id} do
+    StandInGitHub.respond(gh, @files, [%{"filename" => "NOTES.md"}])
+
+    StandInGitHub.heph_lenses(gh, %{"lenses" => [], "unpacked" => [], "unowned" => ["NOTES.md"]})
+
+    assert {:ok, %{requested: ["spec"], unowned: ["NOTES.md"]}} = request(id)
+  end
+
   test "a change with no changed files asks for nothing", %{gh: gh, id: id} do
     StandInGitHub.respond(gh, @files, [])
 
