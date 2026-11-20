@@ -98,6 +98,51 @@ defmodule ControlPlane.EvaluationsTest do
     assert evaluations(merged) == []
   end
 
+  describe "a ticket judged too often" do
+    defp judged_times(merged, count, age_hours \\ 0) do
+      for _ <- 1..count do
+        {:ok, record} =
+          Workloads.create(Map.put(workload(), "completeness", %{"skillDocument" => "x"}))
+
+        {:ok, _} = Events.append(record.id, event(record.id, 1, started()))
+
+        {:ok, _} =
+          Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", "")))
+
+        then = DateTime.add(DateTime.utc_now(), -age_hours * 3600, :second)
+
+        ControlPlane.Repo.update_all(
+          Ecto.Query.from(w in ControlPlane.Workload, where: w.id == ^record.id),
+          set: [inserted_at: then]
+        )
+      end
+
+      merged
+    end
+
+    test "is not judged again within a day once it has been judged six times", %{merged: merged} do
+      judged_times(merged, 6)
+
+      assert Evaluations.after_merge(merged) == {:skipped, :judged_too_often}
+
+      assert length(
+               Enum.filter(Workloads.for_ticket(@repo, 12), &is_map(&1.workload["completeness"]))
+             ) == 6
+    end
+
+    test "is judged when it has been judged five times", %{merged: merged} do
+      judged_times(merged, 5)
+
+      assert {:started, _} = Evaluations.after_merge(merged)
+    end
+
+    test "counts only the last day", %{merged: merged} do
+      judged_times(merged, 6, 30)
+
+      assert {:started, _} = Evaluations.after_merge(merged)
+    end
+  end
+
   test "a ticket already being evaluated is not evaluated again", %{merged: merged} do
     assert {:started, _} = Evaluations.after_merge(merged)
 
