@@ -31,16 +31,17 @@ defmodule ControlPlane.Evaluations do
   to judge: the repository has not opted in, the ticket is already closed, or an
   evaluation of it is already under way.
   """
-  @spec after_merge(%Workload{}) :: result()
-  def after_merge(%Workload{} = merged) do
+  @spec after_merge(%Workload{}, %{login: String.t(), text: String.t()} | nil) :: result()
+  def after_merge(%Workload{} = merged, approval \\ nil) do
     repository = merged.repository
     number = merged.ticket_number
 
     with :ok <- enabled(repository),
          :ok <- open(repository, number),
          :ok <- not_evaluating(repository, number),
+         :ok <- not_judged_too_often(repository, number),
          {:ok, skill} <- skill(),
-         {:ok, built} <- Intake.build(repository, number, approval(merged)),
+         {:ok, built} <- Intake.build(repository, number, approval || approval(merged)),
          {:ok, record} <-
            Workloads.create(with_evaluation(built, skill, open_items(repository, number))),
          {:ok, _job} <- Runner.enqueue(record.id) do
@@ -166,6 +167,22 @@ defmodule ControlPlane.Evaluations do
       |> Enum.any?(&(evaluation?(&1) and &1.state in @active))
 
     if evaluating?, do: {:skip, :already_evaluating}, else: :ok
+  end
+
+  # However it was asked for, a ticket is judged at most this many times in a day. A judgement
+  # costs an agent run and writes a comment, so a path that asks again and again, as one did
+  # for as long as an approval label stood, must stop by itself.
+  @daily_limit 6
+
+  defp not_judged_too_often(repository, number) do
+    since = NaiveDateTime.add(NaiveDateTime.utc_now(), -86_400, :second)
+
+    count =
+      repository
+      |> Workloads.for_ticket(number)
+      |> Enum.count(&(evaluation?(&1) and NaiveDateTime.compare(&1.inserted_at, since) != :lt))
+
+    if count >= @daily_limit, do: {:skip, :judged_too_often}, else: :ok
   end
 
   defp evaluation?(%Workload{workload: %{"completeness" => _}}), do: true

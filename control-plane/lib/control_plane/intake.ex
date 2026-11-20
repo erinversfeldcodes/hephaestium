@@ -135,8 +135,10 @@ defmodule ControlPlane.Intake do
     :resumed
   end
 
-  defp act({:evaluate, workload}, _repo, _issue, _approval) do
-    case Evaluations.after_merge(workload) do
+  # The judgement is built for this approval, not the ticket's first one: a pass that sees an
+  # approval looks for a workload that carries it, and without one asks again.
+  defp act({:evaluate, workload}, _repo, _issue, approval) do
+    case Evaluations.after_merge(workload, %{login: approval.login, text: approval.text}) do
       {:started, id} -> {:evaluating, id}
       {:skipped, reason} -> {:skipped, reason}
     end

@@ -281,6 +281,19 @@ defmodule ControlPlane.ResumeTest do
       assert_enqueued(worker: RunWorkload, args: %{"workload_id" => id})
     end
 
+    test "the judgement is built for the re-approval, so that the approval is seen as acted on",
+         %{
+           gh: gh
+         } do
+      assert [%{result: {:evaluating, _}}] = Run.run(@repo)
+
+      # The ticket's first approval was on the 17th; this one, on the 18th, is the one that
+      # asked for the judgement. The workload carries the one that asked, or the next pass
+      # does not know it was acted on, and asks again, for as long as the label stands.
+      assert List.last(StandInGitHub.heph_calls(gh)) ==
+               "workload 12 --repo #{@repo} --approver maint --approved-at #{@approved_at}"
+    end
+
     test "one approval asks for one judgement", %{original: original} do
       assert [%{result: {:evaluating, _}}] = Run.run(@repo)
       assert [%{result: {:skipped, _}}] = Run.run(@repo)
