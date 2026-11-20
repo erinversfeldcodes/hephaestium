@@ -161,14 +161,29 @@ pub fn deliver(
         ));
     }
 
-    if run(
+    let tree_unchanged = run(
         &["git", "status", "--porcelain"],
         workspace,
         token,
         "git status",
     )?
-    .is_empty()
-    {
+    .is_empty();
+    // A review reads the commit message as part of the change, so a revision that only
+    // corrects what the change says about itself is delivered as a commit with no file
+    // changes. A revision that says what the head already says did nothing, and an empty
+    // commit would only restart the checks.
+    let account_only = tree_unchanged
+        && workload.revision.is_some()
+        && run(
+            &["git", "log", "-1", "--format=%B"],
+            workspace,
+            token,
+            "git log",
+        )?
+        .join("\n")
+        .trim()
+            != message;
+    if tree_unchanged && !account_only {
         return Err("the agent changed nothing, so there is nothing to deliver".to_owned());
     }
 
@@ -185,12 +200,11 @@ pub fn deliver(
         "git switch",
     )?;
     run(&["git", "add", "-A"], workspace, token, "git add")?;
-    run(
-        &["git", "commit", "-q", "-F", MESSAGE_FILE, "--cleanup=strip"],
-        workspace,
-        token,
-        "git commit",
-    )?;
+    let mut commit = vec!["git", "commit", "-q", "-F", MESSAGE_FILE, "--cleanup=strip"];
+    if account_only {
+        commit.push("--allow-empty");
+    }
+    run(&commit, workspace, token, "git commit")?;
 
     let helper = format!("credential.helper=!{gh} auth git-credential");
     run(
