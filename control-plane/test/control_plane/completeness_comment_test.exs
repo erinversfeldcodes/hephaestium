@@ -168,6 +168,10 @@ defmodule ControlPlane.CompletenessCommentTest do
       %{gh: stand_in, id: record.id}
     end
 
+    # An evaluation that is a second attempt, told why the first was refused.
+    defp retried(evaluation, refused),
+      do: put_in(evaluation, ["completeness"], %{"skillDocument" => "x", "refused" => refused})
+
     defp ended(id, outcome, reason, extra) do
       {:ok, _} = Events.append(id, event(id, 1, started()))
       {:ok, _} = Events.append(id, event(id, 2, finished(outcome, reason)))
@@ -208,6 +212,93 @@ defmodule ControlPlane.CompletenessCommentTest do
       assert comment =~ "could not be completed"
       assert comment =~ "the verdict is for ticket 13"
       assert label_writes(gh) == []
+    end
+
+    test "a verdict the contract refused is tried once more, told why, with no failure comment",
+         %{
+           gh: gh,
+           id: id
+         } do
+      reason =
+        "the verdict does not pass the completeness contract: /requirements/1/evidence/kind: \"structure\" is not one of \"observed\" or \"test\""
+
+      Application.put_env(:control_plane, :settle,
+        completeness: [@repo],
+        athenaeum_ref: "v0.26.0"
+      )
+
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "open"})
+
+      StandInGitHub.respond_text(
+        gh,
+        "repos/erinversfeldcodes/athenaeum/contents/skills/ticket-completeness/SKILL.md?ref=v0.26.0",
+        "the skill"
+      )
+
+      StandInGitHub.heph_prints(gh, workload())
+
+      assert :ok = ended(id, "OUTCOME_FAILED", reason, %{})
+
+      assert comments(gh) == [], "a retry follows, so the first failure is not announced"
+
+      assert [retry] =
+               Enum.filter(
+                 Workloads.for_ticket(@repo, 12),
+                 &(&1.id != id and is_map(&1.workload["completeness"]))
+               )
+
+      assert retry.state == "queued"
+      assert retry.workload["completeness"]["refused"] == reason
+    end
+
+    test "a retry that is refused too is announced as failed, and not tried again", %{
+      gh: gh,
+      id: id
+    } do
+      Application.put_env(:control_plane, :settle,
+        completeness: [@repo],
+        athenaeum_ref: "v0.26.0"
+      )
+
+      {:ok, retry} = Workloads.create(retried(workload(), "the first refusal"))
+
+      reason = "the verdict does not pass the completeness contract: a second refusal"
+      assert :ok = ended(retry.id, "OUTCOME_FAILED", reason, %{})
+
+      assert [comment] = comments(gh)
+      assert comment =~ "could not be completed"
+      assert comment =~ "a second refusal"
+
+      assert Enum.count(Workloads.for_ticket(@repo, 12), &is_map(&1.workload["completeness"])) ==
+               2
+    end
+
+    test "a failure that is not a refused verdict is announced and not retried", %{
+      gh: gh,
+      id: id
+    } do
+      Application.put_env(:control_plane, :settle,
+        completeness: [@repo],
+        athenaeum_ref: "v0.26.0"
+      )
+
+      assert :ok = ended(id, "OUTCOME_FAILED", "the agent exited with code 1", %{})
+
+      assert [comment] = comments(gh)
+      assert comment =~ "the agent exited with code 1"
+
+      assert Enum.count(Workloads.for_ticket(@repo, 12), &is_map(&1.workload["completeness"])) ==
+               1
+    end
+
+    test "a refusal that cannot be retried is announced", %{gh: gh, id: id} do
+      Application.put_env(:control_plane, :settle, completeness: [], athenaeum_ref: "v0.26.0")
+      reason = "the verdict does not pass the completeness contract: x"
+
+      assert :ok = ended(id, "OUTCOME_FAILED", reason, %{})
+
+      assert [comment] = comments(gh)
+      assert comment =~ "could not be completed"
     end
 
     test "a completed evaluation with no verdict in its record says so", %{gh: gh, id: id} do
