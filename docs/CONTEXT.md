@@ -69,11 +69,9 @@ _Avoid_: issue file, task
 
 **Epic**:
 A parent ticket whose child tickets are delivered together on one integration
-branch.
-
-**Campaign**:
-A sequenced plan of waves, each wave an epic, produced by a survey of a
-codebase.
+branch. A ticket is an epic when the tracker records sub-issues under it. A
+person, not Hephaestium, judges an epic complete.
+_Avoid_: campaign, wave
 
 **Workload**:
 One isolated run of an agent runtime against one ticket or one review, created
