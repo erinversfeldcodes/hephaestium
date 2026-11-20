@@ -85,7 +85,7 @@ pub fn run(
 
     let mut verdict = None;
     let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
-        Ok(manifest) => {
+        Ok((manifest, since)) => {
             // A review is held to changing nothing, so what the workspace is before
             // the agent runs is kept to compare with what it is after.
             let before = if workload.review.is_some() {
@@ -122,7 +122,7 @@ pub fn run(
                     }
                 }
                 End::Done => {
-                    match run_gates(&manifest, &workload, &workspace, secrets, &mut stream)? {
+                    match run_gates(&manifest, &workspace, &since, secrets, &mut stream)? {
                         Ok(deferred) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN))
                         {
                             (true, Some(token)) => {
@@ -216,17 +216,16 @@ fn prepare<W: Write>(
     workload: &Workload,
     workspace: &Path,
     stream: &mut Stream<'_, W>,
-) -> Result<Manifest, String> {
+) -> Result<(Manifest, String), String> {
     clone(options, workload, workspace)?;
-    let commit = workload
-        .repository
-        .as_ref()
-        .map(|r| r.base_commit.clone())
-        .unwrap_or_default();
+    bring_in_base(workload, workspace)?;
+    let commit = git_output(&["rev-parse", "HEAD"], workspace)?
+        .trim()
+        .to_owned();
     stream
         .emit(Kind::WorkspaceReady(WorkspaceReady {
             path: workspace.display().to_string(),
-            commit,
+            commit: commit.clone(),
         }))
         .map_err(|e| format!("the event could not be written: {e}"))?;
 
@@ -243,7 +242,73 @@ fn prepare<W: Write>(
     for (index, step) in manifest.bootstrap.iter().enumerate() {
         bootstrap(&manifest, index + 1, step, workspace)?;
     }
-    Ok(manifest)
+    Ok((manifest, commit))
+}
+
+/// A revision works on the branch as it is and on the base branch as it is now,
+/// so what the base gained since the pull request was opened is merged in before
+/// the agent starts. It is a merge commit, never a rebase, so the push that
+/// delivers the revision is still a plain fast-forward of the branch.
+///
+/// A conflict ends the run with the files named, and the branch is untouched.
+fn bring_in_base(workload: &Workload, workspace: &Path) -> Result<(), String> {
+    let Some(revision) = workload.revision.as_ref() else {
+        return Ok(());
+    };
+    let base = &workload
+        .repository
+        .as_ref()
+        .expect("checked when read")
+        .base_branch;
+    let tip = format!("origin/{base}");
+    // The clone is fresh, so the base branch's tip is as it is now.
+    if git(
+        &["merge-base", "--is-ancestor", &tip, "HEAD"],
+        workspace,
+        "could not compare the branch with the base branch",
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    let message = format!("Merge branch '{base}' into {}", revision.branch);
+    if git(
+        &["merge", "--no-ff", "--no-edit", "-m", &message, &tip],
+        workspace,
+        "could not merge the base branch",
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    let files = git_output(&["diff", "--name-only", "--diff-filter=U"], workspace)
+        .unwrap_or_default()
+        .lines()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = git(
+        &["merge", "--abort"],
+        workspace,
+        "could not abort the merge",
+    );
+    Err(format!(
+        "the branch conflicts with the base branch '{base}' in {}",
+        if files.is_empty() {
+            "files that could not be listed"
+        } else {
+            &files
+        }
+    ))
+}
+
+/// What a git command wrote to standard output.
+fn git_output(args: &[&str], directory: &Path) -> Result<String, String> {
+    let mut command = vec!["git".to_owned()];
+    command.extend(args.iter().map(|a| (*a).to_owned()));
+    match execute(&command, directory, CLONE_TIMEOUT, true, say) {
+        Ok((Ended::Exited(0), Some(bytes))) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        _ => Err(format!("git {} failed", args.join(" "))),
+    }
 }
 
 /// Where the environment is read from, for what a gate needs and whether the
@@ -260,17 +325,12 @@ fn environment(name: &str) -> Option<String> {
 /// result is the workload's: the reasons it failed, if any gate did.
 fn run_gates<W: Write>(
     manifest: &Manifest,
-    workload: &Workload,
     workspace: &Path,
+    since: &str,
     secrets: &Secrets,
     stream: &mut Stream<'_, W>,
 ) -> Result<Result<Vec<deliver::Deferred>, String>, Refused> {
-    let base = &workload
-        .repository
-        .as_ref()
-        .expect("checked when read")
-        .base_commit;
-    let changed = match changed_files(workspace, base) {
+    let changed = match changed_files(workspace, since) {
         Ok(changed) => changed,
         Err(reason) => return Ok(Err(reason)),
     };
