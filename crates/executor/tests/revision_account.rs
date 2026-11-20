@@ -1,7 +1,9 @@
-//! A revision that changes only what the change says about itself. A review reads the
-//! commit message as part of the change, so a revision that corrects it is a revision:
-//! it is delivered as a commit with no file changes, and a revision that changed
-//! nothing at all still is not.
+//! A revision that changes only what the change says about itself, and what the pull
+//! request says once a revision is delivered. A review reads the commit message and the
+//! pull request's description as part of the change, so a revision that corrects them is a
+//! revision: it is delivered as a commit with no file changes, the description is made
+//! from the revision's own account, and a revision that changed nothing at all is not
+//! delivered.
 
 mod common;
 
@@ -85,7 +87,10 @@ fn a_revision_that_only_corrects_the_message_is_delivered_as_a_commit_with_no_fi
         git(&source, &["log", "-1", "--format=%B", PR_BRANCH]).contains("the cause is shown"),
         "the new account is the commit's message"
     );
-    assert!(!gh_was_called(&ran), "no pull request was opened");
+    assert!(
+        !gh_arguments(&ran).contains(&"create".to_owned()),
+        "no pull request was opened"
+    );
 }
 
 #[test]
@@ -134,5 +139,123 @@ fn a_revision_that_changed_files_is_delivered_as_it_always_was() {
     assert!(
         git(&source, &["diff", "--stat", &head, PR_BRANCH]).contains("changed.txt"),
         "the file change is pushed"
+    );
+}
+
+/// The arguments of the last call to the stand-in `gh`, one per line.
+fn gh_arguments(ran: &common::Ran) -> Vec<String> {
+    std::fs::read_to_string(ran.scratch.path("seen/gh-args.txt"))
+        .expect("gh was called")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn gh_body(ran: &common::Ran) -> String {
+    std::fs::read_to_string(ran.scratch.path("seen/gh-body.txt")).expect("a body was given")
+}
+
+/// An agent that changes a file, says what it did, and says how far it got.
+fn says_and_resolves(message: &str, resolution: &str) -> String {
+    format!(
+        "mkdir -p web; echo changed > web/changed.txt; printf '{}' > .heph-commit-message; printf '{resolution}' > .heph-resolution; echo '{}'",
+        message.replace('\n', "\\n"),
+        json!({"agentMessage": {"text": "done"}})
+    )
+}
+
+#[test]
+fn a_delivered_revision_sets_the_pull_requests_title_and_description_from_its_own_account() {
+    let (rig, head) = rig_with_branch("description-files");
+    let script = says_and_resolves(
+        "fix: the first attempt, corrected\n\nthe cause is shown in the logs",
+        "partial: item 5 is owed after the merge",
+    );
+
+    let (ran, _) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    let arguments = gh_arguments(&ran);
+    assert_eq!(&arguments[..2], ["pr", "edit"], "{arguments:?}");
+    assert!(
+        arguments.contains(&"52".to_owned()),
+        "it is the pull request that exists: {arguments:?}"
+    );
+    assert!(
+        arguments.contains(&"fix: the first attempt, corrected".to_owned()),
+        "the title follows the new subject: {arguments:?}"
+    );
+    assert!(!arguments.contains(&"create".to_owned()), "{arguments:?}");
+    let body = gh_body(&ran);
+    assert!(body.contains("the cause is shown in the logs"), "{body}");
+    assert!(
+        body.contains("Not resolved: item 5 is owed after the merge"),
+        "{body}"
+    );
+    assert!(body.contains("Refs #12"), "{body}");
+    assert!(!body.contains("Closes #12"), "{body}");
+}
+
+#[test]
+fn a_revision_that_only_corrects_the_message_sets_the_description_too() {
+    let (rig, head) = rig_with_branch("description-account");
+
+    let (ran, _) = run(
+        rig,
+        &revising(&head),
+        &says_only("fix: the first attempt, with its evidence\n\nthe evidence is quoted"),
+    );
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(&gh_arguments(&ran)[..2], ["pr", "edit"]);
+    assert!(gh_body(&ran).contains("the evidence is quoted"));
+}
+
+#[test]
+fn nothing_is_said_on_the_pull_request_when_nothing_was_delivered() {
+    let (rig, head) = rig_with_branch("description-nothing");
+    let (ran, _) = run(rig, &revising(&head), &says_only(HEAD_MESSAGE));
+    assert_eq!(finished(&ran.events()).0, Outcome::Failed);
+    assert!(!gh_was_called(&ran), "the description was not touched");
+
+    let (rig, head) = rig_with_branch("description-refused");
+    git(&rig.source, &["switch", "-q", PR_BRANCH]);
+    rig.scratch
+        .write("source/web/second.txt", "a person's commit\n");
+    git(&rig.source, &["add", "."]);
+    git(
+        &rig.source,
+        &["commit", "-q", "-m", "fix: a person's commit"],
+    );
+    git(&rig.source, &["switch", "-q", "main"]);
+    let (ran, _) = run(rig, &revising(&head), &common::agent_script(""));
+    assert_eq!(finished(&ran.events()).0, Outcome::Failed);
+    assert!(
+        !gh_was_called(&ran),
+        "a push that was refused leaves the description as it was"
+    );
+}
+
+#[test]
+fn a_description_that_cannot_be_set_fails_the_run_and_says_so() {
+    let (rig, head) = rig_with_branch("description-fails");
+    let gh = stand_in_gh(&rig.scratch, 1);
+    let arguments = [
+        "--agent-command".to_owned(),
+        json!(["sh", "-c", common::agent_script("")]).to_string(),
+        "--gh".to_owned(),
+        gh.display().to_string(),
+        "--deliver".to_owned(),
+    ];
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+    let ran = run_with_env(rig.scratch, &revising(&head), None, &refs, &IDENTITY);
+
+    let (outcome, reason) = finished(&ran.events());
+    assert_eq!(outcome, Outcome::Failed);
+    assert!(
+        reason.contains("could not update the pull request"),
+        "{reason}"
     );
 }

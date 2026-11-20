@@ -120,7 +120,12 @@ fn a_revision_is_pushed_to_the_pull_requests_branch_and_opens_no_pull_request() 
         main_before,
         "main is untouched"
     );
-    assert!(!gh_was_called(&ran), "no pull request was opened");
+    let arguments = std::fs::read_to_string(ran.scratch.path("seen/gh-args.txt"))
+        .expect("the description was set");
+    assert!(
+        arguments.lines().any(|a| a == "edit") && !arguments.lines().any(|a| a == "create"),
+        "the existing pull request is edited, none is opened: {arguments}"
+    );
 }
 
 #[test]
