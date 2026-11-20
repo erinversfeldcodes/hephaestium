@@ -111,6 +111,7 @@ defmodule ControlPlane.PullRequestCommentsTest do
     refute body =~ "28.0"
     assert body =~ "FLAKES.md says the cause is the best reading of the logs"
     assert body =~ "Quote the failing run's log for each spec."
+    refute body =~ "not a GitHub review"
   end
 
   test "an approval is a comment too, with what the reviewer noted", %{gh: gh, parent: parent} do
@@ -201,6 +202,7 @@ defmodule ControlPlane.PullRequestCommentsTest do
     assert body =~ "the agent changed a file"
     assert body =~ "That is no approval."
     refute body =~ "approved"
+    refute body =~ "not a GitHub review"
   end
 
   test "a review that completed and left no verdict says that", %{gh: gh, parent: parent} do
@@ -302,6 +304,7 @@ defmodule ControlPlane.PullRequestCommentsTest do
     assert [body] = pr_comments(gh)
     assert body =~ "revision 1"
     assert body =~ "I could not show the cause."
+    refute body =~ "not a GitHub review"
     assert [_] = writes(gh, @ticket_comments)
   end
 
