@@ -950,6 +950,81 @@ defmodule ControlPlane.SettleTest do
     end
   end
 
+  describe "judging a ticket once its pull request has merged" do
+    @athenaeum_ref "v0.26.0"
+    @completeness_skill "repos/erinversfeldcodes/athenaeum/contents/skills/ticket-completeness/SKILL.md?ref=#{@athenaeum_ref}"
+
+    setup %{gh: gh} do
+      previous = Application.get_env(:control_plane, :settle)
+      on_exit(fn -> Application.put_env(:control_plane, :settle, previous) end)
+
+      Application.put_env(:control_plane, :settle,
+        completeness: [@repo],
+        athenaeum_ref: @athenaeum_ref
+      )
+
+      StandInGitHub.respond(gh, @pull, pull(%{"merged" => true, "state" => "closed"}))
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "open"})
+      StandInGitHub.respond_text(gh, @completeness_skill, "the skill")
+      StandInGitHub.heph_prints(gh, workload())
+      :ok
+    end
+
+    defp evaluation_of(id),
+      do:
+        Enum.find(
+          Workloads.for_ticket(@repo, 12),
+          &(&1.id != id and is_map(&1.workload["completeness"]))
+        )
+
+    test "a merged pull request whose ticket is still open starts an evaluation", %{id: id} do
+      assert result(id) == :done
+
+      evaluation = evaluation_of(id)
+      assert evaluation.state == "queued"
+      assert evaluation.workload["completeness"]["skillDocument"] == "the skill"
+      assert Workloads.get(id).settled_at
+    end
+
+    test "nothing is started for a repository that has not opted in", %{id: id} do
+      Application.put_env(:control_plane, :settle, athenaeum_ref: @athenaeum_ref)
+
+      assert result(id) == :done
+      assert evaluation_of(id) == nil
+    end
+
+    test "a pull request that has not merged starts nothing", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, pull())
+
+      assert result(id) == :done
+      assert evaluation_of(id) == nil
+    end
+
+    test "a ticket that the merge closed starts nothing", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "closed"})
+
+      assert result(id) == :done
+      assert evaluation_of(id) == nil
+    end
+
+    test "an evaluation that cannot be started does not undo the settling", %{gh: gh, id: id} do
+      StandInGitHub.fail(gh, @completeness_skill, "gh: HTTP 404")
+
+      assert result(id) == :done
+      assert evaluation_of(id) == nil
+      assert Workloads.get(id).settled_at, "the ticket is settled and is not tried again"
+    end
+
+    test "a merged ticket is evaluated once however often it is settled", %{id: id} do
+      assert result(id) == :done
+      assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
+
+      assert length(
+               Enum.filter(Workloads.for_ticket(@repo, 12), &is_map(&1.workload["completeness"]))
+             ) == 1
+    end
+  end
+
   describe "merging a pull request that is green" do
     @merge "repos/#{@repo}/pulls/52/merge"
     @heph_branch "heph/12-an-earlier-title-of-the-ticket"
