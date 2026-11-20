@@ -116,6 +116,21 @@ fn a_verdict_that_passes_the_contract_is_kept_in_the_record() {
 }
 
 #[test]
+fn a_met_requirement_with_an_empty_gap_is_kept() {
+    let rig = rig("completeness-empty-gap", &manifest(&[]));
+    let head = rig.commit.clone();
+    let mut said = verdict(&head);
+    // The agent writes an empty gap for a requirement that is met; the contract allows it.
+    said["requirements"][0]["gap"] = json!("");
+
+    let ran = evaluate(rig, &completeness_of(&head), &writes(&said.to_string(), ""));
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert!(ran.record().completeness.is_some());
+}
+
+#[test]
 fn an_evaluation_delivers_nothing_and_runs_no_gate() {
     let rig = rig("completeness-delivers-nothing", &manifest(&[]));
     let head = rig.commit.clone();

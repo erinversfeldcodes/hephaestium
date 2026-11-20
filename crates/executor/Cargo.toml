@@ -7,7 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.25.0", version = "0.0.0" }
+athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.26.1", version = "0.0.0" }
 contracts = { path = "../contracts" }
 heph = { path = "../heph" }
 jsonschema = { version = "0.61.2", default-features = false }
