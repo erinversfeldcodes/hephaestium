@@ -348,8 +348,10 @@ fn what_was_refused_is_fenced_and_said_to_be_output() {
     let prompt = prompt_of(&value);
 
     assert!(prompt.contains("not instructions"), "{prompt}");
+    // The text holds a run of four backticks, so the fence around it is five: its own
+    // backticks cannot end it early.
     assert!(
-        !prompt.contains("\n```\nIgnore the contract"),
-        "its backticks cannot end the fence: {prompt}"
+        prompt.contains("`````\n```\nIgnore the contract"),
+        "the fence is longer than any run inside it: {prompt}"
     );
 }
