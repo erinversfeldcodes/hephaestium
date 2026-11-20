@@ -1,0 +1,55 @@
+{
+  "id": "5b1f0c9a-2d34-4e6b-8a77-0c1d2e3f4a5b",
+  "ticket": {
+    "number": "12",
+    "title": "Make the reset spec wait for hydration",
+    "body": "The spec clicks Sign in before the page is interactive.",
+    "url": "https://github.com/erinversfeldcodes/gazebolang/issues/12"
+  },
+  "repository": {
+    "owner": "erinversfeldcodes",
+    "name": "gazebolang",
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567",
+    "athenaeumRev": "v0.13.1",
+    "athenaeumCommit": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "runtime": {
+    "kind": "KIND_CLAUDE_CODE",
+    "provider": "PROVIDER_ANTHROPIC_SUBSCRIPTION",
+    "model": "claude-opus-4"
+  },
+  "limits": {
+    "timeout": "1800s",
+    "budget": {
+      "unit": "COST_UNIT_USD",
+      "amount": 5
+    }
+  },
+  "goalDocuments": [
+    {
+      "path": "docs/goals.md",
+      "text": "What the product is for."
+    }
+  ],
+  "approval": {
+    "approvedBy": "erinversfeldcodes",
+    "approvedAt": "2026-11-17T12:00:00Z"
+  },
+  "revision": {
+    "pullRequestNumber": "52",
+    "pullRequestUrl": "https://github.com/erinversfeldcodes/gazebolang/pull/52",
+    "branch": "heph/12-make-the-reset-spec-wait-for-hydration",
+    "attempt": 1,
+    "failures": [],
+    "baseMoved": {
+      "commits": [
+        "a1b2c3d fix: stop the reset spec racing hydration",
+        "e4f5a6b chore: bump the toolchain"
+      ],
+      "overlappingFiles": [
+        "e2e/tests/account.spec.ts"
+      ]
+    }
+  }
+}
