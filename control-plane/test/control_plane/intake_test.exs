@@ -208,6 +208,31 @@ defmodule ControlPlane.IntakeTest do
     end
   end
 
+  describe "a ticket that is blocked by an open ticket" do
+    test "is not started, and the result names what blocks it", %{gh: gh} do
+      blocked = put_in(built(12, "maint", @approved_at), ["ticket", "blockedBy"], ["5", "9"])
+      StandInGitHub.heph_prints(gh, blocked)
+
+      assert [%{ticket: 12, result: {:skipped, {:blocked_by, [5, 9]}}}] = results()
+
+      assert Repo.all(ControlPlane.Workload) == []
+      assert all_enqueued(worker: RunWorkload) == []
+    end
+
+    test "is started once nothing open blocks it", %{gh: gh} do
+      StandInGitHub.heph_prints(gh, built(12, "maint", @approved_at))
+
+      assert [%{ticket: 12, result: :started}] = results()
+    end
+
+    test "is started when the list of blockers is empty", %{gh: gh} do
+      free = put_in(built(12, "maint", @approved_at), ["ticket", "blockedBy"], [])
+      StandInGitHub.heph_prints(gh, free)
+
+      assert [%{ticket: 12, result: :started}] = results()
+    end
+  end
+
   test "one approval starts one workload, and a fresh approval starts another", %{gh: gh} do
     assert [%{result: :started}] = results()
     assert [%{result: {:skipped, :already_started}}] = results()
