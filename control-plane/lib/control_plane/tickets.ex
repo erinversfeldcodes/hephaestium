@@ -12,7 +12,14 @@ defmodule ControlPlane.Tickets do
 
   require Logger
 
-  alias ControlPlane.{Account, CompletenessComment, GitHub, PullRequestComments, Workload}
+  alias ControlPlane.{
+    Account,
+    CompletenessComment,
+    Evaluations,
+    GitHub,
+    PullRequestComments,
+    Workload
+  }
 
   @ready "heph:ready"
   @running "heph:running"
@@ -62,7 +69,19 @@ defmodule ControlPlane.Tickets do
         "**Hephaestium:** a completeness evaluation ended but left no verdict in its record."
       )
 
+  # A verdict that was refused is tried once more before anyone is told: the first failure is
+  # the agent's to correct, and a comment for each would be noise. If it cannot be tried, or
+  # the retry is refused too, the ticket is told.
   defp evaluated(%Workload{} = workload) do
+    with true <- Evaluations.retryable?(workload),
+         {:started, _id} <- Evaluations.retry(workload) do
+      :ok
+    else
+      _ -> announce_failed(workload)
+    end
+  end
+
+  defp announce_failed(%Workload{} = workload) do
     why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason
 
     post(

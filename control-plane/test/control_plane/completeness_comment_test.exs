@@ -255,10 +255,25 @@ defmodule ControlPlane.CompletenessCommentTest do
       gh: gh,
       id: id
     } do
+      # The first attempt has ended, so nothing but the rule can stop another.
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+
       Application.put_env(:control_plane, :settle,
         completeness: [@repo],
         athenaeum_ref: "v0.26.0"
       )
+
+      # Everything a retry would need is there, so that only the rule stops it.
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "open"})
+
+      StandInGitHub.respond_text(
+        gh,
+        "repos/erinversfeldcodes/athenaeum/contents/skills/ticket-completeness/SKILL.md?ref=v0.26.0",
+        "the skill"
+      )
+
+      StandInGitHub.heph_prints(gh, workload())
 
       {:ok, retry} = Workloads.create(retried(workload(), "the first refusal"))
 
