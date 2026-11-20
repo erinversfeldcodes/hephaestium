@@ -30,7 +30,7 @@ fn base_moved() -> Value {
 }
 
 /// A revision of the pull request with the given failures and what the base gained.
-fn revising(head: &str, failures: Value, base_moved: Option<Value>) -> Value {
+fn revising(head: &str, failures: &Value, base_moved: Option<Value>) -> Value {
     let mut value = workload(head);
     value["revision"] = json!({
         "pullRequestNumber": "52",
@@ -92,7 +92,7 @@ fn run_revision(rig: Rig, value: &Value) -> (common::Ran, PathBuf) {
 #[test]
 fn the_prompt_of_a_revision_for_a_moved_base_names_what_came_in() {
     let head = "0123456789abcdef0123456789abcdef01234567";
-    let prompt = prompt_of(&revising(head, json!([]), Some(base_moved())));
+    let prompt = prompt_of(&revising(head, &json!([]), Some(base_moved())));
 
     for expected in [
         "a1b2c3d fix: stop the reset spec racing hydration",
@@ -106,7 +106,7 @@ fn the_prompt_of_a_revision_for_a_moved_base_names_what_came_in() {
 #[test]
 fn it_asks_the_agent_to_reconfirm_the_problem_and_its_change() {
     let head = "0123456789abcdef0123456789abcdef01234567";
-    let prompt = prompt_of(&revising(head, json!([]), Some(base_moved())));
+    let prompt = prompt_of(&revising(head, &json!([]), Some(base_moved())));
 
     assert!(
         prompt.contains("still exists") || prompt.contains("still there"),
@@ -121,7 +121,7 @@ fn it_asks_the_agent_to_reconfirm_the_problem_and_its_change() {
 #[test]
 fn it_does_not_say_a_check_failed_when_none_did() {
     let head = "0123456789abcdef0123456789abcdef01234567";
-    let prompt = prompt_of(&revising(head, json!([]), Some(base_moved())));
+    let prompt = prompt_of(&revising(head, &json!([]), Some(base_moved())));
 
     assert!(!prompt.contains("checks failed"), "{prompt}");
     assert!(!prompt.contains("failing checks"), "{prompt}");
@@ -130,7 +130,7 @@ fn it_does_not_say_a_check_failed_when_none_did() {
 #[test]
 fn a_revision_with_both_tells_the_agent_both() {
     let head = "0123456789abcdef0123456789abcdef01234567";
-    let prompt = prompt_of(&revising(head, one_failure(), Some(base_moved())));
+    let prompt = prompt_of(&revising(head, &one_failure(), Some(base_moved())));
 
     assert!(prompt.contains("thread 'reset' panicked"), "{prompt}");
     assert!(prompt.contains("a1b2c3d"), "{prompt}");
@@ -140,7 +140,7 @@ fn a_revision_with_both_tells_the_agent_both() {
 fn a_revision_for_a_moved_base_is_accepted_with_no_failing_check() {
     let (rig, head) = rig_with_branch("moved-accepted");
 
-    let (ran, _) = run_revision(rig, &revising(&head, json!([]), Some(base_moved())));
+    let (ran, _) = run_revision(rig, &revising(&head, &json!([]), Some(base_moved())));
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     assert_eq!(finished(&ran.events()).0, Outcome::Completed);
@@ -150,7 +150,7 @@ fn a_revision_for_a_moved_base_is_accepted_with_no_failing_check() {
 fn a_revision_with_neither_a_failure_nor_a_moved_base_is_still_refused() {
     let (rig, head) = rig_with_branch("moved-neither");
 
-    let (ran, _) = run_revision(rig, &revising(&head, json!([]), None));
+    let (ran, _) = run_revision(rig, &revising(&head, &json!([]), None));
 
     assert_eq!(ran.code(), 1, "{}", ran.stderr());
     assert_eq!(ran.output.stdout, b"", "events were written");
@@ -162,7 +162,7 @@ fn a_moved_base_that_names_no_commit_is_refused() {
 
     let (ran, _) = run_revision(
         rig,
-        &revising(&head, json!([]), Some(json!({"commits": []}))),
+        &revising(&head, &json!([]), Some(json!({"commits": []}))),
     );
 
     assert_eq!(ran.code(), 1, "{}", ran.stderr());

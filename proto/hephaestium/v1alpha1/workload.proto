@@ -117,8 +117,23 @@ message Revision {
   string branch = 3;
   // Which revision this is of the pull request, from 1.
   int32 attempt = 4;
-  // What failed. Never empty.
+  // What failed. Empty only when the revision exists because the base branch moved
+  // (`base_moved` is set), and then there is no check to name.
   repeated FailedCheck failures = 5;
+  // Set when the base branch gained commits since the pull request was opened. The
+  // revision's first job is to confirm the change still stands on what came in.
+  BaseMoved base_moved = 6;
+}
+
+// What the base branch gained since a pull request was opened, so the agent can
+// reconfirm that the ticket's problem is still there and that its change still does
+// what it set out to.
+message BaseMoved {
+  // The commits that came in, newest first, each as a short id and its subject.
+  // Never empty.
+  repeated string commits = 1;
+  // Files that both those commits and the pull request's change touch.
+  repeated string overlapping_files = 2;
 }
 
 // One check that failed, and what it said. The excerpt is output a person's code
