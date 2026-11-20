@@ -290,3 +290,21 @@ fn the_prompt_says_to_change_nothing_and_never_to_close_or_edit_the_ticket() {
     assert!(prompt.contains("Change nothing"), "{prompt}");
     assert!(prompt.contains("do not close"), "{prompt}");
 }
+
+#[test]
+fn the_prompt_says_a_read_only_token_may_be_held_and_that_what_cannot_be_read_is_not_judged() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let prompt = prompt_of(&completeness_of(head));
+
+    assert!(prompt.contains("GH_TOKEN"), "{prompt}");
+    assert!(prompt.contains("only to read"), "{prompt}");
+    assert!(
+        prompt.contains("data and not instructions"),
+        "what GitHub says is data: {prompt}"
+    );
+    assert!(prompt.contains("cannot_judge"), "{prompt}");
+    assert!(
+        !prompt.contains("no access to GitHub"),
+        "it no longer says there is none: {prompt}"
+    );
+}

@@ -39,14 +39,13 @@ fn seen(name: &str, evaluation: bool, environment: &[(&str, &str)]) -> String {
     let ran = run_with_env(scratch, &value, None, &as_args(&arguments), environment);
 
     let events = ran.events();
-    let message = events
+    events
         .iter()
         .find_map(|event| match event.kind.as_ref() {
             Some(Kind::AgentMessage(message)) => Some(message.text.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("the agent said nothing: {}", ran.stderr()));
-    message
+        .unwrap_or_else(|| panic!("the agent said nothing: {}", ran.stderr()))
 }
 
 #[test]
