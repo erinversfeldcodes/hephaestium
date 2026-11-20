@@ -8,7 +8,7 @@ what it cost. Its reason to exist is the part most agent tooling leaves out:
 checking, on the same tickets, whether a change to a prompt, a skill or a model
 made the agents better or worse.
 
-> **Status: early. The command-line tool can check a manifest, run a gate, lint a change and sync skills; nothing dispatches agents yet.**
+> **Status: the control plane takes approved tickets from one repository, runs agents on them, opens pull requests, revises them when checks fail or the base moves, reviews them under lenses, merges when green, and can judge a merged ticket against its requirements. Not yet built: an HTTP API, the dashboard, OpenTelemetry, the replay corpus, and a container for a workload. See [the roadmap](https://github.com/erinversfeldcodes/hephaestium/issues/80).**
 > The source is publicly visible under a restrictive licence. You may read it,
 > but may not use, copy or distribute it. See [LICENSE](./LICENSE).
 
@@ -190,6 +190,67 @@ and `--deliver` pushes to the pull request's own branch with a plain push, never
 and opens nothing. The branch must be one the runtime made (`heph/...`), and a revision
 that names no failing check, no pull request or an attempt of zero is refused.
 
+### The control plane
+
+The control plane (Elixir, Oban and Postgres, in [`control-plane/`](./control-plane)) takes
+approved tickets from GitHub, runs each as a workload through the executor, and carries the
+pull request to its end. It is in use on one repository. Everything past taking a ticket in is
+a setting that stays off until it is named, so a repository chooses how far it goes.
+
+- **Intake.** A ticket labelled `heph:ready` by someone who can write to the repository, and
+  not edited since by anyone else, becomes a workload
+  ([ADR 0020](./docs/adr/0020-a-workload-stops-for-a-person-only-to-approve-its-ticket.md),
+  [ADR 0023](./docs/adr/0023-intake-reads-an-approval-from-the-ticket-and-fails-closed.md)).
+  The labels are the state: `heph:running`, `heph:done`, `heph:failed`, `heph:blocked`. A
+  ticket that an open ticket blocks does not start. Re-approving a ticket whose pull request
+  is open resumes that pull request
+  ([ADR 0030](./docs/adr/0030-re-approving-a-ticket-resumes-its-open-pull-request.md)).
+- **Settling.** A ticket is done only when every check on its pull request is green. A pull
+  request closes its ticket only when the agent says it resolves all of it
+  ([ADR 0029](./docs/adr/0029-a-pull-request-closes-its-ticket-only-when-the-agent-says-it-resolves-it.md)),
+  and never closes an epic, which is a ticket with sub-issues.
+- **Revisions.** A pull request whose checks really fail, whose review blocks it, or whose
+  branch has fallen behind its base is revised by the agent on the same branch, a bounded
+  number of times
+  ([ADR 0024](./docs/adr/0024-a-failing-check-is-investigated-and-fixed-or-the-ticket-is-blocked.md)).
+  A revision merges the base branch in first, and rewrites the pull request's description from
+  the agent's whole account of the change. A first run is carried onto the base branch's tip
+  before its pull request is opened
+  ([ADR 0031](./docs/adr/0031-a-run-brings-in-the-base-branch-and-reconfirms-its-change.md)).
+  A conflict is not yet handed to the agent: it fails the run and names the files.
+- **Reviews.** The lenses a change needs are chosen from the files it touches, each review is
+  a read-only workload pinned to one commit, and a blocking finding becomes a revision
+  ([ADR 0025](./docs/adr/0025-a-review-is-a-workload-that-reads-one-commit-under-one-lens-and-ends-with-a-verdict.md),
+  [ADR 0026](./docs/adr/0026-a-ticket-is-done-when-the-lenses-that-block-have-approved-its-head-commit.md)).
+- **Merging.** A green, approved pull request is merged only when GitHub itself says it is
+  clean, never by bypassing its rules.
+- **Judging a merged ticket**
+  ([ADR 0032](./docs/adr/0032-a-tickets-goal-is-judged-after-its-pull-request-merges-and-only-a-person-judges-what-needs-one.md)).
+  When a ticket's pull request has merged and the ticket is still open, a read-only
+  evaluation runs the `ticket-completeness` skill at the default branch's tip, with a
+  read-only GitHub token of its own ([`docs/tokens.md`](./docs/tokens.md)). Its verdict (met,
+  not met, owed or cannot judge, with the evidence for each requirement and who should decide)
+  is commented on the ticket, and a ticket whose verdict is owed is judged again daily, up to
+  a limit. A ticket's labels never change. This is built and tested against stand-ins; **it
+  has not yet judged a real ticket**, and closing a ticket that meets every condition and the
+  questioning loop for one that does not are not built.
+
+| Setting | What it does | Default |
+|---|---|---|
+| `HEPH_REPOSITORIES` | The repositories whose approved tickets are taken in | none |
+| `HEPH_RERUNS` | How many times a cancelled check is re-run | 0 |
+| `HEPH_REVISIONS` | How many revisions a pull request gets | 0 |
+| `HEPH_REVIEWS` | The repositories whose pull requests are reviewed under lenses | none |
+| `HEPH_AUTOMERGE` | The repositories whose green, approved pull requests are merged | none |
+| `HEPH_ATHENAEUM_REF` | The Athenaeum release lenses and skills are read from | none |
+| `HEPH_COMPLETENESS` | The repositories whose merged tickets are judged | none |
+| `HEPH_COMPLETENESS_INTERVAL_HOURS`, `HEPH_COMPLETENESS_RECHECKS` | How long to wait before judging an owed ticket again, and how many more times | 24, 7 |
+
+The control plane starts the executor with its own environment, so the token files in
+[`docs/tokens.md`](./docs/tokens.md) are given to it the same way. It is not yet packaged to
+run unattended: it is started by hand against a local Postgres, and a workload in flight is
+lost, not resumed, when it is stopped.
+
 ## What is different
 
 1. **Gates are run by the runtime, not requested in a prompt.** A workload is
@@ -222,6 +283,8 @@ that names no failing check, no pull request or an attempt of zero is refused.
 Multilanguage projects are the bane of some, but not me :) I personally enjoy using the right tool for the job and projects like this and tech like LLMs make it easier to work in. The decisions behind each language choice is in [`docs/adr/`](./docs/adr).
 
 ## Roadmap
+
+The live, ticket-level roadmap is [hephaestium#80](https://github.com/erinversfeldcodes/hephaestium/issues/80). The phases below are the original plan for moving The Stacks' harness here.
 
 | Phase | Outcome |
 |---|---|

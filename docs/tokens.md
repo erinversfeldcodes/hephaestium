@@ -96,6 +96,30 @@ Revoke it in GitHub's settings and make another. It can write to the repositorie
 it was given, and to their workflows if it has that permission, until it is
 revoked or expires, and no further.
 
+## The read-only GitHub token
+
+A completeness evaluation judges whether a merged ticket's goal is met, and for that it
+reads what is on GitHub: workflow runs and their logs, caches, pull requests, issues and
+commits. It is given a token of its own for it, and never the token above, because the
+evaluation's agent has a shell and reads logs, descriptions and comments that other people
+and tools wrote, so a token that can write would let an instruction hidden in one of them
+push, merge or close. A token that can only read can only be used to read.
+
+Make a second **fine-grained personal access token**, scoped to the repository, with read-only
+access to **Contents**, **Pull requests**, **Issues**, **Actions** and **Metadata**, and nothing
+that writes. Keep it as `~/.config/hephaestium/github-read-token` with mode 600.
+
+- The executor gives it, as `GH_TOKEN`, only to a workload that is an evaluation, and takes it
+  once at the start like the others. The token that pushes never reaches an evaluation.
+- Check it without printing it: read an issue with it (that should succeed), and make a write
+  that would change nothing, such as setting an issue's title to the title it already has. A
+  read-only token is refused with `403 Resource not accessible by personal access token`.
+- It expires like any fine-grained token. When it does, an evaluation cannot read GitHub and
+  marks what depends on it `cannot judge`, which says so on the ticket.
+- Nothing that runs `heph run` offers it. The control plane is given
+  `HEPH_GITHUB_READ_TOKEN_FILE` in its environment, and judges merged tickets only for the
+  repositories named in `HEPH_COMPLETENESS`.
+
 ## The Claude Code token
 
 A Claude Code agent authenticates with a long-lived token that belongs to your
@@ -137,6 +161,7 @@ chmod 600 ~/.config/hephaestium/*
 |---|---|---|---|
 | GitHub | `HEPH_GITHUB_TOKEN` | `HEPH_GITHUB_TOKEN_FILE` | `~/.config/hephaestium/github-token` |
 | Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` | `CLAUDE_CODE_OAUTH_TOKEN_FILE` | `~/.config/hephaestium/claude-token` |
+| GitHub, read-only | `HEPH_GITHUB_READ_TOKEN` | `HEPH_GITHUB_READ_TOKEN_FILE` | `~/.config/hephaestium/github-read-token`, given to the control plane only |
 
 - `heph run` uses what is already set, and otherwise offers the default file to the
   executor. It never overrides a variable or a `_FILE` variable you have set.
