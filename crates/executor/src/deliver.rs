@@ -440,11 +440,16 @@ fn body(workload: &Workload, description: &Description<'_>, number: i64) -> Stri
                 .unwrap_or("the agent did not say what remains")
         );
     }
-    let keyword = if matches!(resolution, Resolution::Complete) {
-        "Closes"
-    } else {
-        "Refs"
-    };
+    // An epic is never closed by a pull request: what its parts add up to is for a person
+    // to judge complete. One that resolves everything the agent was asked on it says so.
+    let epic = workload.ticket.as_ref().is_some_and(|t| t.sub_issues > 0);
+    let complete = matches!(resolution, Resolution::Complete);
+    if epic && complete {
+        text.push_str(
+            "This ticket is an epic, so a pull request does not close it: a person judges it complete.\n\n",
+        );
+    }
+    let keyword = if complete && !epic { "Closes" } else { "Refs" };
     let _ = write!(
         text,
         "Approved by {} at {when}.\n\n{keyword} #{number}\n",
