@@ -37,7 +37,7 @@ defmodule ControlPlane.CompletenessComment do
         do: " The ticket stays open until what is owed is settled.",
         else: ""
 
-    "A person decides whether to close this ticket: #{line(verdict["decides_because"])}.#{stays}"
+    "A person decides whether to close this ticket: #{sentence(verdict["decides_because"])}#{stays}"
   end
 
   defp table([]), do: ""
@@ -90,6 +90,9 @@ defmodule ControlPlane.CompletenessComment do
 
   defp words(nil), do: ""
   defp words(text), do: text |> to_string() |> String.replace("_", " ")
+
+  # One line that ends in exactly one full stop, whether or not the agent wrote one.
+  defp sentence(text), do: text |> line() |> String.trim_trailing(".") |> Kernel.<>(".")
 
   # One line, with nothing that starts a block.
   defp line(nil), do: ""
