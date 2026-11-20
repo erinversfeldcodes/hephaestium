@@ -165,10 +165,10 @@ fn a_conflict_with_the_base_fails_the_run_and_pushes_nothing() {
 }
 
 #[test]
-fn a_first_run_is_not_merged_with_anything() {
+fn a_first_run_given_a_base_that_has_since_moved_is_carried_onto_the_current_one() {
     let rig = rig("base-first-run", &manifest(&[]));
     let base = rig.commit.clone();
-    main_moves(&rig, "web/other.txt", "from another change\n");
+    let main = main_moves(&rig, "web/other.txt", "from another change\n");
 
     let (ran, source) = run_revision(rig, &workload(&base), &agent_script(""));
 
@@ -181,7 +181,7 @@ fn a_first_run_is_not_merged_with_anything() {
         ],
     );
     assert_eq!(
-        pushed, base,
-        "a first run is built on the commit it was given"
+        pushed, main,
+        "a first run is built on the base branch's tip, not on the commit it was given, and has no merge commit"
     );
 }

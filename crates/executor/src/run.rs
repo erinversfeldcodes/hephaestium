@@ -121,27 +121,24 @@ pub fn run(
                         Err(reason) => (Outcome::Failed, reason),
                     }
                 }
-                End::Done => {
+                End::Done => 'done: {
+                    // A first run that is about to open a pull request is carried onto
+                    // the base branch as it is now, before its gates judge it.
+                    let delivering =
+                        options.deliver && secrets.get(secrets::GITHUB_TOKEN).is_some();
+                    let since = match carry_if(delivering, &workload, &workspace, since) {
+                        Ok(since) => since,
+                        Err(reason) => break 'done (Outcome::Failed, reason),
+                    };
                     match run_gates(&manifest, &workspace, &since, secrets, &mut stream)? {
-                        Ok(deferred) => match (options.deliver, secrets.get(secrets::GITHUB_TOKEN))
-                        {
-                            (true, Some(token)) => {
-                                match deliver::deliver(
-                                    &workload,
-                                    &workspace,
-                                    &options.gh,
-                                    token,
-                                    &deferred,
-                                ) {
-                                    Ok(pull_request) => {
-                                        stream.emit(Kind::PullRequestOpened(pull_request))?;
-                                        (Outcome::Completed, String::new())
-                                    }
-                                    Err(reason) => (Outcome::Failed, reason),
-                                }
-                            }
-                            _ => (Outcome::Completed, String::new()),
-                        },
+                        Ok(deferred) => deliver_if_asked(
+                            options,
+                            secrets,
+                            &workload,
+                            &workspace,
+                            &deferred,
+                            &mut stream,
+                        )?,
                         Err(reason) => (Outcome::Failed, reason),
                     }
                 }
@@ -299,6 +296,115 @@ fn bring_in_base(workload: &Workload, workspace: &Path) -> Result<(), String> {
             &files
         }
     ))
+}
+
+/// Open the pull request when the run was asked to and holds the token to, and say how
+/// the workload ended. The outer error is a failure to write an event.
+fn deliver_if_asked<W: Write>(
+    options: &Options,
+    secrets: &Secrets,
+    workload: &Workload,
+    workspace: &Path,
+    deferred: &[deliver::Deferred],
+    stream: &mut Stream<'_, W>,
+) -> Result<(Outcome, String), Refused> {
+    let (true, Some(token)) = (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) else {
+        return Ok((Outcome::Completed, String::new()));
+    };
+    match deliver::deliver(workload, workspace, &options.gh, token, deferred) {
+        Ok(pull_request) => {
+            stream.emit(Kind::PullRequestOpened(pull_request))?;
+            Ok((Outcome::Completed, String::new()))
+        }
+        Err(reason) => Ok((Outcome::Failed, reason)),
+    }
+}
+
+/// Carry the work onto the base branch when it is about to be delivered, and leave it
+/// where it is otherwise: a run that opens no pull request has no ground to be on.
+fn carry_if(
+    delivering: bool,
+    workload: &Workload,
+    workspace: &Path,
+    since: String,
+) -> Result<String, String> {
+    if delivering {
+        carry_onto_base(workload, workspace, &since)
+    } else {
+        Ok(since)
+    }
+}
+
+/// A first run can take minutes, and the base branch can move in that time. Before its
+/// pull request is opened, the work is carried onto the base branch's current tip, so
+/// the pull request is not opened against ground that has changed.
+///
+/// Work that touches nothing the base branch touched is carried over mechanically, with
+/// no commit of its own: the checkout moves to the tip and the uncommitted work goes
+/// with it, so the pull request has one commit on current ground. Work that touches
+/// a file the base also touched is not carried over, and the run ends with the files
+/// named. Returns the commit the work now stands on, which what the agent changed is
+/// judged from.
+fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result<String, String> {
+    if workload.revision.is_some() || workload.review.is_some() {
+        return Ok(since.to_owned());
+    }
+    let base = &workload
+        .repository
+        .as_ref()
+        .expect("checked when read")
+        .base_branch;
+    git(
+        &["fetch", "--quiet", "origin", base],
+        workspace,
+        "could not fetch the base branch",
+    )?;
+    let tip = git_output(&["rev-parse", "FETCH_HEAD"], workspace)?
+        .trim()
+        .to_owned();
+    if tip == since {
+        return Ok(tip);
+    }
+    let ours = changed_files(workspace, since)?;
+    if ours.is_empty() {
+        // Nothing to carry: delivery says the agent changed nothing.
+        return Ok(since.to_owned());
+    }
+    let range = format!("{since}..{tip}");
+    let gained = git_output(&["diff", "--name-only", &range], workspace)?;
+    let overlap: Vec<&str> = gained
+        .lines()
+        .filter(|file| ours.iter().any(|mine| mine == file))
+        .collect();
+    if !overlap.is_empty() {
+        return Err(format!(
+            "the base branch '{base}' changed {} too since this run began, so the change cannot be carried onto it without a person or the agent resolving the difference",
+            overlap.join(", ")
+        ));
+    }
+    git(
+        &["stash", "push", "--quiet", "--include-untracked"],
+        workspace,
+        "could not set the work aside to move it onto the base branch",
+    )?;
+    git(
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "--quiet",
+            "--detach",
+            &tip,
+        ],
+        workspace,
+        "could not check out the base branch's tip",
+    )?;
+    git(
+        &["stash", "pop", "--quiet"],
+        workspace,
+        "could not put the work back on the base branch's tip",
+    )?;
+    Ok(tip)
 }
 
 /// What a git command wrote to standard output.

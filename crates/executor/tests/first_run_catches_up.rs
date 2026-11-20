@@ -42,7 +42,11 @@ fn run_first(rig: Rig, value: &Value, script: &str) -> (common::Ran, std::path::
 fn work_is_carried_onto_what_the_base_gained_while_the_agent_ran() {
     let rig = rig("catch-up-moved", &manifest(&[]));
     let base = rig.commit.clone();
-    let script = agent_script(&main_moves_during_the_run(&rig, "web/other.txt", "gained\\n"));
+    let script = agent_script(&main_moves_during_the_run(
+        &rig,
+        "web/other.txt",
+        "gained\\n",
+    ));
 
     let (ran, source) = run_first(rig, &workload(&base), &script);
 
@@ -113,7 +117,11 @@ fn what_the_base_gained_is_not_counted_as_the_agents_change() {
         + "\n[gates.other]\nrun = [\"sh\", \"-c\", \"exit 1\"]\ntimeout_seconds = 30\nwhen_paths = [\"web/other.txt\"]\n";
     let rig = rig("catch-up-not-counted", &text);
     let base = rig.commit.clone();
-    let script = agent_script(&main_moves_during_the_run(&rig, "web/other.txt", "gained\\n"));
+    let script = agent_script(&main_moves_during_the_run(
+        &rig,
+        "web/other.txt",
+        "gained\\n",
+    ));
 
     let (ran, _) = run_first(rig, &workload(&base), &script);
 
