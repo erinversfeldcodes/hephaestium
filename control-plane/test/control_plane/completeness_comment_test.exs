@@ -66,6 +66,19 @@ defmodule ControlPlane.CompletenessCommentTest do
       refute text =~ "The evidence supports closing"
     end
 
+    test "does not double the full stop when the reason already ends with one" do
+      text =
+        CompletenessComment.render(
+          verdict(%{
+            "decides" => "person",
+            "decides_because" => "a requirement is wording."
+          })
+        )
+
+      assert text =~ "a requirement is wording."
+      refute text =~ ".."
+    end
+
     test "lists what is owed with its command, its condition and its threshold, and says it stays open" do
       owed = %{
         "what" => "the cache hit rate after the change",
