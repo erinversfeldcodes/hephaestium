@@ -55,6 +55,39 @@ defmodule ControlPlane.Evaluations do
   end
 
   @doc """
+  Judge the tickets whose pull request merged after the ticket was settled. A pull request
+  is settled when it is green, and a person merges it later, so settling alone never sees
+  the merge. This looks again, for the tickets settled in the last fortnight that have not
+  been judged, and asks for a judgement of each whose pull request has merged.
+  """
+  @spec merged(DateTime.t()) :: [result()]
+  def merged(now \\ DateTime.utc_now()) do
+    repositories = settings()[:completeness] || []
+
+    judged =
+      repositories
+      |> Workloads.evaluations()
+      |> MapSet.new(&{&1.repository, &1.ticket_number})
+
+    repositories
+    |> Workloads.settled_with_pull_request(DateTime.add(now, -14 * 86_400, :second))
+    |> Enum.reject(&MapSet.member?(judged, {&1.repository, &1.ticket_number}))
+    |> Enum.flat_map(&look_for_merge/1)
+  end
+
+  defp look_for_merge(workload) do
+    with {:ok, number} <- Workloads.pull_request_number(workload) do
+      case GitHub.get("repos/#{workload.repository}/pulls/#{number}") do
+        {:ok, %{"merged" => true}} -> [after_merge(workload)]
+        {:ok, _} -> []
+        {:error, message} -> [{:skipped, {:github_error, message}}]
+      end
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
   Judge again the tickets whose last verdict was owed. A ticket is judged again when its
   latest evaluation ended with a verdict that something is owed, a day (configurable) has
   passed since it ended, and it has not been judged more often than the limit allows. What

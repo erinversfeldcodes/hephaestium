@@ -96,6 +96,26 @@ defmodule ControlPlane.Workloads do
     end
   end
 
+  @doc """
+  The settled workloads of these repositories that opened a pull request, settled since the
+  given time, the latest for each ticket. A pull request that is merged after its ticket was
+  settled is only seen by looking at these again.
+  """
+  @spec settled_with_pull_request([String.t()], DateTime.t()) :: [%Workload{}]
+  def settled_with_pull_request(repositories, since) do
+    Repo.all(
+      from w in Workload,
+        where:
+          w.repository in ^repositories and not is_nil(w.settled_at) and w.updated_at >= ^since and
+            fragment("?->'review' IS NULL", w.workload) and
+            fragment("?->'completeness' IS NULL", w.workload) and
+            fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
+        order_by: w.inserted_at
+    )
+    |> Enum.group_by(&{&1.repository, &1.ticket_number})
+    |> Enum.map(fn {_ticket, workloads} -> List.last(workloads) end)
+  end
+
   @doc "Every completeness evaluation of these repositories, oldest first."
   @spec evaluations([String.t()]) :: [%Workload{}]
   def evaluations(repositories) do
