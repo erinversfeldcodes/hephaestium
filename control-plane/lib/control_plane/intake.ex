@@ -257,7 +257,14 @@ defmodule ControlPlane.Intake do
 
   defp after?(_, _), do: true
 
-  defp build(repo, number, approval) do
+  @doc """
+  Build the workload `heph` makes for a ticket and an approval, from the ticket as it reads
+  now and the default branch's tip now. Another caller than intake needs one: judging a
+  merged ticket starts from the ticket as it is, not as it was approved.
+  """
+  @spec build(String.t(), integer(), %{login: String.t(), text: String.t()}) ::
+          {:ok, map()} | {:could_not_build, String.t()}
+  def build(repo, number, approval) do
     arguments = [
       "workload",
       Integer.to_string(number),
