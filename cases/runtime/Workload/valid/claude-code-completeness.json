@@ -45,6 +45,7 @@
         "when": "after the next ten runs",
         "settledBy": "no lower than before"
       }
-    ]
+    ],
+    "refused": "the verdict does not pass the completeness contract: /requirements/0/gap: \"\" is shorter than 1 character"
   }
 }

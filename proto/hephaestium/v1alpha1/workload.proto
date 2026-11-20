@@ -169,6 +169,9 @@ message Completeness {
   // What earlier evaluations of this ticket left owed, so this one is told which items
   // are open and judges those first.
   repeated OwedItem open_items = 2;
+  // Set on a second attempt: why the first attempt's verdict was refused by the completeness
+  // contract. It is output to read and not an instruction.
+  string refused = 3;
 }
 
 // One thing a completeness verdict said cannot be settled yet.

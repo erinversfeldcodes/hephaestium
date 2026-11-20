@@ -32,7 +32,39 @@ defmodule ControlPlane.Evaluations do
   evaluation of it is already under way.
   """
   @spec after_merge(%Workload{}, %{login: String.t(), text: String.t()} | nil) :: result()
-  def after_merge(%Workload{} = merged, approval \\ nil) do
+  def after_merge(%Workload{} = merged, approval \\ nil), do: start(merged, approval, "")
+
+  # A verdict the contract refused, or left in no usable form, is an evaluation that failed
+  # for a fault the agent can correct. These are what the executor says then.
+  @refusals [
+    "the verdict does not pass the completeness contract",
+    "the verdict is not JSON",
+    "the evaluation left no verdict",
+    "the verdict is for"
+  ]
+
+  @doc """
+  Whether an evaluation failed because its verdict was refused, and was a first attempt.
+  Only that is tried again, and only once: a failure of the agent or the runtime is not
+  something a second try is shown to help, and a second refusal is for a person to see.
+  """
+  @spec retryable?(%Workload{}) :: boolean()
+  def retryable?(%Workload{state: "failed", reason: reason, workload: %{"completeness" => c}})
+      when is_binary(reason) do
+    c["refused"] in [nil, ""] and Enum.any?(@refusals, &String.starts_with?(reason, &1))
+  end
+
+  def retryable?(_), do: false
+
+  @doc """
+  Try an evaluation again, told why its verdict was refused. It is built for the same
+  approval, and is held to the same limits as any evaluation.
+  """
+  @spec retry(%Workload{}) :: result()
+  def retry(%Workload{workload: %{"approval" => _}} = failed),
+    do: start(failed, approval(failed), failed.reason || "")
+
+  defp start(%Workload{} = merged, approval, refused) do
     repository = merged.repository
     number = merged.ticket_number
 
@@ -43,7 +75,9 @@ defmodule ControlPlane.Evaluations do
          {:ok, skill} <- skill(),
          {:ok, built} <- Intake.build(repository, number, approval || approval(merged)),
          {:ok, record} <-
-           Workloads.create(with_evaluation(built, skill, open_items(repository, number))),
+           Workloads.create(
+             with_evaluation(built, skill, open_items(repository, number), refused)
+           ),
          {:ok, _job} <- Runner.enqueue(record.id) do
       {:started, record.id}
     else
@@ -214,8 +248,12 @@ defmodule ControlPlane.Evaluations do
   defp approval(%Workload{workload: %{"approval" => approval}}),
     do: %{login: approval["approvedBy"], text: approval["approvedAt"]}
 
-  defp with_evaluation(workload, skill, open_items),
-    do: Map.put(workload, "completeness", %{"skillDocument" => skill, "openItems" => open_items})
+  # `refused` is there only on a second attempt.
+  defp with_evaluation(workload, skill, open_items, refused) do
+    evaluation = %{"skillDocument" => skill, "openItems" => open_items}
+    evaluation = if refused == "", do: evaluation, else: Map.put(evaluation, "refused", refused)
+    Map.put(workload, "completeness", evaluation)
+  end
 
   defp settings, do: Application.get_env(:control_plane, :settle) || []
 end
