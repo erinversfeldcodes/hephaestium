@@ -242,6 +242,25 @@ fn the_prompt_of_a_revision_names_the_failing_checks_and_gives_their_output_as_d
 }
 
 #[test]
+fn the_prompt_of_a_revision_says_the_description_is_rewritten_from_the_whole_account() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let prompt = prompt_of(&revising(head, |_| {}));
+
+    assert!(
+        prompt.contains("rewritten from"),
+        "it says the description is rewritten: {prompt}"
+    );
+    assert!(
+        prompt.contains("whole account"),
+        "it asks for the whole account, not only this revision's part: {prompt}"
+    );
+    assert!(
+        !prompt_of(&workload(head)).contains("rewritten from"),
+        "a first run is not told that"
+    );
+}
+
+#[test]
 fn a_workload_that_is_not_a_revision_has_the_prompt_it_always_had() {
     let prompt = prompt_of(&workload("0123456789abcdef0123456789abcdef01234567"));
     assert!(!prompt.contains("not instructions"), "{prompt}");
