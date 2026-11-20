@@ -29,6 +29,11 @@ message Workload {
   // a verdict and changes nothing. A workload is never a revision and a review at
   // once.
   Review review = 9;
+  // Set when this workload judges whether the ticket's goal is met, at the commit that
+  // is the repository's base commit (the default branch's current tip). It ends with a
+  // verdict and changes nothing. A workload is never a completeness evaluation and a
+  // revision or a review.
+  Completeness completeness = 10;
 }
 
 // The ticket, as a maintainer approved it. The executor builds the agent's
@@ -152,6 +157,29 @@ message FailedCheck {
   // How it ended: failure, timed_out and the like.
   string result = 2;
   string excerpt = 3;
+}
+
+// A judgement of whether a ticket's goal is met, against the state of the default
+// branch at the repository's base commit and the evidence gathered since its changes
+// merged. The skill travels in the message, so an evaluation can be run again from the
+// message alone.
+message Completeness {
+  // The text of the `ticket-completeness` skill, as the pinned Athenaeum release has it.
+  string skill_document = 1;
+  // What earlier evaluations of this ticket left owed, so this one is told which items
+  // are open and judges those first.
+  repeated OwedItem open_items = 2;
+}
+
+// One thing a completeness verdict said cannot be settled yet.
+message OwedItem {
+  string what = 1;
+  // The command that produces the evidence.
+  string run = 2;
+  // The condition under which it can be run.
+  string when = 3;
+  // The threshold that decides it.
+  string settled_by = 4;
 }
 
 // A review of a pull request at one commit under one lens. The commit is the

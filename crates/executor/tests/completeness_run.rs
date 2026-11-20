@@ -94,12 +94,25 @@ fn a_verdict_that_passes_the_contract_is_kept_in_the_record() {
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     assert_eq!(finished(&ran.events()).0, Outcome::Completed);
-    let kept = ran.record().completeness.expect("a kept verdict");
-    assert_eq!(
-        serde_json::to_value(kept).expect("JSON"),
-        said,
-        "exactly as it passed the contract"
-    );
+    let kept =
+        serde_json::to_value(ran.record().completeness.expect("a kept verdict")).expect("JSON");
+    // A protobuf Struct holds every number as a double, so 0 comes back as 0.0.
+    assert_eq!(kept["schema_version"].as_f64(), Some(0.0));
+    assert_eq!(kept["ticket"].as_f64(), Some(12.0));
+    for key in [
+        "commit",
+        "verdict",
+        "decides",
+        "decides_because",
+        "epic",
+        "requirements",
+        "goal",
+        "owed",
+        "not_filed",
+        "could_not_check",
+    ] {
+        assert_eq!(kept[key], said[key], "{key}");
+    }
 }
 
 #[test]

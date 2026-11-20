@@ -51,6 +51,10 @@ message RunRecord {
   // review contract and as the executor checked it names the commit and lens
   // asked for. Absent for every other workload and for a review that failed.
   google.protobuf.Struct review = 15;
+  // For a completeness workload that completed: its verdict, exactly as it passed the
+  // completeness contract and as the executor checked it names the ticket and commit
+  // asked for. Absent for every other workload and for an evaluation that failed.
+  google.protobuf.Struct completeness = 16;
 }
 
 // A gate that ran, and what it said.

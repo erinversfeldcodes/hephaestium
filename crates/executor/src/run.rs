@@ -20,6 +20,7 @@ use crate::adapter::{Adapter, Stub};
 use crate::agent::{self, End};
 use crate::claude_code::ClaudeCode;
 use crate::cli::Options;
+use crate::completeness;
 use crate::deliver;
 use crate::review;
 use crate::secrets::{self, Secrets};
@@ -83,12 +84,12 @@ pub fn run(
         executor_version: executor_version.to_owned(),
     }))?;
 
-    let mut verdict = None;
+    let mut verdict: Option<Said> = None;
     let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
         Ok((manifest, since)) => {
-            // A review is held to changing nothing, so what the workspace is before
-            // the agent runs is kept to compare with what it is after.
-            let before = if workload.review.is_some() {
+            // A review or an evaluation is held to changing nothing, so what the
+            // workspace is before the agent runs is kept to compare with what it is after.
+            let before = if read_only(&workload) {
                 match review::snapshot(&workspace) {
                     Ok(before) => Some(before),
                     Err(reason) => {
@@ -112,8 +113,8 @@ pub fn run(
                 secrets,
                 &mut stream,
             )? {
-                End::Done if workload.review.is_some() => {
-                    match reviewed(&workload, &workspace, before.as_ref()) {
+                End::Done if read_only(&workload) => {
+                    match judged(&workload, &workspace, before.as_ref()) {
                         Ok(said) => {
                             verdict = Some(said);
                             (Outcome::Completed, String::new())
@@ -165,10 +166,70 @@ pub fn run(
     };
 
     let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
-    if let Some(verdict) = verdict {
-        record.review = Some(serde_json::from_value(verdict).map_err(|e| Refused(e.to_string()))?);
-    }
+    keep(&mut record, verdict)?;
     write_record(&options.record, &record)
+}
+
+/// Put the verdict that was kept, if there is one, in the record.
+fn keep(record: &mut RunRecord, verdict: Option<Said>) -> Result<(), Refused> {
+    match verdict {
+        Some(Said::Review(said)) => {
+            record.review = Some(serde_json::from_value(said).map_err(|e| Refused(e.to_string()))?);
+        }
+        Some(Said::Completeness(said)) => {
+            record.completeness =
+                Some(serde_json::from_value(said).map_err(|e| Refused(e.to_string()))?);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// A verdict that was kept, and for which kind of read-only run.
+enum Said {
+    Review(serde_json::Value),
+    Completeness(serde_json::Value),
+}
+
+/// Whether the workload is held to changing nothing and ends with a verdict.
+fn read_only(workload: &Workload) -> bool {
+    workload.review.is_some() || workload.completeness.is_some()
+}
+
+/// What a read-only run has to show for itself once the agent is done: the workspace is
+/// what it was, and the verdict is one that can be kept.
+fn judged(
+    workload: &Workload,
+    workspace: &Path,
+    before: Option<&review::Snapshot>,
+) -> Result<Said, String> {
+    if workload.completeness.is_some() {
+        evaluated(workload, workspace, before).map(Said::Completeness)
+    } else {
+        reviewed(workload, workspace, before).map(Said::Review)
+    }
+}
+
+/// What an evaluation has to show: the workspace is what it was, and the verdict names
+/// the ticket and the commit it was asked about and passes the completeness contract.
+fn evaluated(
+    workload: &Workload,
+    workspace: &Path,
+    before: Option<&review::Snapshot>,
+) -> Result<serde_json::Value, String> {
+    let commit = &workload
+        .repository
+        .as_ref()
+        .expect("checked when read")
+        .base_commit;
+    let ticket = workload.ticket.as_ref().map_or(0, |t| t.number);
+    if let Some(before) = before {
+        let after = review::snapshot(workspace)?;
+        if let Some(changed) = review::changed_since_by("evaluation", before, &after) {
+            return Err(changed);
+        }
+    }
+    completeness::verdict(workspace, commit, ticket)
 }
 
 /// What a review has to show for itself once the agent is done: the workspace is
@@ -580,6 +641,8 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     text.push_str(deliver::RESOLUTION_FILE);
     text.push('\n');
     text.push_str(review::VERDICT_FILE);
+    text.push('\n');
+    text.push_str(completeness::VERDICT_FILE);
     text.push('\n');
     fs::write(&exclude, text)
         .map_err(|e| format!("could not keep the commit message out of the changes: {e}"))

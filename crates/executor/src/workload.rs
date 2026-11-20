@@ -50,6 +50,7 @@ fn check_values(workload: &Workload) -> Result<(), String> {
 
     check_limits(workload)?;
     check_revision(workload)?;
+    check_completeness(workload)?;
     check_review(workload)?;
 
     if !repository.manifest_path.is_empty()
@@ -113,6 +114,24 @@ fn check_revision(workload: &Workload) -> Result<(), String> {
     }
     if revision.failures.iter().any(|f| f.name.trim().is_empty()) {
         return Err("a failing check in the revision has no name".to_owned());
+    }
+    Ok(())
+}
+
+/// What an evaluation is told. It is never also a revision or a review: each ends a
+/// different way, and an evaluation changes nothing.
+fn check_completeness(workload: &Workload) -> Result<(), String> {
+    let Some(completeness) = workload.completeness.as_ref() else {
+        return Ok(());
+    };
+    if workload.revision.is_some() {
+        return Err("the workload is both a revision and a completeness evaluation".to_owned());
+    }
+    if workload.review.is_some() {
+        return Err("the workload is both a review and a completeness evaluation".to_owned());
+    }
+    if completeness.skill_document.trim().is_empty() {
+        return Err("the completeness evaluation carries no skill to follow".to_owned());
     }
     Ok(())
 }
