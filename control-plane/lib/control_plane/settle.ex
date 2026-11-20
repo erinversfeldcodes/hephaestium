@@ -24,7 +24,7 @@ defmodule ControlPlane.Settle do
 
   require Logger
 
-  alias ControlPlane.{Account, Finding, GitHub, Reviews, Tickets, Workloads}
+  alias ControlPlane.{Account, Evaluations, Finding, GitHub, Reviews, Tickets, Workloads}
 
   @good ["success", "skipped", "neutral"]
 
@@ -56,13 +56,44 @@ defmodule ControlPlane.Settle do
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
          notes = with_left_to_ci(workload, pull, verdict, notes),
-         :ok <- act(workload, verdict, notes) do
+         :ok <- act(workload, verdict, notes),
+         :ok <- evaluate(workload, pull, verdict) do
       outcome(workload, verdict)
     else
       {:error, reason} -> {:waiting, to_string(reason)}
       {:waiting, reason} -> {:waiting, reason}
     end
   end
+
+  # A pull request that has merged, for a repository that opted in, is followed by a
+  # judgement of whether its ticket's goal is met, if the ticket is still open. It is made
+  # once, because the ticket is settled once, and it never undoes the settling: a judgement
+  # that could not be started is logged, and the ticket is not settled again for it.
+  defp evaluate(workload, pull, verdict) do
+    if merged?(pull, verdict) do
+      case Evaluations.after_merge(workload) do
+        {:started, id} ->
+          Logger.info("started evaluation #{id} of ticket #{workload.ticket_number}")
+
+        {:skipped, reason} ->
+          Logger.info("no evaluation of ticket #{workload.ticket_number}: #{inspect(reason)}")
+      end
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.error(
+        "could not start an evaluation of ticket #{workload.ticket_number}: " <>
+          Exception.message(exception)
+      )
+
+      :ok
+  end
+
+  defp merged?(%{"merged" => true}, _verdict), do: true
+  defp merged?(_pull, {:done, :merged}), do: true
+  defp merged?(_pull, _verdict), do: false
 
   defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}

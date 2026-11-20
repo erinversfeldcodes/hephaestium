@@ -68,6 +68,12 @@ settle =
       [] -> []
       repositories -> [reviews: repositories]
     end ++
+    case System.get_env("HEPH_COMPLETENESS", "")
+         |> String.split(",", trim: true)
+         |> Enum.map(&String.trim/1) do
+      [] -> []
+      repositories -> [completeness: repositories]
+    end ++
     case System.get_env("HEPH_ATHENAEUM_REF", "") do
       "" -> []
       ref -> [athenaeum_ref: ref]
