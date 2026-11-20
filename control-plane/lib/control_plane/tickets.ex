@@ -12,7 +12,7 @@ defmodule ControlPlane.Tickets do
 
   require Logger
 
-  alias ControlPlane.{Account, GitHub, PullRequestComments, Workload}
+  alias ControlPlane.{Account, CompletenessComment, GitHub, PullRequestComments, Workload}
 
   @ready "heph:ready"
   @running "heph:running"
@@ -26,6 +26,7 @@ defmodule ControlPlane.Tickets do
   @spec started(%Workload{}) :: :ok | {:error, String.t()}
   def started(%Workload{workload: %{"revision" => _}}), do: :ok
   def started(%Workload{workload: %{"review" => _}}), do: :ok
+  def started(%Workload{workload: %{"completeness" => _}}), do: :ok
 
   def started(workload) do
     first_error([
@@ -42,9 +43,36 @@ defmodule ControlPlane.Tickets do
   def ended(%Workload{workload: %{"review" => _}} = workload),
     do: PullRequestComments.review(workload)
 
+  # A completeness evaluation judges a ticket and changes no label: what it found is a
+  # comment on the ticket, and a person or a later decision acts on it.
+  def ended(%Workload{workload: %{"completeness" => _}} = workload), do: evaluated(workload)
+
   # A revision's account is on the pull request as well as the ticket.
   def ended(%Workload{} = workload),
     do: first_error([end_ticket(workload), PullRequestComments.revision(workload)])
+
+  defp evaluated(%Workload{state: "completed", record: %{"completeness" => verdict}} = workload)
+       when is_map(verdict),
+       do: post(workload, CompletenessComment.render(verdict))
+
+  defp evaluated(%Workload{state: "completed"} = workload),
+    do:
+      post(
+        workload,
+        "**Hephaestium:** a completeness evaluation ended but left no verdict in its record."
+      )
+
+  defp evaluated(%Workload{} = workload) do
+    why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason
+
+    post(
+      workload,
+      "**Hephaestium:** a completeness evaluation could not be completed: #{why}"
+    )
+  end
+
+  defp post(workload, text),
+    do: write("POST", issue(workload) <> "/comments", ["body=" <> text])
 
   defp end_ticket(%Workload{state: state} = workload) when state in ["failed", "timed_out"] do
     first_error([
