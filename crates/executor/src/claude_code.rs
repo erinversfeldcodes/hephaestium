@@ -90,6 +90,9 @@ fn revision_section(revision: &contracts::v1alpha1::Revision) -> String {
             result = failure.result.replace('`', "'"),
         );
     }
+    text.push_str(
+        "When you finish, the pull request's title and description are rewritten from `.heph-commit-message` and `.heph-resolution`, and what they said before is replaced. Write the whole account of the change as it now stands, not only what this revision changed: what it does, the evidence for each claim, what could not be confirmed, and what is still owed. The reviews read the description as the change's own account, and a description that says less than the last one loses what the earlier revisions found.\n\n",
+    );
     text
 }
 
