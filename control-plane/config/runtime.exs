@@ -74,6 +74,14 @@ settle =
       [] -> []
       repositories -> [completeness: repositories]
     end ++
+    case Integer.parse(System.get_env("HEPH_COMPLETENESS_INTERVAL_HOURS", "")) do
+      {hours, ""} when hours > 0 -> [completeness_interval_hours: hours]
+      _ -> []
+    end ++
+    case Integer.parse(System.get_env("HEPH_COMPLETENESS_RECHECKS", "")) do
+      {times, ""} when times >= 0 -> [completeness_rechecks: times]
+      _ -> []
+    end ++
     case System.get_env("HEPH_ATHENAEUM_REF", "") do
       "" -> []
       ref -> [athenaeum_ref: ref]

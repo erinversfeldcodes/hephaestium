@@ -13,7 +13,8 @@ config :control_plane, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        {"* * * * *", ControlPlane.Jobs.Intake},
-       {"* * * * *", ControlPlane.Jobs.SettleTickets}
+       {"* * * * *", ControlPlane.Jobs.SettleTickets},
+       {"7 * * * *", ControlPlane.Jobs.RecheckOwed}
      ]}
   ]
 

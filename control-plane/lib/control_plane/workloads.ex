@@ -96,6 +96,18 @@ defmodule ControlPlane.Workloads do
     end
   end
 
+  @doc "Every completeness evaluation of these repositories, oldest first."
+  @spec evaluations([String.t()]) :: [%Workload{}]
+  def evaluations(repositories) do
+    Repo.all(
+      from w in Workload,
+        where:
+          w.repository in ^repositories and
+            fragment("?->'completeness' IS NOT NULL", w.workload),
+        order_by: w.inserted_at
+    )
+  end
+
   @doc "The workloads of a ticket, oldest first."
   @spec for_ticket(String.t(), integer()) :: [%Workload{}]
   def for_ticket(repository, number) do
