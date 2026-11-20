@@ -26,6 +26,11 @@ pub const MESSAGE_FILE: &str = ".heph-commit-message";
 /// is resolved, so only `complete` lets the pull request close it.
 pub const RESOLUTION_FILE: &str = ".heph-resolution";
 
+/// Where the agent leaves the pull request's description, apart from the commit message:
+/// what the ticket asked for, what the change does and the risks. It is optional, and the
+/// commit message's body is the description when there is none.
+pub const DESCRIPTION_FILE: &str = ".heph-description.md";
+
 /// How long one git or gh command may take.
 const TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -224,8 +229,13 @@ pub fn deliver(
     )?;
 
     let resolution = read_resolution(workspace);
+    let written = std::fs::read_to_string(workspace.join(DESCRIPTION_FILE))
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
     let description = Description {
         message: &message,
+        written: written.as_deref(),
         deferred,
         resolution: &resolution,
     };
@@ -380,6 +390,8 @@ fn read_resolution(workspace: &Path) -> Resolution {
 /// What goes in the pull request's description besides the agent's message.
 struct Description<'a> {
     message: &'a str,
+    /// What the agent wrote in the description file, if it wrote one.
+    written: Option<&'a str>,
     deferred: &'a [Deferred],
     resolution: &'a Resolution,
 }
@@ -402,10 +414,14 @@ pub struct Deferred {
 fn body(workload: &Workload, description: &Description<'_>, number: i64) -> String {
     let Description {
         message,
+        written,
         deferred,
         resolution,
     } = description;
-    let rest = message.split_once('\n').map_or("", |(_, rest)| rest.trim());
+    // The description the agent wrote is the pull request's account; without one, the
+    // commit message's body is.
+    let rest =
+        written.unwrap_or_else(|| message.split_once('\n').map_or("", |(_, rest)| rest.trim()));
     let approval = workload.approval.clone().unwrap_or_default();
     let when = approval
         .approved_at
@@ -434,7 +450,7 @@ fn body(workload: &Workload, description: &Description<'_>, number: i64) -> Stri
     if let Resolution::Partial(remaining) = resolution {
         let _ = writeln!(
             text,
-            "Not resolved: {}\n",
+            "## What remains\n\n{}\n",
             remaining
                 .as_deref()
                 .unwrap_or("the agent did not say what remains")

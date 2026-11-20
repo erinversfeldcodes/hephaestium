@@ -7,6 +7,8 @@
 
 mod common;
 
+use std::fmt::Write as _;
+
 use common::{
     BRANCH, IDENTITY, Rig, agent_script, finished, git, manifest, rig, run_with_env, stand_in_gh,
     workload,
@@ -28,10 +30,10 @@ fn delivered(
     let rig = rig(name, &manifest(&[]));
     let mut extra = String::new();
     if let Some(text) = description {
-        extra.push_str(&format!("printf '{text}' > .heph-description.md;"));
+        let _ = write!(extra, "printf '{text}' > .heph-description.md;");
     }
     if let Some(text) = resolution {
-        extra.push_str(&format!("printf '{text}' > .heph-resolution;"));
+        let _ = write!(extra, "printf '{text}' > .heph-resolution;");
     }
     let gh = stand_in_gh(&rig.scratch, 0);
     let arguments = [

@@ -190,7 +190,7 @@ fn a_delivered_revision_sets_the_pull_requests_title_and_description_from_its_ow
     let body = gh_body(&ran);
     assert!(body.contains("the cause is shown in the logs"), "{body}");
     assert!(
-        body.contains("Not resolved: item 5 is owed after the merge"),
+        body.contains("## What remains\n\nitem 5 is owed after the merge"),
         "{body}"
     );
     assert!(body.contains("Refs #12"), "{body}");

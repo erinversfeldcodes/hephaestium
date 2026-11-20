@@ -214,7 +214,9 @@ a setting that stays off until it is named, so a repository chooses how far it g
   number of times
   ([ADR 0024](./docs/adr/0024-a-failing-check-is-investigated-and-fixed-or-the-ticket-is-blocked.md)).
   A revision merges the base branch in first, and rewrites the pull request's description from
-  the agent's whole account of the change. A first run is carried onto the base branch's tip
+  the agent's whole account of the change. A description says what the ticket asked for, what
+  the change does and how each claim was shown, what remains (from the agent's resolution, so it
+  always agrees with `Closes` or `Refs`), and the known risks and shortcomings. A first run is carried onto the base branch's tip
   before its pull request is opened
   ([ADR 0031](./docs/adr/0031-a-run-brings-in-the-base-branch-and-reconfirms-its-change.md)).
   A conflict is not yet handed to the agent: it fails the run and names the files.
