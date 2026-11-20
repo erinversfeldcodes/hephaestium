@@ -39,7 +39,7 @@ fn a_complete_resolution_closes_the_ticket() {
         ran.stderr()
     );
     assert_eq!(last_line(&body), "Closes #12", "{body}");
-    assert!(!body.contains("Not resolved"), "{body}");
+    assert!(!body.contains("What remains"), "{body}");
     assert!(!body.contains("Refs #12"), "{body}");
 }
 
@@ -67,7 +67,7 @@ fn a_partial_resolution_refers_to_the_ticket_and_says_what_remains() {
     );
     assert_eq!(last_line(&body), "Refs #12", "{body}");
     assert!(
-        body.contains("Not resolved: the failure rates are not measured"),
+        body.contains("## What remains\n\nthe failure rates are not measured"),
         "{body}"
     );
     assert!(!body.contains("Closes"), "{body}");
@@ -79,7 +79,7 @@ fn a_partial_resolution_that_says_nothing_of_what_remains_says_so() {
 
     assert_eq!(last_line(&body), "Refs #12", "{body}");
     assert!(
-        body.contains("Not resolved: the agent did not say what remains"),
+        body.contains("## What remains\n\nthe agent did not say what remains"),
         "{body}"
     );
 }

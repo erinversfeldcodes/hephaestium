@@ -640,6 +640,8 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     text.push('\n');
     text.push_str(deliver::RESOLUTION_FILE);
     text.push('\n');
+    text.push_str(deliver::DESCRIPTION_FILE);
+    text.push('\n');
     text.push_str(review::VERDICT_FILE);
     text.push('\n');
     text.push_str(completeness::VERDICT_FILE);

@@ -74,7 +74,7 @@ fn a_partial_pull_request_on_an_epic_does_not_add_a_second_reason() {
 
     assert_eq!(last_line(&body), "Refs #12", "{body}");
     assert!(
-        body.contains("Not resolved: the second child remains"),
+        body.contains("## What remains\n\nthe second child remains"),
         "{body}"
     );
     assert!(
