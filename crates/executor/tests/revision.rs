@@ -8,8 +8,8 @@ mod common;
 use std::path::PathBuf;
 
 use common::{
-    IDENTITY, Rig, agent_script, finished, gh_was_called, git, kinds, manifest, rig, run_with_env,
-    stand_in_gh, workload,
+    IDENTITY, Rig, agent_script, finished, git, kinds, manifest, rig, run_with_env, stand_in_gh,
+    workload,
 };
 use contracts::v1alpha1::Workload;
 use contracts::v1alpha1::event::Kind;
