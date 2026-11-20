@@ -696,10 +696,7 @@ defmodule ControlPlane.SettleTest do
       assert labels(gh) == ["labels[]=heph:failed"]
     end
 
-    test "the last failure lists what each revision's agent said, quoted as data", %{
-      gh: gh,
-      id: id
-    } do
+    test "the last failure lists what each revision's agent said, quoted as data", %{id: id} do
       {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
       {:ok, _} = Events.append(first.id, event(first.id, 1, started()))
 

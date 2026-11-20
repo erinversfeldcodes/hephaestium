@@ -35,7 +35,7 @@ defmodule ControlPlane.TicketsTest do
 
   # A workload that has ended as the outcome says, with the record the executor
   # would have kept.
-  defp ended(id, outcome, reason \\ "", extra \\ %{}) do
+  defp ended(id, outcome, reason, extra \\ %{}) do
     {:ok, _} = Events.append(id, event(id, 1, started()))
     {:ok, _} = Events.append(id, event(id, 2, finished(outcome, reason)))
 
