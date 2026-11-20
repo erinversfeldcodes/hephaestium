@@ -9,7 +9,7 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use contracts::v1alpha1::{PullRequestOpened, Workload};
@@ -223,10 +223,21 @@ pub fn deliver(
         &format!("could not push {branch}"),
     )?;
 
-    // A revision's pull request exists: pushing to its branch is all there is to do.
-    // The push above is a plain one, so a branch that has moved is refused, never
-    // forced.
+    let resolution = read_resolution(workspace);
+    let description = Description {
+        message: &message,
+        deferred,
+        resolution: &resolution,
+    };
+
+    // A revision's pull request exists, and the push above put the work on it. The push
+    // is a plain one, so a branch that has moved is refused, never forced. The
+    // description is then made from this revision's own account, so it cannot go on
+    // saying what an earlier head did: the reviews read it as part of the change. It is
+    // done after the push, so a push that was refused leaves the description describing
+    // the head the pull request still has.
     if let Some(revision) = workload.revision.as_ref() {
+        update_pull_request(workload, workspace, gh, token, revision, &description)?;
         return Ok(PullRequestOpened {
             url: revision.pull_request_url.clone(),
             number: revision.pull_request_number,
@@ -234,13 +245,53 @@ pub fn deliver(
         });
     }
 
-    let resolution = read_resolution(workspace);
-    let description = Description {
-        message: &message,
-        deferred,
-        resolution: &resolution,
-    };
     open_pull_request(workload, workspace, gh, token, &branch, &description)
+}
+
+/// Write the description of a pull request to a file beside the workspace, for `gh`.
+fn write_body(
+    workload: &Workload,
+    workspace: &Path,
+    description: &Description<'_>,
+) -> Result<PathBuf, String> {
+    let ticket = workload.ticket.clone().unwrap_or_default();
+    let body_path = workspace.with_file_name(format!("{}.pr-body.md", workload.id));
+    std::fs::write(&body_path, body(workload, description, ticket.number))
+        .map_err(|e| format!("could not write the pull request's body: {e}"))?;
+    Ok(body_path)
+}
+
+/// Set the title and description of the pull request a revision was pushed to.
+fn update_pull_request(
+    workload: &Workload,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    revision: &contracts::v1alpha1::Revision,
+    description: &Description<'_>,
+) -> Result<(), String> {
+    let subject = description.message.lines().next().unwrap_or_default();
+    let repository = workload.repository.as_ref().expect("checked when read");
+    let repository_name = format!("{}/{}", repository.owner, repository.name);
+    let body_path = write_body(workload, workspace, description)?;
+    run(
+        &[
+            gh,
+            "pr",
+            "edit",
+            &revision.pull_request_number.to_string(),
+            "--repo",
+            &repository_name,
+            "--title",
+            subject,
+            "--body-file",
+            &body_path.display().to_string(),
+        ],
+        workspace,
+        token,
+        "the work was pushed, but could not update the pull request",
+    )?;
+    Ok(())
 }
 
 /// Open the pull request for a branch that was pushed.
@@ -254,10 +305,7 @@ fn open_pull_request(
 ) -> Result<PullRequestOpened, String> {
     let subject = description.message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
-    let ticket = workload.ticket.clone().unwrap_or_default();
-    let body_path = workspace.with_file_name(format!("{}.pr-body.md", workload.id));
-    std::fs::write(&body_path, body(workload, description, ticket.number))
-        .map_err(|e| format!("could not write the pull request's body: {e}"))?;
+    let body_path = write_body(workload, workspace, description)?;
     let repository_name = format!("{}/{}", repository.owner, repository.name);
     let lines = run(
         &[
