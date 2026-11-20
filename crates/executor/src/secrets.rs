@@ -14,9 +14,13 @@ use std::os::unix::fs::MetadataExt as _;
 /// The name of the variable the token for delivery is given in.
 pub const GITHUB_TOKEN: &str = "HEPH_GITHUB_TOKEN";
 
+/// The name of the variable the read-only token for judging a ticket is given in. It is
+/// a different credential from the one that pushes, able to read and nothing else.
+pub const READ_TOKEN: &str = "HEPH_GITHUB_READ_TOKEN";
+
 /// Every secret the executor knows. An adapter's plan names the ones its agent
 /// may have.
-pub const KNOWN: [&str; 2] = [GITHUB_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN"];
+pub const KNOWN: [&str; 3] = [GITHUB_TOKEN, READ_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN"];
 
 /// The secrets taken from the environment.
 #[derive(Debug, Default)]

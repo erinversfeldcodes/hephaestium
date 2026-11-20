@@ -28,6 +28,35 @@ pub enum End {
     Cancelled,
 }
 
+/// The environment the agent has: the secrets its adapter names, and for an evaluation
+/// the read-only token.
+fn environment_for(
+    names: &[String],
+    workload: &Workload,
+    secrets: &Secrets,
+) -> Vec<(String, String)> {
+    let mut environment: Vec<(String, String)> = names
+        .iter()
+        .filter_map(|name| {
+            secrets
+                .get(name)
+                .map(str::to_owned)
+                .or_else(|| std::env::var(name).ok())
+                .map(|value| (name.clone(), value))
+        })
+        .collect();
+    // An evaluation reads runs, caches, pull requests and issues, so it alone is given the
+    // read-only token, under the name `gh` looks for. It is the executor and not the
+    // adapter that decides, so no adapter's plan can hand it to another kind of workload,
+    // and the token that writes is never part of it.
+    if workload.completeness.is_some()
+        && let Some(token) = secrets.get(crate::secrets::READ_TOKEN)
+    {
+        environment.push(("GH_TOKEN".to_owned(), token.to_owned()));
+    }
+    environment
+}
+
 /// Run the agent in the workspace.
 ///
 /// It holds only the environment variables its plan names, and only those the
@@ -58,17 +87,7 @@ pub fn run<W: Write>(
         )));
     }
     let plan = adapter.plan(workload, workspace);
-    let environment: Vec<(String, String)> = plan
-        .env_names
-        .iter()
-        .filter_map(|name| {
-            secrets
-                .get(name)
-                .map(str::to_owned)
-                .or_else(|| std::env::var(name).ok())
-                .map(|value| (name.clone(), value))
-        })
-        .collect();
+    let environment = environment_for(&plan.env_names, workload, secrets);
 
     let limits = workload.limits.as_ref().expect("checked when read");
     let timeout_seconds = limits.timeout.as_ref().expect("checked when read");
