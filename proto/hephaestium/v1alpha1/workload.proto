@@ -40,6 +40,15 @@ message Ticket {
   string body = 3;
   // The ticket's address on GitHub.
   string url = 4;
+  // The ticket this one is a sub-issue of, as the tracker records it. Zero when it is
+  // not one.
+  int64 parent = 5;
+  // How many sub-issues the tracker records under this ticket, and how many of them are
+  // completed. A ticket with any is an epic.
+  int32 sub_issues = 6;
+  int32 sub_issues_completed = 7;
+  // The tickets that block this one and are still open, by number.
+  repeated int64 blocked_by = 8;
 }
 
 // The managed repository, and the exact state of it the workload starts from.
