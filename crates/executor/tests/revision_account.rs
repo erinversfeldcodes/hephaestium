@@ -6,8 +6,7 @@
 mod common;
 
 use common::{
-    IDENTITY, Rig, finished, gh_was_called, git, manifest, rig, run_with_env, stand_in_gh,
-    workload,
+    IDENTITY, Rig, finished, gh_was_called, git, manifest, rig, run_with_env, stand_in_gh, workload,
 };
 use contracts::v1alpha1::finished::Outcome;
 use serde_json::{Value, json};
