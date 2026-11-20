@@ -248,6 +248,71 @@ defmodule ControlPlane.ResumeTest do
     assert writes(gh) == []
   end
 
+  describe "re-approving a ticket whose pull request merged and that is still open" do
+    @skill "repos/erinversfeldcodes/athenaeum/contents/skills/ticket-completeness/SKILL.md?ref=v0.26.0"
+
+    setup %{gh: gh} do
+      Application.put_env(:control_plane, :settle,
+        revisions: 2,
+        completeness: [@repo],
+        athenaeum_ref: "v0.26.0"
+      )
+
+      pull(gh, %{"state" => "closed", "merged" => true})
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "open"})
+      StandInGitHub.respond_text(gh, @skill, "the skill")
+      :ok
+    end
+
+    defp evaluations(original),
+      do:
+        Enum.filter(
+          Workloads.for_ticket(@repo, 12),
+          &(&1.id != original.id and is_map(&1.workload["completeness"]))
+        )
+
+    test "asks for a judgement of whether its goal is met", %{original: original} do
+      assert [%{result: {:evaluating, id}}] = Run.run(@repo)
+
+      assert [evaluation] = evaluations(original)
+      assert evaluation.id == id
+      assert evaluation.state == "queued"
+      assert evaluation.workload["completeness"]["skillDocument"] == "the skill"
+      assert_enqueued(worker: RunWorkload, args: %{"workload_id" => id})
+    end
+
+    test "one approval asks for one judgement", %{original: original} do
+      assert [%{result: {:evaluating, _}}] = Run.run(@repo)
+      assert [%{result: {:skipped, _}}] = Run.run(@repo)
+
+      assert length(evaluations(original)) == 1
+    end
+
+    test "a ticket the merge closed is not judged", %{gh: gh, original: original} do
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "closed"})
+
+      assert [%{result: {:skipped, :ticket_closed}}] = Run.run(@repo)
+      assert evaluations(original) == []
+    end
+
+    test "a repository that has not opted in is left as before", %{original: original} do
+      Application.put_env(:control_plane, :settle, revisions: 2)
+
+      assert [%{result: {:skipped, :pull_request_merged}}] = Run.run(@repo)
+      assert evaluations(original) == []
+    end
+
+    test "a pull request closed without merging is still not judged", %{
+      gh: gh,
+      original: original
+    } do
+      pull(gh, %{"state" => "closed", "merged" => false})
+
+      assert [%{result: {:skipped, :pull_request_closed}}] = Run.run(@repo)
+      assert evaluations(original) == []
+    end
+  end
+
   test "a pull request closed without merging is not resumed either", %{gh: gh} do
     pull(gh, %{"state" => "closed", "merged" => false})
 
