@@ -2,6 +2,8 @@ defmodule ControlPlane.EvaluationsTest do
   use ControlPlane.DataCase
   use Oban.Testing, repo: ControlPlane.Repo
 
+  import Ecto.Query
+
   import ControlPlane.Fixtures
 
   alias ControlPlane.Jobs.RunWorkload
@@ -259,6 +261,97 @@ defmodule ControlPlane.EvaluationsTest do
 
     test "the job runs the recheck" do
       assert :ok = perform_job(ControlPlane.Jobs.RecheckOwed, %{})
+    end
+  end
+
+  describe "a pull request that merged after its ticket was settled" do
+    @pull "repos/#{@repo}/pulls/52"
+
+    # A workload that completed and was settled (its pull request was green), as it is
+    # when a person merges the pull request later.
+    defp settled(gh, pull) do
+      {:ok, record} = Workloads.create(workload())
+      {:ok, _} = Events.append(record.id, event(record.id, 1, started()))
+      {:ok, _} = Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", "")))
+
+      Workloads.keep_record(record.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => "https://github.com/#{@repo}/pull/52"}
+      })
+
+      Workloads.settle(record.id)
+      StandInGitHub.respond(gh, @pull, pull)
+      Workloads.get(record.id)
+    end
+
+    defp the_evaluations,
+      do: Enum.filter(Workloads.for_ticket(@repo, 12), &is_map(&1.workload["completeness"]))
+
+    test "is judged once it is seen to have merged", %{gh: gh} do
+      settled(gh, %{"state" => "closed", "merged" => true})
+
+      assert [{:started, _}] = Evaluations.merged()
+      assert length(the_evaluations()) == 1
+    end
+
+    test "is not judged while it is still open", %{gh: gh} do
+      settled(gh, %{"state" => "open", "merged" => false})
+
+      assert Evaluations.merged() == []
+      assert the_evaluations() == []
+    end
+
+    test "is not judged when it was closed without merging", %{gh: gh} do
+      settled(gh, %{"state" => "closed", "merged" => false})
+
+      assert Evaluations.merged() == []
+      assert the_evaluations() == []
+    end
+
+    test "is judged once, however often it is looked at", %{gh: gh} do
+      settled(gh, %{"state" => "closed", "merged" => true})
+
+      assert [{:started, _}] = Evaluations.merged()
+      assert Evaluations.merged() == []
+      assert length(the_evaluations()) == 1
+    end
+
+    test "is not judged for a ticket the merge closed", %{gh: gh} do
+      settled(gh, %{"state" => "closed", "merged" => true})
+      StandInGitHub.respond(gh, @issue, %{"number" => 12, "state" => "closed"})
+
+      assert Evaluations.merged() == [{:skipped, :ticket_closed}]
+      assert the_evaluations() == []
+    end
+
+    test "is not looked at for a repository that has not opted in", %{gh: gh} do
+      settled(gh, %{"state" => "closed", "merged" => true})
+      Application.put_env(:control_plane, :settle, completeness: [], athenaeum_ref: @ref)
+
+      assert Evaluations.merged() == []
+    end
+
+    test "is not looked at once it was settled long ago", %{gh: gh} do
+      old = settled(gh, %{"state" => "closed", "merged" => true})
+
+      ControlPlane.Repo.update_all(
+        from(w in ControlPlane.Workload, where: w.id == ^old.id),
+        set: [updated_at: DateTime.add(DateTime.utc_now(), -30 * 86_400, :second)]
+      )
+
+      assert Evaluations.merged() == []
+    end
+
+    test "a read of the pull request that fails waits, and starts nothing", %{gh: gh} do
+      settled(gh, %{"state" => "closed", "merged" => true})
+      StandInGitHub.fail(gh, @pull, "gh: HTTP 502")
+
+      assert [{:skipped, {:github_error, _}}] = Evaluations.merged()
+      assert the_evaluations() == []
+    end
+
+    test "the job looks for them" do
+      assert :ok = perform_job(ControlPlane.Jobs.EvaluateMerged, %{})
     end
   end
 end

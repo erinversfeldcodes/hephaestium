@@ -14,7 +14,8 @@ config :control_plane, Oban,
      crontab: [
        {"* * * * *", ControlPlane.Jobs.Intake},
        {"* * * * *", ControlPlane.Jobs.SettleTickets},
-       {"7 * * * *", ControlPlane.Jobs.RecheckOwed}
+       {"7 * * * *", ControlPlane.Jobs.RecheckOwed},
+       {"*/10 * * * *", ControlPlane.Jobs.EvaluateMerged}
      ]}
   ]
 
