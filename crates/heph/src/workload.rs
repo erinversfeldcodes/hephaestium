@@ -80,6 +80,8 @@ struct Facts {
     branch: String,
     tip: String,
     issue: Value,
+    /// The open tickets that block the issue.
+    blocked_by: Vec<i64>,
     approver: String,
 }
 
@@ -125,6 +127,8 @@ fn read(repository: &str, number: i64, approver: Option<&str>) -> Result<Facts, 
         )));
     }
 
+    let blocked_by = open_blockers(&base, number, &issue)?;
+
     // Who approved it is given, or is whoever is signed in.
     let approver = if let Some(login) = approver {
         login.to_owned()
@@ -142,8 +146,51 @@ fn read(repository: &str, number: i64, approver: Option<&str>) -> Result<Facts, 
         branch,
         tip,
         issue,
+        blocked_by,
         approver,
     })
+}
+
+/// The numbers of the tickets that block the issue and are still open. GitHub says on
+/// the issue how many block it, so the list is only asked for when there are some; one
+/// that cannot be read is a reason and not a workload that does not know what blocks it.
+fn open_blockers(base: &str, number: i64, issue: &Value) -> Result<Vec<i64>, CouldNotBuild> {
+    if issue["issue_dependencies_summary"]["total_blocked_by"]
+        .as_i64()
+        .unwrap_or(0)
+        == 0
+    {
+        return Ok(Vec::new());
+    }
+    let blockers = found(
+        &format!("{base}/issues/{number}/dependencies/blocked_by"),
+        &format!("GitHub has no list of what blocks #{number}"),
+    )?;
+    Ok(blockers
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|blocker| blocker["state"].as_str() == Some("open"))
+        .filter_map(|blocker| blocker["number"].as_i64())
+        .collect())
+}
+
+/// The number of the ticket this one is a sub-issue of, or zero.
+fn parent_of(issue: &Value) -> i64 {
+    issue["parent_issue_url"]
+        .as_str()
+        .and_then(|url| url.rsplit('/').next())
+        .and_then(|number| number.parse().ok())
+        .unwrap_or(0)
+}
+
+/// A count GitHub gives on the issue, or zero.
+fn count(issue: &Value, summary: &str, key: &str) -> i32 {
+    issue[summary][key]
+        .as_i64()
+        .and_then(|n| i32::try_from(n).ok())
+        .unwrap_or(0)
 }
 
 /// Build the workload for a ticket, with the default branch's tip on GitHub as
@@ -166,6 +213,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         branch,
         tip,
         issue,
+        blocked_by,
         approver,
     } = read(repository, request.ticket, request.approver)?;
 
@@ -190,6 +238,10 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
             title: text(&issue, "title"),
             body: text(&issue, "body"),
             url: text(&issue, "html_url"),
+            parent: parent_of(&issue),
+            sub_issues: count(&issue, "sub_issues_summary", "total"),
+            sub_issues_completed: count(&issue, "sub_issues_summary", "completed"),
+            blocked_by,
         }),
         repository: Some(Repository {
             owner: owner.to_owned(),
