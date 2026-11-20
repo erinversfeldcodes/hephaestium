@@ -123,7 +123,7 @@ defmodule ControlPlane.VerdictsTest do
 
   defp puts(gh), do: for({"PUT", endpoint, _} <- StandInGitHub.writes(gh), do: endpoint)
 
-  defp reviews_of(id, sha \\ @sha) do
+  defp reviews_of(id, sha) do
     Repo.all(
       from(w in Workload,
         where:

@@ -696,10 +696,7 @@ defmodule ControlPlane.SettleTest do
       assert labels(gh) == ["labels[]=heph:failed"]
     end
 
-    test "the last failure lists what each revision's agent said, quoted as data", %{
-      gh: gh,
-      id: id
-    } do
+    test "the last failure lists what each revision's agent said, quoted as data", %{id: id} do
       {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
       {:ok, _} = Events.append(first.id, event(first.id, 1, started()))
 
@@ -816,6 +813,141 @@ defmodule ControlPlane.SettleTest do
       "attempt" => attempt,
       "failures" => [%{"name" => "ci", "result" => "failure", "excerpt" => "x"}]
     })
+  end
+
+  describe "bringing a green pull request up to date with its base" do
+    @behind_branch "heph/12-an-earlier-title-of-the-ticket"
+    @compare "repos/#{@repo}/compare/#{@sha}...main"
+    @files "repos/#{@repo}/pulls/52/files?per_page=100"
+
+    setup %{gh: gh} do
+      previous = Application.get_env(:control_plane, :settle)
+      on_exit(fn -> Application.put_env(:control_plane, :settle, previous) end)
+      Application.put_env(:control_plane, :settle, revisions: 2)
+
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch))
+
+      # Main gained two commits, one of them in a file the pull request also changes.
+      StandInGitHub.respond(gh, @compare, %{
+        "commits" => [
+          %{
+            "sha" => "a1b2c3d4e5f6a7b8",
+            "commit" => %{"message" => "chore: bump the toolchain\n\nlong body"}
+          },
+          %{
+            "sha" => "e4f5a6b7c8d9e0f1",
+            "commit" => %{"message" => "fix: stop the reset spec racing hydration"}
+          }
+        ],
+        "files" => [
+          %{"filename" => "rust-toolchain.toml"},
+          %{"filename" => "e2e/tests/account.spec.ts"}
+        ]
+      })
+
+      StandInGitHub.respond(gh, @files, [
+        %{"filename" => "e2e/tests/account.spec.ts"},
+        %{"filename" => "crates/web/src/reset.rs"}
+      ])
+
+      :ok
+    end
+
+    defp behind_pull(ref, repository \\ @repo, state \\ "behind"),
+      do:
+        pull(%{
+          "mergeable_state" => state,
+          "head" => %{"sha" => @sha, "ref" => ref, "repo" => %{"full_name" => repository}}
+        })
+
+    defp base_revision_of(id),
+      do: Enum.find(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
+
+    test "a green pull request that is behind is revised, with what came in and no failing check",
+         %{gh: gh, id: id} do
+      assert result(id) == {:revising, 1}
+
+      revision = base_revision_of(id)
+      assert revision.state == "queued"
+      assert revision.workload["repository"]["baseCommit"] == @sha
+
+      assert %{
+               "pullRequestNumber" => "52",
+               "branch" => @behind_branch,
+               "attempt" => 1,
+               "failures" => [],
+               "baseMoved" => moved
+             } = revision.workload["revision"]
+
+      assert moved["commits"] == [
+               "e4f5a6b fix: stop the reset spec racing hydration",
+               "a1b2c3d chore: bump the toolchain"
+             ],
+             "newest first, a short id and the subject only"
+
+      assert moved["overlappingFiles"] == ["e2e/tests/account.spec.ts"]
+
+      assert Workloads.get(id).settled_at, "the first workload is handed on"
+      assert labels(gh) == [], "it is not done: the branch is not up to date"
+      assert [comment] = comments(gh)
+      assert comment =~ "base branch has moved"
+      assert comment =~ "revision 1 of 2"
+    end
+
+    test "a pull request that is clean is settled as before", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "clean"))
+
+      assert result(id) == :done
+      assert base_revision_of(id) == nil
+    end
+
+    test "with revisions off a behind pull request is settled as before", %{id: id} do
+      Application.put_env(:control_plane, :settle, revisions: 0)
+
+      assert result(id) == :done
+      assert base_revision_of(id) == nil
+    end
+
+    test "a pull request that is not on a branch of the runtime's is left alone", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, behind_pull("feature/someone-elses"))
+
+      assert result(id) == :done
+      assert base_revision_of(id) == nil
+    end
+
+    test "a pull request from a branch in another repository is left alone", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, "someone/fork"))
+
+      assert result(id) == :done
+      assert base_revision_of(id) == nil
+    end
+
+    test "when GitHub shows nothing came in there is nothing to revise", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @compare, %{"commits" => [], "files" => []})
+
+      assert result(id) == :done
+      assert base_revision_of(id) == nil
+    end
+
+    test "a refused read of what came in waits and starts nothing", %{gh: gh, id: id} do
+      StandInGitHub.fail(gh, @compare, "gh: HTTP 502")
+
+      assert {:waiting, _} = result(id)
+      assert base_revision_of(id) == nil
+      assert comments(gh) == []
+    end
+
+    test "a red check is revised for the check, not for the base", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @runs, runs([run(1, "ci", "completed", "failure")]))
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/1/logs", "FAILED\n")
+
+      assert result(id) == {:revising, 1}
+      assert %{"failures" => [%{"name" => "ci"}]} = base_revision_of(id).workload["revision"]
+      refute Map.has_key?(base_revision_of(id).workload["revision"], "baseMoved")
+    end
   end
 
   describe "merging a pull request that is green" do

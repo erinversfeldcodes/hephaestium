@@ -52,6 +52,7 @@ defmodule ControlPlane.Settle do
     with {:ok, number} <- Workloads.pull_request_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
          {:ok, verdict} <- verdict(workload, pull, number),
+         {:ok, verdict} <- behind(workload, pull, number, verdict),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
          notes = with_left_to_ci(workload, pull, verdict, notes),
@@ -66,11 +67,63 @@ defmodule ControlPlane.Settle do
   defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, {:revise_review, _, _, _}), do: {:revising, attempt(workload) + 1}
+  defp outcome(workload, {:revise_base, _, _, _}), do: {:revising, attempt(workload) + 1}
 
   defp outcome(workload, {:failed, names, extra, :review}),
     do: finish(workload, {:failed, names, extra})
 
   defp outcome(workload, verdict), do: finish(workload, verdict)
+
+  # A pull request whose checks are all green but whose branch is behind its base is
+  # brought up to date by a revision that is told what came in, before it is reviewed,
+  # because the reviews would be of a head that is about to change (ADR 0031). Only a
+  # branch the runtime made, in this repository, and only while revisions are left:
+  # anything else is settled as it always was. A conflict is not handled here: the
+  # executor ends such a run naming the files, and a revision would only spend a run.
+  defp behind(workload, %{"state" => "open", "mergeable_state" => "behind"} = pull, number, :done) do
+    case revisable(workload, {pull, number}) do
+      :yes ->
+        case base_moved(workload, pull, number) do
+          {:ok, %{"commits" => [_ | _]} = moved} -> {:ok, {:revise_base, moved, pull, number}}
+          {:ok, _nothing_came_in} -> {:ok, :done}
+          {:error, reason} -> {:error, reason}
+        end
+
+      _ ->
+        {:ok, :done}
+    end
+  end
+
+  defp behind(_workload, _pull, _number, verdict), do: {:ok, verdict}
+
+  # What the base gained since the pull request's head, newest first and as short as the
+  # agent needs, and which of the files it changed the pull request changes too.
+  @moved_commits 50
+
+  defp base_moved(workload, pull, number) do
+    sha = get_in(pull, ["head", "sha"])
+    base = get_in(pull, ["base", "ref"]) || "main"
+
+    with {:ok, compare} <- GitHub.get("repos/#{workload.repository}/compare/#{sha}...#{base}"),
+         {:ok, mine} <-
+           GitHub.get("repos/#{workload.repository}/pulls/#{number}/files?per_page=100") do
+      commits =
+        (compare["commits"] || [])
+        |> Enum.reverse()
+        |> Enum.take(@moved_commits)
+        |> Enum.map(&commit_line/1)
+
+      theirs = for file <- compare["files"] || [], do: file["filename"]
+      ours = MapSet.new(for file <- List.wrap(mine), do: file["filename"])
+
+      {:ok, %{"commits" => commits, "overlappingFiles" => Enum.filter(theirs, &(&1 in ours))}}
+    end
+  end
+
+  defp commit_line(%{"sha" => sha, "commit" => %{"message" => message}}) do
+    subject = message |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 200)
+    "#{String.slice(sha, 0, 7)} #{subject}"
+  end
 
   # A pull request whose checks are all green is reviewed, for the repositories that
   # opted in, and what the verdicts say decides what becomes of it (ADR 0026). If the
@@ -249,22 +302,34 @@ defmodule ControlPlane.Settle do
     revise(workload, failures, pull, number, &Tickets.revising_for_review/4)
   end
 
+  defp act(workload, {:revise_base, moved, pull, number}, _notes) do
+    tell = fn workload, _names, attempt, max ->
+      Tickets.revising_for_base(workload, length(moved["commits"]), attempt, max)
+    end
+
+    revise(workload, [], pull, number, tell, %{"baseMoved" => moved})
+  end
+
   defp act(workload, verdict, notes), do: write(workload, verdict, notes)
 
-  defp revise(workload, failures, pull, number, tell) do
+  defp revise(workload, failures, pull, number, tell, extra \\ %{}) do
     attempt = attempt(workload) + 1
 
     revision =
       workload.workload
       |> Map.put("id", Ecto.UUID.generate())
       |> put_in(["repository", "baseCommit"], pull["head"]["sha"])
-      |> Map.put("revision", %{
-        "pullRequestNumber" => to_string(number),
-        "pullRequestUrl" => "https://github.com/#{workload.repository}/pull/#{number}",
-        "branch" => pull["head"]["ref"],
-        "attempt" => attempt,
-        "failures" => failures
-      })
+      |> Map.put(
+        "revision",
+        %{
+          "pullRequestNumber" => to_string(number),
+          "pullRequestUrl" => "https://github.com/#{workload.repository}/pull/#{number}",
+          "branch" => pull["head"]["ref"],
+          "attempt" => attempt,
+          "failures" => failures
+        }
+        |> Map.merge(extra)
+      )
 
     case Workloads.hand_on(workload, revision) do
       {:ok, _child} ->

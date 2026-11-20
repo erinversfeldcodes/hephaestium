@@ -178,6 +178,21 @@ defmodule ControlPlane.Tickets do
     )
   end
 
+  @doc """
+  The pull request's checks are green but its branch is behind its base, and a revision
+  has been started to bring the base in: the ticket says how many commits came in, and
+  that the agent will confirm the change still stands on them and push to the same
+  branch. The labels do not change.
+  """
+  @spec revising_for_base(%Workload{}, non_neg_integer(), pos_integer(), pos_integer()) ::
+          :ok | {:error, String.t()}
+  def revising_for_base(workload, commits, attempt, max) do
+    note(
+      workload,
+      "the base branch has moved since the pull request was opened (#{commits} #{if commits == 1, do: "commit", else: "commits"} came in). Starting revision #{attempt} of #{max}: the agent will confirm the change still stands on it and push to the same branch."
+    )
+  end
+
   # What a green, approved pull request claims: that its checks are green and, if reviews
   # were asked for, that they approved it. Neither says the ticket's goal is met, so the
   # comment says it is for a person to judge, and says when no review was asked for.
