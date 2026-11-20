@@ -94,8 +94,7 @@ defmodule ControlPlane.PullRequestComments do
       heading(review, verdict["commit"] || commit(w), "**#{said(verdict["verdict"])}**"),
       summary(findings, blocking),
       Enum.map(findings, &finding_block/1),
-      notes_block(verdict["notes"]),
-      standing()
+      notes_block(verdict["notes"])
     ]
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
@@ -105,8 +104,7 @@ defmodule ControlPlane.PullRequestComments do
   defp review_body(%Workload{state: "completed"} = w, review) do
     [
       heading(review, commit(w), "**left no verdict** that names this commit and this lens"),
-      "That is no approval.",
-      standing()
+      "That is no approval."
     ]
     |> Enum.join("\n\n")
   end
@@ -115,8 +113,7 @@ defmodule ControlPlane.PullRequestComments do
     [
       heading(review, commit(w), "**could not review** (#{state})"),
       if(reason in [nil, ""], do: nil, else: Account.block(reason)),
-      "That is no approval.",
-      standing()
+      "That is no approval."
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
@@ -190,10 +187,6 @@ defmodule ControlPlane.PullRequestComments do
   defp labelled(label, value) when is_binary(value), do: "#{label}: " <> Account.clean(value)
   defp labelled(_label, _value), do: nil
 
-  defp standing do
-    "This is a comment from Hephaestium. It is not a GitHub review, and the repository's approval is for a person."
-  end
-
   # A revision.
 
   defp revision_body(%Workload{} = workload, revision) do
@@ -201,8 +194,7 @@ defmodule ControlPlane.PullRequestComments do
 
     [
       "**Hephaestium, revision #{attempt}:** #{ended_as(workload)}",
-      Account.section(workload.id),
-      standing()
+      Account.section(workload.id)
     ]
     |> Enum.join("\n\n")
   end
