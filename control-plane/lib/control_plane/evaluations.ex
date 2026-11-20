@@ -41,7 +41,8 @@ defmodule ControlPlane.Evaluations do
          :ok <- not_evaluating(repository, number),
          {:ok, skill} <- skill(),
          {:ok, built} <- Intake.build(repository, number, approval(merged)),
-         {:ok, record} <- Workloads.create(with_evaluation(built, skill)),
+         {:ok, record} <-
+           Workloads.create(with_evaluation(built, skill, open_items(repository, number))),
          {:ok, _job} <- Runner.enqueue(record.id) do
       {:started, record.id}
     else
@@ -52,6 +53,67 @@ defmodule ControlPlane.Evaluations do
       other -> {:skipped, {:unexpected, inspect(other)}}
     end
   end
+
+  @doc """
+  Judge again the tickets whose last verdict was owed. A ticket is judged again when its
+  latest evaluation ended with a verdict that something is owed, a day (configurable) has
+  passed since it ended, and it has not been judged more often than the limit allows. What
+  was owed goes into the next evaluation, so it is told which items are open. A ticket that
+  has since closed, or whose latest evaluation is still under way, starts nothing.
+  """
+  @spec recheck(DateTime.t()) :: [result()]
+  def recheck(now \\ DateTime.utc_now()) do
+    (settings()[:completeness] || [])
+    |> Workloads.evaluations()
+    |> Enum.group_by(&{&1.repository, &1.ticket_number})
+    |> Enum.flat_map(fn {_ticket, evaluations} ->
+      latest = List.last(evaluations)
+
+      if owed?(latest) and length(evaluations) < 1 + rechecks() and waited?(latest, now),
+        do: [after_merge(latest)],
+        else: []
+    end)
+  end
+
+  defp owed?(%Workload{state: "completed", record: %{"completeness" => %{"verdict" => "owed"}}}),
+    do: true
+
+  defp owed?(_), do: false
+
+  defp waited?(%Workload{finished_at: %DateTime{} = at}, now),
+    do: DateTime.diff(now, at, :second) >= interval_hours() * 3600
+
+  defp waited?(_, _), do: false
+
+  # What the latest evaluation of the ticket said is owed, as the next one is told it.
+  defp open_items(repository, number) do
+    repository
+    |> Workloads.for_ticket(number)
+    |> Enum.filter(&evaluation?/1)
+    |> List.last()
+    |> items()
+  end
+
+  defp items(%Workload{
+         state: "completed",
+         record: %{"completeness" => %{"verdict" => "owed", "owed" => owed}}
+       })
+       when is_list(owed),
+       do: Enum.map(owed, &item/1)
+
+  defp items(_), do: []
+
+  defp item(owed) do
+    %{
+      "what" => owed["what"],
+      "run" => owed["run"],
+      "when" => owed["when"],
+      "settledBy" => owed["settled_by"]
+    }
+  end
+
+  defp interval_hours, do: settings()[:completeness_interval_hours] || 24
+  defp rechecks, do: settings()[:completeness_rechecks] || 7
 
   defp enabled(repository),
     do: if(enabled?(repository), do: :ok, else: {:skip, :not_enabled})
@@ -102,8 +164,8 @@ defmodule ControlPlane.Evaluations do
   defp approval(%Workload{workload: %{"approval" => approval}}),
     do: %{login: approval["approvedBy"], text: approval["approvedAt"]}
 
-  defp with_evaluation(workload, skill),
-    do: Map.put(workload, "completeness", %{"skillDocument" => skill, "openItems" => []})
+  defp with_evaluation(workload, skill, open_items),
+    do: Map.put(workload, "completeness", %{"skillDocument" => skill, "openItems" => open_items})
 
   defp settings, do: Application.get_env(:control_plane, :settle) || []
 end
