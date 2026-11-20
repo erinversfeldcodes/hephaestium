@@ -100,8 +100,16 @@ fn check_revision(workload: &Workload) -> Result<(), String> {
     if revision.attempt <= 0 {
         return Err("the revision's attempt is not above zero".to_owned());
     }
-    if revision.failures.is_empty() {
-        return Err("the revision names no failing check".to_owned());
+    match revision.base_moved.as_ref() {
+        Some(moved) if moved.commits.iter().all(|c| c.trim().is_empty()) => {
+            return Err(
+                "the revision says the base moved but names no commit that came in".to_owned(),
+            );
+        }
+        None if revision.failures.is_empty() => {
+            return Err("the revision names no failing check".to_owned());
+        }
+        _ => {}
     }
     if revision.failures.iter().any(|f| f.name.trim().is_empty()) {
         return Err("a failing check in the revision has no name".to_owned());
