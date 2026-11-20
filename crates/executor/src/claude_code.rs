@@ -52,6 +52,9 @@ fn prompt(workload: &Workload) -> String {
     if let Some(review) = workload.review.as_ref() {
         return crate::review::prompt(workload, review);
     }
+    if let Some(completeness) = workload.completeness.as_ref() {
+        return crate::completeness::prompt(workload, completeness);
+    }
     let ticket = workload.ticket.clone().unwrap_or_default();
     let mut text = format!(
         "You are working in a clone of the repository, in the current directory, on ticket #{number}: {title}\n\n{body}\n\n",

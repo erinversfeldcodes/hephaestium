@@ -160,6 +160,7 @@ impl<'a, W: Write> Stream<'a, W> {
             executor_version: executor_version.to_owned(),
             configuration_sha256: String::new(),
             review: None,
+            completeness: None,
         })
     }
 }

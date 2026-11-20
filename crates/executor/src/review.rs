@@ -96,9 +96,16 @@ pub fn snapshot(workspace: &Path) -> Result<Snapshot, String> {
 /// Why a review that ran did not change nothing, or `None` when it changed nothing.
 #[must_use]
 pub fn changed_since(before: &Snapshot, after: &Snapshot) -> Option<String> {
+    changed_since_by("review", before, after)
+}
+
+/// Why a read-only run, named `what` in the reason, did not change nothing, or `None`
+/// when it changed nothing.
+#[must_use]
+pub fn changed_since_by(what: &str, before: &Snapshot, after: &Snapshot) -> Option<String> {
     if before.head != after.head {
         return Some(format!(
-            "the review moved HEAD from {} to {}: it made a commit",
+            "the {what} moved HEAD from {} to {}: it made a commit",
             before.head, after.head
         ));
     }
@@ -110,12 +117,12 @@ pub fn changed_since(before: &Snapshot, after: &Snapshot) -> Option<String> {
         .collect();
     if !files.is_empty() {
         return Some(format!(
-            "the review changed the workspace: {}",
+            "the {what} changed the workspace: {}",
             files.join(", ")
         ));
     }
     (before.diff != after.diff)
-        .then(|| "the review changed the workspace: a file it was already changed in".to_owned())
+        .then(|| format!("the {what} changed the workspace: a file it was already changed in"))
 }
 
 /// The verdict the agent left, if it is a verdict that passes the review contract

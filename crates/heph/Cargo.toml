@@ -8,7 +8,7 @@ version.workspace = true
 
 # Nothing yet. Reporting a version needs only the standard library.
 [dependencies]
-athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.19.0", version = "0.0.0" }
+athenaeum = { git = "https://github.com/erinversfeldcodes/athenaeum", tag = "v0.25.0", version = "0.0.0" }
 contracts = { path = "../contracts" }
 globset = "0.4.21"
 jsonschema = { version = "0.61.2", default-features = false }
