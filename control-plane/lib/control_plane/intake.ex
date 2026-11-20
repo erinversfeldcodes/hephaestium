@@ -14,7 +14,7 @@ defmodule ControlPlane.Intake do
   about, is not an approval.
   """
 
-  alias ControlPlane.{GitHub, Programs, Runner, Tickets, Workloads}
+  alias ControlPlane.{Evaluations, GitHub, Programs, Runner, Tickets, Workloads}
 
   @label "heph:ready"
   @writers ~w(admin maintain write)
@@ -31,7 +31,7 @@ defmodule ControlPlane.Intake do
   }
   """
 
-  @type result :: :started | :resumed | {:skipped, term()}
+  @type result :: :started | :resumed | {:evaluating, String.t()} | {:skipped, term()}
 
   @doc "Check every approved ticket of a repository, and start a workload for each that stands."
   @spec run(String.t()) :: [%{ticket: integer(), result: result()}] | {:error, String.t()}
@@ -78,9 +78,12 @@ defmodule ControlPlane.Intake do
 
       workload ->
         with {:ok, pull_number} <- pull_request_number(workload),
-             {:ok, pull} <- fetch(GitHub.get("repos/#{repo}/pulls/#{pull_number}")),
-             :ok <- resumable(repo, pull) do
-          {:ok, {:resume, workload, pull}}
+             {:ok, pull} <- fetch(GitHub.get("repos/#{repo}/pulls/#{pull_number}")) do
+          case resumable(repo, pull) do
+            :ok -> {:ok, {:resume, workload, pull}}
+            :evaluate -> {:ok, {:evaluate, workload}}
+            {:skip, _} = skip -> skip
+          end
         end
     end
   end
@@ -92,7 +95,12 @@ defmodule ControlPlane.Intake do
     end
   end
 
-  defp resumable(_repo, %{"merged" => true}), do: {:skip, :pull_request_merged}
+  # A pull request that merged leaves nothing to resume. For a repository that judges its
+  # merged tickets, a re-approval asks for that judgement instead: whether the ticket the
+  # pull request was for is finished, or what is still owed.
+  defp resumable(repo, %{"merged" => true}),
+    do: if(Evaluations.enabled?(repo), do: :evaluate, else: {:skip, :pull_request_merged})
+
   defp resumable(_repo, %{"state" => "closed"}), do: {:skip, :pull_request_closed}
 
   defp resumable(repo, %{"state" => "open", "head" => head}) do
@@ -125,6 +133,13 @@ defmodule ControlPlane.Intake do
     labels = for %{"name" => name} <- issue["labels"] || [], do: name
     _ = Tickets.resumed(workload, labels, approval.login, pull["html_url"])
     :resumed
+  end
+
+  defp act({:evaluate, workload}, _repo, _issue, _approval) do
+    case Evaluations.after_merge(workload) do
+      {:started, id} -> {:evaluating, id}
+      {:skipped, reason} -> {:skipped, reason}
+    end
   end
 
   # A ticket that an open ticket blocks is not started: the work it waits for is not
