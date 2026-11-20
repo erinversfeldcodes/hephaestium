@@ -515,3 +515,122 @@ fn a_login_or_a_time_that_is_not_one_is_a_usage_error() {
         assert_eq!(stdout(&output), "", "{args:?}");
     }
 }
+
+/// Issue 12 with what GitHub says about its relations added.
+fn issue_with(gh: &Gh, relations: &serde_json::Value) {
+    let mut issue = json!({
+        "number": 12,
+        "title": "Make the reset spec wait for hydration",
+        "body": "The spec clicks Sign in before the page is interactive.",
+        "html_url": "https://github.com/acme/widgets/issues/12",
+        "state": "open"
+    });
+    for (key, value) in relations.as_object().expect("an object") {
+        issue[key] = value.clone();
+    }
+    gh.respond("repos/acme/widgets/issues/12", &issue);
+}
+
+#[test]
+fn a_ticket_with_sub_issues_says_how_many_and_how_many_are_done() {
+    let scratch = Scratch::new("wl-sub-issues");
+    let gh = github("wl-sub-issues-gh");
+    issue_with(
+        &gh,
+        &json!({"sub_issues_summary": {"total": 3, "completed": 1, "percent_completed": 33}}),
+    );
+
+    let output = run(&scratch.0, &gh, &["12", "--repo", REPO]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ticket = workload_of(&output).ticket.expect("a ticket");
+    assert_eq!(ticket.sub_issues, 3);
+    assert_eq!(ticket.sub_issues_completed, 1);
+}
+
+#[test]
+fn a_sub_issue_names_its_parent() {
+    let scratch = Scratch::new("wl-parent");
+    let gh = github("wl-parent-gh");
+    issue_with(
+        &gh,
+        &json!({"parent_issue_url": "https://api.github.com/repos/acme/widgets/issues/7"}),
+    );
+
+    let output = run(&scratch.0, &gh, &["12", "--repo", REPO]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(workload_of(&output).ticket.expect("a ticket").parent, 7);
+}
+
+#[test]
+fn a_ticket_names_the_open_tickets_that_block_it() {
+    let scratch = Scratch::new("wl-blocked");
+    let gh = github("wl-blocked-gh");
+    issue_with(
+        &gh,
+        &json!({"issue_dependencies_summary": {"blocked_by": 1, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0}}),
+    );
+    gh.respond(
+        "repos/acme/widgets/issues/12/dependencies/blocked_by",
+        &json!([
+            {"number": 5, "state": "open"},
+            {"number": 6, "state": "closed"}
+        ]),
+    );
+
+    let output = run(&scratch.0, &gh, &["12", "--repo", REPO]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        workload_of(&output).ticket.expect("a ticket").blocked_by,
+        vec![5],
+        "only the one still open blocks it"
+    );
+}
+
+#[test]
+fn a_ticket_with_no_relations_has_none_and_the_dependencies_are_not_asked_for() {
+    let scratch = Scratch::new("wl-no-relations");
+    let gh = github("wl-no-relations-gh");
+    issue_with(
+        &gh,
+        &json!({
+            "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            "issue_dependencies_summary": {"blocked_by": 0, "blocking": 0, "total_blocked_by": 0, "total_blocking": 0}
+        }),
+    );
+
+    let output = run(&scratch.0, &gh, &["12", "--repo", REPO]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ticket = workload_of(&output).ticket.expect("a ticket");
+    assert_eq!(
+        (ticket.parent, ticket.sub_issues, ticket.blocked_by.len()),
+        (0, 0, 0)
+    );
+    assert!(
+        !gh.calls().contains("dependencies"),
+        "nothing was asked about blockers: {}",
+        gh.calls()
+    );
+}
+
+#[test]
+fn blockers_that_cannot_be_read_are_a_reason_and_not_a_workload_that_does_not_know() {
+    let scratch = Scratch::new("wl-blocked-fails");
+    let gh = github("wl-blocked-fails-gh");
+    issue_with(
+        &gh,
+        &json!({"issue_dependencies_summary": {"blocked_by": 1, "blocking": 0, "total_blocked_by": 1, "total_blocking": 0}}),
+    );
+    gh.fail(
+        "repos/acme/widgets/issues/12/dependencies/blocked_by",
+        "gh: HTTP 502 Bad Gateway",
+    );
+
+    let output = run(&scratch.0, &gh, &["12", "--repo", REPO]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+}
