@@ -108,10 +108,12 @@ defmodule ControlPlane.Intake do
     number = issue["number"]
 
     with {:ok, workload} <- build(repo, number, approval),
+         :ok <- unblocked(workload),
          {:ok, record} <- create(workload),
          {:ok, _job} <- Runner.enqueue(record.id) do
       :started
     else
+      {:blocked, numbers} -> {:skipped, {:blocked_by, numbers}}
       {:github_error, message} -> {:skipped, {:github_error, message}}
       {:could_not_build, message} -> {:skipped, {:could_not_build, message}}
       other -> {:skipped, {:unexpected, inspect(other)}}
@@ -124,6 +126,20 @@ defmodule ControlPlane.Intake do
     _ = Tickets.resumed(workload, labels, approval.login, pull["html_url"])
     :resumed
   end
+
+  # A ticket that an open ticket blocks is not started: the work it waits for is not
+  # there yet, and a run now would build on ground that is about to change. The ticket
+  # stays approved, so it starts on a later pass once nothing open blocks it. The workload
+  # carries the numbers as protobuf's JSON gives them, which is strings.
+  defp unblocked(workload) do
+    case get_in(workload, ["ticket", "blockedBy"]) do
+      [_ | _] = blockers -> {:blocked, Enum.map(blockers, &blocker_number/1)}
+      _ -> :ok
+    end
+  end
+
+  defp blocker_number(number) when is_integer(number), do: number
+  defp blocker_number(number) when is_binary(number), do: String.to_integer(number)
 
   defp fetch({:ok, value}), do: {:ok, value}
   defp fetch({:error, message}), do: {:github_error, message}
