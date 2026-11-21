@@ -7,6 +7,7 @@ pub mod claude_code;
 pub mod cli;
 pub mod completeness;
 pub mod deliver;
+pub mod gap;
 pub mod review;
 pub mod run;
 pub mod secrets;

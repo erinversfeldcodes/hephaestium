@@ -161,6 +161,7 @@ impl<'a, W: Write> Stream<'a, W> {
             configuration_sha256: String::new(),
             review: None,
             completeness: None,
+            gap: None,
         })
     }
 }

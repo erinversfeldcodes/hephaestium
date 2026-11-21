@@ -28,11 +28,20 @@ fn as_args(arguments: &[String]) -> Vec<&str> {
 
 /// What the agent said it saw, for a workload that is an evaluation or is not.
 fn seen(name: &str, evaluation: bool, environment: &[(&str, &str)]) -> String {
+    seen_as(
+        name,
+        evaluation.then(|| ("completeness", json!({ "skillDocument": "the skill" }))),
+        environment,
+    )
+}
+
+/// What the agent said it saw, for a workload of one kind or none.
+fn seen_as(name: &str, kind: Option<(&str, Value)>, environment: &[(&str, &str)]) -> String {
     let scratch = Scratch::new(name);
     let (_, commit) = source(&scratch, &manifest(&[]));
     let mut value: Value = workload(&commit);
-    if evaluation {
-        value["completeness"] = json!({ "skillDocument": "the skill" });
+    if let Some((key, content)) = kind {
+        value[key] = content;
     }
     let arguments = arguments();
 
@@ -120,4 +129,18 @@ fn the_read_token_can_be_kept_in_a_file_and_is_still_only_the_evaluations() {
         })
         .expect("the agent said something");
     assert_eq!(said, "token-from-a-file|none|none");
+}
+
+#[test]
+fn a_gap_step_reads_the_thread_so_it_is_given_the_read_token_as_well() {
+    let said = seen_as(
+        "token-gap",
+        Some((
+            "gap",
+            json!({ "skillDocument": "the skill", "because": "x" }),
+        )),
+        &[("HEPH_GITHUB_READ_TOKEN", "read-only-token")],
+    );
+
+    assert_eq!(said, "read-only-token|none|none");
 }

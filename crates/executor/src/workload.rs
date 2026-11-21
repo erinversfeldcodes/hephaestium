@@ -51,6 +51,7 @@ fn check_values(workload: &Workload) -> Result<(), String> {
     check_limits(workload)?;
     check_revision(workload)?;
     check_completeness(workload)?;
+    check_gap(workload)?;
     check_review(workload)?;
 
     if !repository.manifest_path.is_empty()
@@ -132,6 +133,27 @@ fn check_completeness(workload: &Workload) -> Result<(), String> {
     }
     if completeness.skill_document.trim().is_empty() {
         return Err("the completeness evaluation carries no skill to follow".to_owned());
+    }
+    Ok(())
+}
+
+/// What a step of the questioning is told. It is never also another kind of workload: each
+/// ends a different way, and a step changes nothing.
+fn check_gap(workload: &Workload) -> Result<(), String> {
+    let Some(gap) = workload.gap.as_ref() else {
+        return Ok(());
+    };
+    for (present, kind) in [
+        (workload.revision.is_some(), "a revision"),
+        (workload.review.is_some(), "a review"),
+        (workload.completeness.is_some(), "a completeness evaluation"),
+    ] {
+        if present {
+            return Err(format!("the workload is both {kind} and a gap step"));
+        }
+    }
+    if gap.skill_document.trim().is_empty() {
+        return Err("the gap step carries no skill to follow".to_owned());
     }
     Ok(())
 }

@@ -278,6 +278,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         revision: None,
         review: None,
         completeness: None,
+        gap: None,
     };
     Ok(Built { workload, warnings })
 }
