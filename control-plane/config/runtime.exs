@@ -13,10 +13,27 @@ case System.get_env("HEPH_PG_SOCKET_DIR") do
   dir -> config :control_plane, ControlPlane.Repo, socket_dir: dir
 end
 
+# How long a run that did not complete keeps its checkout, in whole hours.
+keep_hours =
+  case System.get_env("HEPH_WORKSPACE_KEEP_HOURS") do
+    value when value in [nil, ""] ->
+      nil
+
+    value ->
+      case Integer.parse(value) do
+        {hours, ""} when hours >= 0 ->
+          hours
+
+        _ ->
+          raise "HEPH_WORKSPACE_KEEP_HOURS must be a whole number of hours, not #{inspect(value)}"
+      end
+  end
+
 runner =
   [
     executor: System.get_env("HEPH_EXECUTOR"),
-    runs_dir: System.get_env("HEPH_RUNS_DIR")
+    runs_dir: System.get_env("HEPH_RUNS_DIR"),
+    workspace_keep_hours: keep_hours
   ]
   |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
 

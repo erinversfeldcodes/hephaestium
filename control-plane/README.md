@@ -177,7 +177,9 @@ mix test
 
 The executor that is run is `HEPH_EXECUTOR` (the one called `executor` on the path
 if it is not set), and each run keeps its files, as `heph run` does, under
-`HEPH_RUNS_DIR`.
+`HEPH_RUNS_DIR`. A run's checkout (`work/`) is deleted when the run completes, and a run that did
+not complete keeps its checkout for `HEPH_WORKSPACE_KEEP_HOURS` hours (72 if it is not set) and
+is swept hourly after that; the workload, events, log and record of every run are kept.
 
 Intake takes in the tickets of the repositories in `HEPH_REPOSITORIES` (a comma
 separated list of `owner/name`; none if it is not set). It reads GitHub with `gh`

@@ -92,4 +92,43 @@ defmodule ControlPlane.RuntimeConfigTest do
       assert review_app([{"HEPH_REVIEW_APP_ID", "5862313"}]) == [app_id: "5862313"]
     end
   end
+
+  describe "how long a run that did not complete keeps its checkout" do
+    defp keep_hours(value) do
+      previous = System.get_env("HEPH_WORKSPACE_KEEP_HOURS")
+
+      try do
+        if value,
+          do: System.put_env("HEPH_WORKSPACE_KEEP_HOURS", value),
+          else: System.delete_env("HEPH_WORKSPACE_KEEP_HOURS")
+
+        config = Config.Reader.read!(@runtime, env: :test, target: :host)
+
+        get_in(config, [:control_plane, :runner])
+        |> List.wrap()
+        |> Keyword.get(:workspace_keep_hours)
+      after
+        if previous,
+          do: System.put_env("HEPH_WORKSPACE_KEEP_HOURS", previous),
+          else: System.delete_env("HEPH_WORKSPACE_KEEP_HOURS")
+      end
+    end
+
+    test "is the whole number of hours that is set" do
+      assert keep_hours("6") == 6
+      assert keep_hours("0") == 0
+    end
+
+    test "is not set when nothing is" do
+      assert keep_hours(nil) == nil
+      assert keep_hours("") == nil
+    end
+
+    test "a value that is not a whole number of hours stops the start, naming the setting" do
+      for bad <- ["soon", "-1", "1.5", "3h"] do
+        error = assert_raise RuntimeError, fn -> keep_hours(bad) end
+        assert error.message =~ "HEPH_WORKSPACE_KEEP_HOURS"
+      end
+    end
+  end
 end
