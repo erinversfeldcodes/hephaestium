@@ -279,6 +279,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         review: None,
         completeness: None,
         gap: None,
+        judged_after_merge: false,
     };
     Ok(Built { workload, warnings })
 }

@@ -208,7 +208,9 @@ a setting that stays off until it is named, so a repository chooses how far it g
 - **Settling.** A ticket is done only when every check on its pull request is green. A pull
   request closes its ticket only when the agent says it resolves all of it
   ([ADR 0029](./docs/adr/0029-a-pull-request-closes-its-ticket-only-when-the-agent-says-it-resolves-it.md)),
-  and never closes an epic, which is a ticket with sub-issues.
+  and never closes an epic, which is a ticket with sub-issues. Where tickets are judged after
+  their pull request merges (`HEPH_COMPLETENESS`), the pull request only refers to its ticket, so
+  that the judgement, and not the agent's claim, decides whether it is closed.
 - **Revisions.** A pull request whose checks really fail, whose review blocks it, or whose
   branch has fallen behind its base is revised by the agent on the same branch, a bounded
   number of times

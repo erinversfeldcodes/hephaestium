@@ -465,7 +465,19 @@ fn body(workload: &Workload, description: &Description<'_>, number: i64) -> Stri
             "This ticket is an epic, so a pull request does not close it: a person judges it complete.\n\n",
         );
     }
-    let keyword = if complete && !epic { "Closes" } else { "Refs" };
+    // Where the ticket is judged after the merge, the merge must not close it: a closed ticket is
+    // not judged, so the agent's own claim would stand in place of the evidence.
+    let judged = workload.judged_after_merge;
+    if judged && complete && !epic {
+        text.push_str(
+            "The agent says this resolves the whole ticket. The ticket is judged once this merges, against what is on the default branch, and is closed then if the evidence decides.\n\n",
+        );
+    }
+    let keyword = if complete && !epic && !judged {
+        "Closes"
+    } else {
+        "Refs"
+    };
     let _ = write!(
         text,
         "Approved by {} at {when}.\n\n{keyword} #{number}\n",

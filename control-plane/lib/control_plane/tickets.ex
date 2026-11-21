@@ -202,7 +202,7 @@ defmodule ControlPlane.Tickets do
       remove_label(workload, @running),
       note(
         workload,
-        ready_text(notes) <> merged(merge) <> if(notes, do: "\n\n" <> notes, else: "")
+        ready_text(workload, notes) <> merged(merge) <> if(notes, do: "\n\n" <> notes, else: "")
       )
     ])
   end
@@ -307,9 +307,10 @@ defmodule ControlPlane.Tickets do
   end
 
   # What a green, approved pull request claims: that its checks are green and, if reviews
-  # were asked for, that they approved it. Neither says the ticket's goal is met, so the
-  # comment says it is for a person to judge, and says when no review was asked for.
-  defp ready_text(notes) do
+  # were asked for, that they approved it. Neither says the ticket's goal is met. Where the
+  # ticket is judged after the merge, the comment says it will be; elsewhere it says the goal
+  # is for a person to judge, and says when no review was asked for.
+  defp ready_text(workload, notes) do
     # A review approved it only if the notes carry a verdict line for a lens. The header
     # alone is also written when nothing ran, with only what no lens looked at.
     reviewed? = is_binary(notes) and Regex.match?(~r/^- [a-z0-9][a-z0-9-]*: /m, notes)
@@ -318,9 +319,16 @@ defmodule ControlPlane.Tickets do
       reviewed?,
       do: "the pull request's checks are green and its reviews approved it.",
       else: "the pull request's checks are green. No review was asked for."
-    ) <>
-      " Hephaestium has not judged whether the ticket's goal is met: that is for a person, against the ticket."
+    ) <> goal_sentence(Evaluations.enabled?(workload.repository))
   end
+
+  defp goal_sentence(true),
+    do:
+      " Hephaestium judges whether the ticket's goal is met once it merges, against what is on the default branch, and comments with its verdict."
+
+  defp goal_sentence(false),
+    do:
+      " Hephaestium has not judged whether the ticket's goal is met: that is for a person, against the ticket."
 
   defp merged(nil), do: ""
   defp merged(:merged), do: " Hephaestium merged it."

@@ -40,6 +40,11 @@ message Workload {
   // changes nothing. A workload is never a gap step and a revision, a review or a
   // completeness evaluation.
   Gap gap = 11;
+  // Set when the ticket is judged after its pull request merges, and closed then if the
+  // evidence decides. Its pull request then only refers to the ticket, so that the judgement
+  // is of an open ticket and the agent's claim that it resolved the ticket does not stand in
+  // place of it.
+  bool judged_after_merge = 12;
 }
 
 // The ticket, as a maintainer approved it. The executor builds the agent's

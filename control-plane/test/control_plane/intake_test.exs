@@ -302,6 +302,28 @@ defmodule ControlPlane.IntakeTest do
     end
   end
 
+  test "a ticket that is judged after its pull request merges is built so that the merge does not close it" do
+    settle = Application.get_env(:control_plane, :settle)
+    on_exit(fn -> Application.put_env(:control_plane, :settle, settle) end)
+    Application.put_env(:control_plane, :settle, completeness: [@repo])
+
+    assert :ok = perform_job(Intake, %{})
+
+    assert [workload] = Repo.all(ControlPlane.Workload)
+    assert workload.workload["judgedAfterMerge"] == true
+  end
+
+  test "a ticket that is not judged afterwards is built as it was, so a merge may close it" do
+    settle = Application.get_env(:control_plane, :settle)
+    on_exit(fn -> Application.put_env(:control_plane, :settle, settle) end)
+    Application.put_env(:control_plane, :settle, completeness: [])
+
+    assert :ok = perform_job(Intake, %{})
+
+    assert [workload] = Repo.all(ControlPlane.Workload)
+    refute Map.has_key?(workload.workload, "judgedAfterMerge")
+  end
+
   test "the job runs intake for each configured repository" do
     assert :ok = perform_job(Intake, %{})
 

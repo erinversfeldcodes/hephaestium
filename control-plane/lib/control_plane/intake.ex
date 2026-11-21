@@ -117,7 +117,7 @@ defmodule ControlPlane.Intake do
 
     with {:ok, workload} <- build(repo, number, approval),
          :ok <- unblocked(workload),
-         {:ok, record} <- create(workload),
+         {:ok, record} <- create(judged_afterwards(workload, repo)),
          {:ok, _job} <- Runner.enqueue(record.id) do
       :started
     else
@@ -347,6 +347,13 @@ defmodule ControlPlane.Intake do
     else
       _ -> {:could_not_build, "heph did not build a workload for ticket #{number}"}
     end
+  end
+
+  # Where the ticket is judged after its pull request merges, the pull request must only refer
+  # to it: a merge that closes the ticket ends it before the judgement, which only judges open
+  # tickets, so the agent's claim would stand in place of the evidence.
+  defp judged_afterwards(workload, repo) do
+    if Evaluations.enabled?(repo), do: Map.put(workload, "judgedAfterMerge", true), else: workload
   end
 
   defp create(workload) do
