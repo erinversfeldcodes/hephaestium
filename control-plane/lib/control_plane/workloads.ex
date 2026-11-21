@@ -124,7 +124,7 @@ defmodule ControlPlane.Workloads do
         where:
           w.repository in ^repositories and
             fragment("?->'completeness' IS NOT NULL", w.workload),
-        order_by: w.inserted_at
+        order_by: [w.inserted_at, w.started_at]
     )
   end
 
@@ -134,7 +134,7 @@ defmodule ControlPlane.Workloads do
     Repo.all(
       from w in Workload,
         where: w.repository in ^repositories and fragment("?->'gap' IS NOT NULL", w.workload),
-        order_by: w.inserted_at
+        order_by: [w.inserted_at, w.started_at]
     )
   end
 

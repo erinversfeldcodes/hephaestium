@@ -335,8 +335,10 @@ defmodule ControlPlane.GapsTest do
       judged("not_met")
 
       assert [{:started, id}] = Gaps.unquestioned()
-      {:ok, _} = Events.append(id, event(id, 1, started()))
-      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      # It ended after everything before it, as a step that was started later does.
+      later = ~U[2026-11-22 00:00:00Z]
+      {:ok, _} = Events.append(id, event(id, 1, started(), later))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", ""), later))
       Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
 
       assert Gaps.unquestioned() == []
@@ -448,8 +450,10 @@ defmodule ControlPlane.GapsTest do
       StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
 
       assert [{:started, id}] = Gaps.reopened()
-      {:ok, _} = Events.append(id, event(id, 1, started()))
-      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      # It ended after everything before it, as a step that was started later does.
+      later = ~U[2026-11-22 00:00:00Z]
+      {:ok, _} = Events.append(id, event(id, 1, started(), later))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", ""), later))
       Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
 
       assert Gaps.reopened() == []
@@ -543,8 +547,10 @@ defmodule ControlPlane.GapsTest do
       StandInGitHub.respond(gh, @comments, [comment_at("2026-11-20T11:00:00Z", "The button.")])
 
       assert [{:started, id}] = Gaps.replies()
-      {:ok, _} = Events.append(id, event(id, 1, started()))
-      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      # It ended after everything before it, as a step that was started later does.
+      later = ~U[2026-11-22 00:00:00Z]
+      {:ok, _} = Events.append(id, event(id, 1, started(), later))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", ""), later))
       Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
 
       assert Gaps.replies() == []
