@@ -97,6 +97,33 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc """
+  The settled workloads, in any repository, that opened a pull request, settled since the
+  given time, the latest for each ticket.
+  """
+  @spec settled_pull_requests(DateTime.t()) :: [%Workload{}]
+  def settled_pull_requests(since) do
+    repositories =
+      Repo.all(
+        from w in Workload,
+          where: not is_nil(w.settled_at) and w.updated_at >= ^since,
+          distinct: true,
+          select: w.repository
+      )
+
+    settled_with_pull_request(repositories, since)
+  end
+
+  @doc "Make a settled workload awaiting settlement again, so it is looked at on the next pass."
+  @spec unsettle(String.t()) :: :ok
+  def unsettle(id) do
+    Repo.update_all(from(w in Workload, where: w.id == ^id),
+      set: [settled_at: nil, updated_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
+
+  @doc """
   The settled workloads of these repositories that opened a pull request, settled since the
   given time, the latest for each ticket. A pull request that is merged after its ticket was
   settled is only seen by looking at these again.
