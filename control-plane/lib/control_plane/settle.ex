@@ -24,7 +24,16 @@ defmodule ControlPlane.Settle do
 
   require Logger
 
-  alias ControlPlane.{Account, Evaluations, Finding, GitHub, Reviews, Tickets, Workloads}
+  alias ControlPlane.{
+    Account,
+    Evaluations,
+    Finding,
+    GitHub,
+    ReviewApproval,
+    Reviews,
+    Tickets,
+    Workloads
+  }
 
   @good ["success", "skipped", "neutral"]
 
@@ -215,8 +224,20 @@ defmodule ControlPlane.Settle do
 
   defp reviews(_workload, _pull, _number, verdict), do: {:ok, verdict, nil}
 
-  defp reviewed(_workload, _pull, _number, {:approved, lines}),
-    do: {:ok, :done, "Reviews:\n" <> Enum.join(lines, "\n")}
+  # Every lens that blocks approved this commit. Where a review App is configured the
+  # pull request is approved on GitHub too, so GitHub's own rule is met, and this pass
+  # waits: the pull request it read says it is blocked until the approval is counted, and
+  # the next pass reads it again before anything is merged.
+  defp reviewed(workload, pull, number, {:approved, lines}) do
+    notes = "Reviews:\n" <> Enum.join(lines, "\n")
+
+    case ReviewApproval.ensure(workload.repository, number, get_in(pull, ["head", "sha"]), lines) do
+      :disabled -> {:ok, :done, notes}
+      :approved -> {:ok, :done, notes}
+      :submitted -> {:waiting, "approved on GitHub by the review App; waiting for it to count"}
+      {:error, message} -> {:waiting, "could not approve on GitHub: #{message}"}
+    end
+  end
 
   defp reviewed(_workload, _pull, _number, {:pending, lenses}),
     do: {:waiting, "waiting for reviews: #{Enum.join(lenses, ", ")}"}

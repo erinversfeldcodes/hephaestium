@@ -97,7 +97,20 @@ defmodule ControlPlane.Reviews do
           finding["blocking"] == true,
           do: %{lens: pack, finding: finding}
 
-    blocked = for {pack, {:blocking, {:could_not, why}}} <- all, do: {pack, why}
+    # A lens that blocks and did not say `approved` is no approval, whether or not it
+    # named a finding that blocks: a verdict of `failed`, or `needs_revision` with only
+    # findings that do not block, is not a yes.
+    blocked =
+      for(
+        {pack, {:blocking, {:could_not, why}}} <- all,
+        do: {pack, why}
+      ) ++
+        for(
+          {pack, {:blocking, {:said, verdict}}} <- all,
+          verdict["verdict"] != "approved",
+          do: {pack, "its verdict was #{verdict["verdict"]} and it named no finding that blocks"}
+        )
+
     pending = for {pack, {_, :pending}} <- all, do: pack
 
     cond do

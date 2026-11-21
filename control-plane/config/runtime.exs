@@ -50,6 +50,17 @@ integer = fn name ->
   end
 end
 
+# The review App that approves a pull request on GitHub: its id and the file that holds
+# its private key. Both are needed; with either missing nothing is approved. The key is
+# never read here, only where it is.
+review_app =
+  for {name, key} <- [{"HEPH_REVIEW_APP_ID", :app_id}, {"HEPH_REVIEW_APP_KEY_FILE", :key_file}],
+      value = System.get_env(name, "") |> String.trim(),
+      value != "",
+      do: {key, if(key == :key_file, do: Path.expand(value), else: value)}
+
+if review_app != [], do: config(:control_plane, :review_app, review_app)
+
 settle =
   for({"HEPH_RERUNS", count} <- integer.("HEPH_RERUNS"), do: {:reruns, count}) ++
     for({"HEPH_REVISIONS", count} <- integer.("HEPH_REVISIONS"), do: {:revisions, count}) ++
