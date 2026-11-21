@@ -62,8 +62,10 @@ fn environment_for(
 /// It holds only the environment variables its plan names, and only those the
 /// executor has. The workload's timeout bounds it. The budget is what it reports
 /// spending in the budget's own unit, never converted from another: once it is
-/// passed the agent is stopped. A heartbeat is written every `heartbeat` while
-/// it runs.
+/// passed the agent is stopped. `spent` is what the workload has spent so far, in
+/// that unit, and is added to as this agent reports: a run that asks an agent twice
+/// spends from one budget, not from two. A heartbeat is written every `heartbeat`
+/// while it runs.
 ///
 /// # Errors
 ///
@@ -79,6 +81,7 @@ pub fn run<W: Write>(
     workspace: &Path,
     heartbeat: Duration,
     secrets: &Secrets,
+    spent: &Cell<f64>,
     stream_out: &mut Stream<'_, W>,
 ) -> Result<End, Refused> {
     if let Err(error) = adapter.prepare(workload, workspace) {
@@ -99,7 +102,6 @@ pub fn run<W: Write>(
 
     let out = RefCell::new(stream_out);
     let line_number = Cell::new(0_usize);
-    let spent = Cell::new(0.0_f64);
     let stopped_because: RefCell<Option<String>> = RefCell::new(None);
     let write_failed: RefCell<Option<std::io::Error>> = RefCell::new(None);
 

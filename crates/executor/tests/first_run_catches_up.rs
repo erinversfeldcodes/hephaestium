@@ -1,8 +1,8 @@
 //! A first run can take minutes, and the base branch can move in that time. Before
 //! its pull request is opened the work is carried onto the base branch's current
 //! tip, so the pull request is not opened against ground that has changed. What the
-//! base gained is not the agent's change, and a change that touches what the base
-//! also touched is not carried over mechanically.
+//! base gained is not the agent's change. A change that touches what the base also
+//! touched is not carried over mechanically: the agent resolves it, as the conflict tests show.
 
 mod common;
 
@@ -80,33 +80,6 @@ fn a_base_that_has_not_moved_leaves_the_work_where_it_began() {
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     assert_eq!(git(&source, &["rev-parse", &format!("{BRANCH}^")]), base);
-}
-
-#[test]
-fn a_change_to_what_the_base_also_changed_fails_the_run_and_pushes_nothing() {
-    let rig = rig("catch-up-overlap", &manifest(&[]));
-    let base = rig.commit.clone();
-    // The agent writes web/changed.txt, and so does the other change.
-    let script = agent_script(&main_moves_during_the_run(
-        &rig,
-        "web/changed.txt",
-        "something else\\n",
-    ));
-
-    let (ran, source) = run_first(rig, &workload(&base), &script);
-
-    assert_eq!(ran.code(), 0, "{}", ran.stderr());
-    let (outcome, reason) = finished(&ran.events());
-    assert_eq!(outcome, Outcome::Failed);
-    assert!(
-        reason.contains("web/changed.txt"),
-        "the reason names the file both changed: {reason}"
-    );
-    assert_eq!(
-        git(&source, &["branch", "--list", BRANCH]),
-        "",
-        "nothing was pushed"
-    );
 }
 
 #[test]
