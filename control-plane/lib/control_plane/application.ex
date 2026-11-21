@@ -17,7 +17,10 @@ defmodule ControlPlane.Application do
     with {:ok, supervisor} <-
            Supervisor.start_link(children, strategy: :one_for_one, name: ControlPlane.Supervisor) do
       if recover_on_start?(Application.get_env(:control_plane, :recover_on_start)) do
-        Task.start(fn -> ControlPlane.Recovery.run(started_at) end)
+        Task.start(fn ->
+          ControlPlane.Recovery.run(started_at)
+          ControlPlane.Recovery.end_stale_jobs(started_at)
+        end)
       end
 
       {:ok, supervisor}
