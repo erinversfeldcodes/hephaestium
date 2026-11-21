@@ -153,6 +153,94 @@ defmodule ControlPlane.Evaluations do
   end
 
   @doc """
+  Judge the epics whose sub-issues are all closed. An epic is complete across its parts, which
+  no single pull request shows, so it is judged when its last sub-issue closes, however that
+  happened, and again if one closes after the last judgement. The judgement is of a ticket a
+  maintainer approved only through the work beneath it, so it is built for the approval of the
+  latest sub-issue Hephaestium worked. A person is the one to judge it complete.
+  """
+  @spec epics() :: [result()]
+  def epics, do: Enum.flat_map(settings()[:completeness] || [], &epics_of/1)
+
+  defp epics_of(repository) do
+    case GitHub.get("repos/#{repository}/issues?state=open&per_page=100") do
+      {:ok, issues} when is_list(issues) ->
+        issues
+        |> Enum.filter(&finished_epic?/1)
+        |> Enum.flat_map(&roll_up(repository, &1["number"]))
+
+      {:ok, _} ->
+        []
+
+      {:error, message} ->
+        [{:skipped, {:github_error, message}}]
+    end
+  end
+
+  # A pull request is an issue to the API, and has no sub-issues of its own.
+  defp finished_epic?(%{"pull_request" => _}), do: false
+
+  defp finished_epic?(%{"sub_issues_summary" => %{"total" => total, "completed" => done}})
+       when is_integer(total) and total > 0,
+       do: done == total
+
+  defp finished_epic?(_), do: false
+
+  defp roll_up(repository, number) do
+    with {:ok, children} when is_list(children) <-
+           GitHub.get("repos/#{repository}/issues/#{number}/sub_issues"),
+         {:ok, approval} <- child_approval(repository, children),
+         :ok <- not_judged_since_last_closed(repository, number, children) do
+      [start(%Workload{repository: repository, ticket_number: number}, approval, "")]
+    else
+      {:ok, _} -> []
+      {:error, message} -> [{:skipped, {:github_error, message}}]
+      {:skip, :judged} -> []
+      {:skip, reason} -> [{:skipped, reason}]
+    end
+  end
+
+  defp child_approval(repository, children) do
+    children
+    |> Enum.flat_map(&Workloads.for_ticket(repository, &1["number"]))
+    |> Enum.filter(&match?(%{"approval" => %{"approvedBy" => _}}, &1.workload))
+    |> List.last()
+    |> case do
+      nil ->
+        {:skip, :no_approval}
+
+      %Workload{workload: %{"approval" => approval}} ->
+        {:ok, %{login: approval["approvedBy"], text: approval["approvedAt"]}}
+    end
+  end
+
+  # What closed last decides whether an earlier judgement still stands.
+  defp not_judged_since_last_closed(repository, number, children) do
+    closed =
+      children
+      |> Enum.map(& &1["closed_at"])
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&DateTime.from_iso8601/1)
+      |> Enum.flat_map(fn
+        {:ok, at, _} -> [at]
+        _ -> []
+      end)
+      |> Enum.max(DateTime, fn -> nil end)
+
+    judged =
+      repository
+      |> Workloads.for_ticket(number)
+      |> Enum.filter(&evaluation?/1)
+      |> Enum.map(&DateTime.from_naive!(&1.inserted_at, "Etc/UTC"))
+
+    cond do
+      closed == nil -> {:skip, :no_closure_seen}
+      Enum.any?(judged, &(DateTime.compare(&1, closed) != :lt)) -> {:skip, :judged}
+      true -> :ok
+    end
+  end
+
+  @doc """
   Judge again the tickets whose last verdict was owed. A ticket is judged again when its
   latest evaluation ended with a verdict that something is owed, a day (configurable) has
   passed since it ended, and it has not been judged more often than the limit allows. What
