@@ -59,8 +59,14 @@ defmodule ControlPlane.Tickets do
     do: first_error([end_ticket(workload), PullRequestComments.revision(workload)])
 
   defp evaluated(%Workload{state: "completed", record: %{"completeness" => verdict}} = workload)
-       when is_map(verdict),
-       do: post(workload, CompletenessComment.render(verdict))
+       when is_map(verdict) do
+    closing = Evaluations.closing?(workload.repository) and Evaluations.closes?(verdict)
+
+    # The reason is on the ticket before it is closed, so a closure is never without one.
+    with :ok <- post(workload, CompletenessComment.render(verdict, closing)) do
+      if closing, do: close(workload), else: :ok
+    end
+  end
 
   defp evaluated(%Workload{state: "completed"} = workload),
     do:
@@ -80,6 +86,9 @@ defmodule ControlPlane.Tickets do
       _ -> announce_failed(workload)
     end
   end
+
+  defp close(workload),
+    do: write("PATCH", issue(workload), ["state=closed", "state_reason=completed"])
 
   defp announce_failed(%Workload{} = workload) do
     why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason
