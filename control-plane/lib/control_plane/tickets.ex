@@ -16,6 +16,7 @@ defmodule ControlPlane.Tickets do
     Account,
     CompletenessComment,
     Evaluations,
+    Gaps,
     GitHub,
     PullRequestComments,
     Workload
@@ -34,6 +35,7 @@ defmodule ControlPlane.Tickets do
   def started(%Workload{workload: %{"revision" => _}}), do: :ok
   def started(%Workload{workload: %{"review" => _}}), do: :ok
   def started(%Workload{workload: %{"completeness" => _}}), do: :ok
+  def started(%Workload{workload: %{"gap" => _}}), do: :ok
 
   def started(workload) do
     first_error([
@@ -54,6 +56,10 @@ defmodule ControlPlane.Tickets do
   # comment on the ticket, and a person or a later decision acts on it.
   def ended(%Workload{workload: %{"completeness" => _}} = workload), do: evaluated(workload)
 
+  # A step of the questioning says what it found as a comment, and changes no label: a
+  # person's reply, and a person's approval of any ticket it proposed, are what act.
+  def ended(%Workload{workload: %{"gap" => _}} = workload), do: stepped(workload)
+
   # A revision's account is on the pull request as well as the ticket.
   def ended(%Workload{} = workload),
     do: first_error([end_ticket(workload), PullRequestComments.revision(workload)])
@@ -65,8 +71,11 @@ defmodule ControlPlane.Tickets do
         Evaluations.closes?(verdict)
 
     # The reason is on the ticket before it is closed, so a closure is never without one.
-    with :ok <- post(workload, CompletenessComment.render(verdict, closing)) do
-      if closing, do: close(workload), else: :ok
+    with :ok <- post(workload, CompletenessComment.render(verdict, closing)),
+         :ok <- if(closing, do: close(workload), else: :ok) do
+      # What the verdict found missing is asked about, when the goal is not met.
+      Gaps.after_verdict(workload, verdict)
+      :ok
     end
   end
 
@@ -98,6 +107,42 @@ defmodule ControlPlane.Tickets do
 
   defp close(workload),
     do: write("PATCH", issue(workload), ["state=closed", "state_reason=completed"])
+
+  # A step's own words are the comment, as written, up to what a comment can hold.
+  @comment_limit 60_000
+
+  defp stepped(
+         %Workload{state: "completed", record: %{"gap" => %{"step" => "proposal"} = kept}} =
+           workload
+       ) do
+    {made, problems} = Gaps.create(kept["tickets"] || [], workload.repository)
+    post(workload, CompletenessComment.proposed(made, problems, kept["tickets"] || []))
+  end
+
+  defp stepped(%Workload{state: "completed", record: %{"gap" => %{"text" => text}}} = workload)
+       when is_binary(text),
+       do:
+         post(
+           workload,
+           "**Hephaestium:** a step in working out what is missing.\n\n" <>
+             String.slice(text, 0, @comment_limit)
+         )
+
+  defp stepped(%Workload{state: "completed"} = workload),
+    do:
+      post(
+        workload,
+        "**Hephaestium:** a step in working out what is missing ended but left nothing in its record."
+      )
+
+  defp stepped(%Workload{} = workload) do
+    why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason
+
+    post(
+      workload,
+      "**Hephaestium:** a step in working out what is missing could not be completed: #{why}. A person's next reply starts another."
+    )
+  end
 
   defp announce_failed(%Workload{} = workload) do
     why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason

@@ -45,6 +45,12 @@ defmodule ControlPlane.StandInGitHub do
           printf '%s' "$fields" | tr '\001' '\000' >> $d/writes.log
           printf '\001\000' >> $d/writes.log
           if [ -f "$d/data/$name.$method.err" ]; then cat "$d/data/$name.$method.err" >&2; exit 1; fi
+          # The nth write to this endpoint is answered from its own file if there is one,
+          # then from the endpoint's, then with nothing.
+          c="$d/data/$name.$method.count"
+          n=$(cat "$c" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$c"
+          if [ -f "$d/data/$name.$method.$n.json" ]; then cat "$d/data/$name.$method.$n.json"; exit 0; fi
+          if [ -f "$d/data/$name.$method.json" ]; then cat "$d/data/$name.$method.json"; exit 0; fi
           echo '{}'
           exit 0
         fi
@@ -143,6 +149,19 @@ defmodule ControlPlane.StandInGitHub do
       {:ok, text} -> String.split(text, "\n", trim: true)
       _ -> []
     end
+  end
+
+  @doc """
+  Make a write to an endpoint answer with this, as JSON: every write, or only the nth when
+  `nth` is given.
+  """
+  def respond_write(%{dir: dir}, method, endpoint, term, nth \\ nil) do
+    suffix = if nth, do: ".#{nth}", else: ""
+
+    File.write!(
+      Path.join(dir, "data/#{name(endpoint)}.#{method}#{suffix}.json"),
+      Jason.encode!(term)
+    )
   end
 
   @doc "Make a write to an endpoint fail, saying this."

@@ -26,6 +26,36 @@ defmodule ControlPlane.CompletenessComment do
     |> Enum.join("\n\n")
   end
 
+  @doc """
+  The comment for a proposal made into tickets: what was made, what each waits for, and what
+  could not be. None is approved, so the comment says what starts the work.
+  """
+  @spec proposed([{String.t(), integer()}], [String.t()], [map()]) :: String.t()
+  def proposed(made, problems, tickets) do
+    waits = Map.new(tickets, &{&1["title"], &1["dependsOn"] || []})
+
+    lines =
+      for {title, number} <- made do
+        wait =
+          case waits[title] do
+            [] -> ""
+            names -> " (waits for #{Enum.map_join(names, ", ", &line/1)})"
+          end
+
+        "- ##{number} #{line(title)}#{wait}"
+      end
+
+    intro =
+      if made == [],
+        do: "**Hephaestium:** could not make any of the tickets it proposed.",
+        else:
+          "**Hephaestium:** proposed these tickets to close the gap, each a sub-issue of this ticket. None is approved: add `heph:ready` to each one you want worked."
+
+    [intro, Enum.join(lines, "\n"), list("Could not be done", problems)]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n\n")
+  end
+
   @refusal "the verdict does not pass the completeness contract: "
 
   @doc """

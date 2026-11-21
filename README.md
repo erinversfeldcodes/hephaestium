@@ -232,10 +232,17 @@ a setting that stays off until it is named, so a repository chooses how far it g
   evaluation runs the `ticket-completeness` skill at the default branch's tip, with a
   read-only GitHub token of its own ([`docs/tokens.md`](./docs/tokens.md)). Its verdict (met,
   not met, owed or cannot judge, with the evidence for each requirement and who should decide)
-  is commented on the ticket, and a ticket whose verdict is owed is judged again daily, up to
-  a limit. A ticket's labels never change. This is built and tested against stand-ins; **it
-  has not yet judged a real ticket**, and closing a ticket that meets every condition and the
-  questioning loop for one that does not are not built.
+  is commented on the ticket, and a ticket whose verdict is owed, or whose evaluation failed, is
+  judged again daily, up to a limit. A ticket's labels never change. Where a repository opts in
+  (`HEPH_CLOSURES`), a ticket is closed by Hephaestium when its verdict is met on observed or
+  tested evidence, nothing needs a person and it is not an epic; the reason is commented first.
+  An epic is judged when its last sub-issue closes, and only a person closes it. When the goal
+  is not met or could not be judged, a series of short read-only steps runs the `close-the-gap`
+  skill: each asks the person one question with the answer it would choose, and a person's
+  reply starts the next; it ends by proposing tickets, which are made as sub-issues of the
+  ticket, waiting for what they depend on, and none approved. Real tickets have been judged
+  (gazebolang #63, #65, #69); the closing, the epic roll-up and the questioning have only been
+  run against stand-ins, and a reopened ticket does not yet start the questioning.
 
 | Setting | What it does | Default |
 |---|---|---|
