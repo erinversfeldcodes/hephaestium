@@ -212,6 +212,70 @@ defmodule ControlPlane.EvaluationsTest do
 
       assert {:started, _} = Evaluations.after_merge(merged)
     end
+
+    test "is counted for each approval, so a person's new approval is not held by an old one's",
+         %{merged: merged} do
+      judged_times(merged, 6)
+      approval = merged.workload["approval"]
+
+      # The same approval again is held.
+      assert Evaluations.after_merge(merged, %{
+               login: approval["approvedBy"],
+               text: approval["approvedAt"]
+             }) == {:skipped, :judged_too_often}
+
+      # A new approval is a person's act, and starts its own count.
+      assert {:started, _} =
+               Evaluations.after_merge(merged, %{
+                 login: approval["approvedBy"],
+                 text: "2026-11-21T04:30:00Z"
+               })
+    end
+
+    test "a new approval is itself held after six evaluations for it", %{gh: gh, merged: merged} do
+      approval = merged.workload["approval"]
+      newer = %{login: approval["approvedBy"], text: "2026-11-21T04:30:00Z"}
+      judged_times(merged, 6)
+
+      # `heph` prints the approval it was given, so what it builds carries the new one.
+      builds = fn ->
+        StandInGitHub.heph_prints(
+          gh,
+          workload()
+          |> put_in(["approval", "approvedAt"], newer.text)
+          |> Map.put("id", Ecto.UUID.generate())
+        )
+      end
+
+      builds.()
+      assert {:started, id} = Evaluations.after_merge(merged, newer)
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+
+      # Four more under the new approval: with the one started, five.
+      for _ <- 1..4 do
+        {:ok, record} =
+          Workloads.create(
+            workload()
+            |> put_in(["approval", "approvedAt"], newer.text)
+            |> Map.put("completeness", %{"skillDocument" => "x"})
+          )
+
+        {:ok, _} = Events.append(record.id, event(record.id, 1, started()))
+
+        {:ok, _} =
+          Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", "")))
+      end
+
+      builds.()
+      assert {:started, id} = Evaluations.after_merge(merged, newer)
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+
+      # Six now, under this approval.
+      builds.()
+      assert Evaluations.after_merge(merged, newer) == {:skipped, :judged_too_often}
+    end
   end
 
   test "a ticket already being evaluated is not evaluated again", %{merged: merged} do
@@ -342,10 +406,18 @@ defmodule ControlPlane.EvaluationsTest do
       assert again.workload["completeness"]["openItems"] == []
     end
 
-    test "an evaluation that failed is not judged again before the interval has passed" do
+    test "an evaluation that failed is judged again within the hour, not waiting a day for what it was not owed",
+         %{gh: gh} do
+      evaluated(verdict("owed"), "OUTCOME_FAILED")
+      StandInGitHub.heph_prints(gh, Map.put(workload(), "id", Ecto.UUID.generate()))
+
+      assert [{:started, _}] = Evaluations.recheck(later(2))
+    end
+
+    test "an evaluation that failed is not judged again the moment it ended" do
       evaluated(verdict("owed"), "OUTCOME_FAILED")
 
-      assert Evaluations.recheck(later(2)) == []
+      assert Evaluations.recheck(later(0)) == []
     end
 
     test "an evaluation that failed is judged again only as often as the limit allows" do
