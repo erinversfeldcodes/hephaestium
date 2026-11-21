@@ -128,7 +128,19 @@ defmodule ControlPlane.Tickets do
         "**Hephaestium:** a step in working out what is missing ended but left nothing in its record."
       )
 
+  # A step the executor refused is tried once more before anyone is told, as a refused
+  # verdict is: the first failure is the agent's to correct. If it cannot be tried, or the
+  # retry is refused too, the ticket is told.
   defp stepped(%Workload{} = workload) do
+    with true <- Gaps.retryable?(workload),
+         {:started, _id} <- Gaps.retry(workload) do
+      :ok
+    else
+      _ -> announce_step_failed(workload)
+    end
+  end
+
+  defp announce_step_failed(%Workload{} = workload) do
     why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason
 
     post(

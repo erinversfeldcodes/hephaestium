@@ -140,14 +140,59 @@ defmodule ControlPlane.GapsTest do
       assert label_writes(gh) == []
     end
 
+    @refusal "the ticket \"B\" waits for \"A\", which is not another ticket in this proposal"
+
+    test "a step the executor refused is tried once more, told why, with no failure comment",
+         %{gh: gh} do
+      step = ended_step("OUTCOME_FAILED", @refusal, %{})
+
+      assert :ok = Tickets.ended(step)
+
+      assert comments(gh) == [], "a retry follows, so the first failure is not announced"
+      assert [retry] = Enum.filter(steps(), &(&1.id != step.id))
+      assert retry.state == "queued"
+      assert retry.workload["gap"]["refused"] == @refusal
+      assert retry.workload["gap"]["because"] == "a person replied"
+    end
+
+    test "a retry that is refused too is announced, and not tried again", %{gh: gh} do
+      {:ok, retry} =
+        Workloads.create(
+          Map.put(workload(), "gap", %{
+            "skillDocument" => "x",
+            "because" => "a person replied",
+            "refused" => "the first refusal"
+          })
+        )
+
+      {:ok, _} = Events.append(retry.id, event(retry.id, 1, started()))
+      {:ok, _} = Events.append(retry.id, event(retry.id, 2, finished("OUTCOME_FAILED", @refusal)))
+
+      assert :ok = Tickets.ended(Workloads.get(retry.id))
+
+      assert [comment] = comments(gh)
+      assert comment =~ "could not be completed"
+      assert length(steps()) == 1
+    end
+
+    test "a failure of the agent or the runtime is announced and not retried", %{gh: gh} do
+      step = ended_step("OUTCOME_FAILED", "the agent exited with code 1", %{})
+
+      assert :ok = Tickets.ended(step)
+
+      assert [comment] = comments(gh)
+      assert comment =~ "the agent exited with code 1"
+      assert length(steps()) == 1
+    end
+
     test "a step that failed says so, and a person's next reply starts another", %{gh: gh} do
-      step = ended_step("OUTCOME_FAILED", "the step left no step", %{})
+      step = ended_step("OUTCOME_FAILED", "the agent timed out", %{})
 
       assert :ok = Tickets.ended(step)
 
       assert [comment] = comments(gh)
       assert comment =~ "could not be completed"
-      assert comment =~ "the step left no step"
+      assert comment =~ "the agent timed out"
       assert comment =~ "next reply"
     end
 
