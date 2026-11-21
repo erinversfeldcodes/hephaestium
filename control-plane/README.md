@@ -141,8 +141,11 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   and the run was lost, and its ticket is told as for any failed workload (a lost review is
   written on its pull request as "could not review"). A workload updated after the start
   is left alone, and so is a `queued` one, whose job is still in the queue. A lost workload
-  is not re-run: re-approve the ticket, or resume its pull request. It is a setting,
-  `recover_on_start`, on unless set false, and off in the test suite.
+  is not re-run: re-approve the ticket, or resume its pull request. The jobs in the
+  `workloads` queue that an earlier control plane left `executing` are cancelled in the same
+  step, since nothing else would end them; a job started since this start, or still waiting,
+  is left alone. It is a setting, `recover_on_start`, on unless set false, and off in the
+  test suite.
 - Resume ([ADR 0030](../docs/adr/0030-re-approving-a-ticket-resumes-its-open-pull-request.md)).
   When a maintainer labels a ticket `heph:ready` again and its pull request is open and a
   `heph/` branch of the repository, intake resumes that pull request instead of starting

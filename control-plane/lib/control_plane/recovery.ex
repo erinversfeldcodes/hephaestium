@@ -22,6 +22,7 @@ defmodule ControlPlane.Recovery do
   alias ControlPlane.{Repo, Tickets, Workload, Workloads}
 
   @in_flight ["preparing", "running", "gating"]
+  @queue "workloads"
   @reason "the control plane stopped while this ran, so the run was lost"
 
   @doc """
@@ -50,5 +51,30 @@ defmodule ControlPlane.Recovery do
 
       %{workload_id: workload.id, result: result}
     end
+  end
+
+  @doc """
+  End the jobs an earlier control plane left `executing`. A control plane that was killed
+  leaves its running jobs as they were, and nothing else ends them: they stay `executing`
+  for ever, and a job for a workload that is stuck there is what would stop it being queued
+  again. Only a job last attempted before `started_at` is ended, so one this control plane
+  has started is never touched; a job still waiting in the queue is left to run. Returns how
+  many were ended.
+  """
+  @spec end_stale_jobs(DateTime.t()) :: non_neg_integer()
+  def end_stale_jobs(started_at \\ DateTime.utc_now()) do
+    {:ok, ended} =
+      Oban.cancel_all_jobs(
+        from j in Oban.Job,
+          where: j.queue == ^@queue and j.state == "executing" and j.attempted_at < ^started_at
+      )
+
+    if ended > 0,
+      do:
+        Logger.warning(
+          "ended #{ended} job(s) the control plane that ran them left executing when it stopped"
+        )
+
+    ended
   end
 end
