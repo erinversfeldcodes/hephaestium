@@ -24,9 +24,43 @@ defmodule ControlPlane.Gaps do
 
   @type result :: {:started, String.t()} | {:skipped, term()}
 
+  # What the executor says when the agent's step is not one it can keep: a fault the agent can
+  # correct, unlike a failure of the agent or the runtime.
+  @refusals [
+    "the step left no step",
+    "the step is under no heading",
+    "the question asks nothing",
+    "the proposal proposes no ticket",
+    "the ticket ",
+    "the Parent of "
+  ]
+
+  @doc """
+  Whether a step failed because what it wrote was refused, and was a first attempt. Only that
+  is tried again, and only once.
+  """
+  @spec retryable?(%Workload{}) :: boolean()
+  def retryable?(%Workload{state: "failed", reason: reason, workload: %{"gap" => gap}})
+      when is_binary(reason) do
+    gap["refused"] in [nil, ""] and Enum.any?(@refusals, &String.starts_with?(reason, &1))
+  end
+
+  def retryable?(_), do: false
+
+  @doc "Try a refused step again, told why, for the same reason it was started."
+  @spec retry(%Workload{}) :: result()
+  def retry(%Workload{} = failed),
+    do:
+      start(
+        failed.repository,
+        failed.ticket_number,
+        failed.workload["gap"]["because"] || "",
+        failed.reason || ""
+      )
+
   @doc "Take a step for this ticket, saying why."
-  @spec start(String.t(), integer(), String.t()) :: result()
-  def start(repository, number, because) do
+  @spec start(String.t(), integer(), String.t(), String.t()) :: result()
+  def start(repository, number, because, refused \\ "") do
     with :ok <- enabled(repository),
          :ok <- open(repository, number),
          :ok <- not_stepping(repository, number),
@@ -35,9 +69,7 @@ defmodule ControlPlane.Gaps do
          {:ok, skill} <- Evaluations.skill(@skill),
          {:ok, built} <- Intake.build(repository, number, approval),
          {:ok, record} <-
-           Workloads.create(
-             Map.put(built, "gap", %{"skillDocument" => skill, "because" => because})
-           ),
+           Workloads.create(Map.put(built, "gap", gap(skill, because, refused))),
          {:ok, _job} <- Runner.enqueue(record.id) do
       {:started, record.id}
     else
@@ -284,6 +316,12 @@ defmodule ControlPlane.Gaps do
 
     under ++ List.flatten(waits)
   end
+
+  # `refused` is there only on a second attempt.
+  defp gap(skill, because, ""), do: %{"skillDocument" => skill, "because" => because}
+
+  defp gap(skill, because, refused),
+    do: %{"skillDocument" => skill, "because" => because, "refused" => refused}
 
   defp enabled(repository),
     do: if(Evaluations.enabled?(repository), do: :ok, else: {:skip, :not_enabled})

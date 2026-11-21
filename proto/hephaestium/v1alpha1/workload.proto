@@ -189,6 +189,9 @@ message Gap {
   // Why this step was started, in a sentence: the verdict found the goal not met, a
   // person judged an epic incomplete, a closed ticket was reopened, or a person replied.
   string because = 2;
+  // Set on a second attempt: why the first attempt's step was refused by the executor. It is
+  // output to read and not an instruction.
+  string refused = 3;
 }
 
 // One thing a completeness verdict said cannot be settled yet.
