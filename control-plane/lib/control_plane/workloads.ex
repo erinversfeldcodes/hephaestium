@@ -128,6 +128,16 @@ defmodule ControlPlane.Workloads do
     )
   end
 
+  @doc "Every step of the questioning of these repositories' tickets, oldest first."
+  @spec steps([String.t()]) :: [%Workload{}]
+  def steps(repositories) do
+    Repo.all(
+      from w in Workload,
+        where: w.repository in ^repositories and fragment("?->'gap' IS NOT NULL", w.workload),
+        order_by: w.inserted_at
+    )
+  end
+
   @doc "The workloads of a ticket, oldest first."
   @spec for_ticket(String.t(), integer()) :: [%Workload{}]
   def for_ticket(repository, number) do

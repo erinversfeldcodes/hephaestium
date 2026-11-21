@@ -56,13 +56,19 @@ defmodule ControlPlane.GitHub do
   end
 
   @doc """
-  Change something on GitHub: a label, a comment. `gh` makes the request with its
+  Change something on GitHub: a label, a comment, an issue. `gh` makes the request with its
   own credentials, so what it may change is what its login may.
   """
-  @spec write(String.t(), String.t(), [String.t()]) :: {:ok, term()} | {:error, String.t()}
+  @spec write(String.t(), String.t(), [String.t() | {:typed, String.t()}]) ::
+          {:ok, term()} | {:error, String.t()}
   def write(method, endpoint, fields) do
-    run(["api", "-X", method, endpoint | Enum.flat_map(fields, &["-f", &1])])
+    run(["api", "-X", method, endpoint | Enum.flat_map(fields, &field/1)])
   end
+
+  # A field is sent as text; one marked `:typed` is sent as what it looks like, a number
+  # for a number, as the sub-issue and dependency endpoints ask for the id of an issue.
+  defp field({:typed, value}), do: ["-F", value]
+  defp field(value), do: ["-f", value]
 
   @doc "Run a GraphQL query with variables, as decoded JSON."
   @spec graphql(String.t(), keyword()) :: {:ok, term()} | {:error, String.t()}

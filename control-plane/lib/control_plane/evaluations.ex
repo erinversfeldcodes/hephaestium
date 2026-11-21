@@ -346,10 +346,14 @@ defmodule ControlPlane.Evaluations do
   defp evaluation?(_), do: false
 
   # The skill as the pinned release has it.
-  defp skill do
+  defp skill, do: skill(@skill)
+
+  @doc "The text of a skill as the pinned Athenaeum release has it."
+  @spec skill(String.t()) :: {:ok, String.t()} | {:no_skill, String.t()}
+  def skill(name) do
     with {:ok, ref} <- athenaeum_ref(),
          {:ok, text} <-
-           GitHub.raw("repos/#{@athenaeum}/contents/skills/#{@skill}/SKILL.md?ref=#{ref}") do
+           GitHub.raw("repos/#{@athenaeum}/contents/skills/#{name}/SKILL.md?ref=#{ref}") do
       {:ok, text}
     else
       {:error, message} -> {:no_skill, message}
