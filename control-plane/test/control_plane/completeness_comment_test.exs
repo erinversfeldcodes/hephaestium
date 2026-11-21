@@ -146,6 +146,46 @@ defmodule ControlPlane.CompletenessCommentTest do
     end
   end
 
+  describe "the comment for an evaluation that failed" do
+    @refused "the verdict does not pass the completeness contract: /requirements/1/evidence/kind: \"structure\" is not one of \"observed\" or \"test\""
+
+    test "names the fault in words and not as a path into the verdict" do
+      comment = CompletenessComment.failure(@refused, false)
+
+      assert comment =~ "requirement 2"
+      assert comment =~ "\"structure\" is not one of \"observed\" or \"test\""
+      refute comment =~ "/requirements/1"
+    end
+
+    test "says what a refused verdict means for the ticket, and what happens next" do
+      comment = CompletenessComment.failure(@refused, false)
+
+      assert comment =~ "could not be completed"
+      assert comment =~ "No judgement was recorded"
+      assert comment =~ "judged again"
+    end
+
+    test "says a second refusal was already a second attempt" do
+      assert CompletenessComment.failure(@refused, true) =~ "second attempt"
+      refute CompletenessComment.failure(@refused, false) =~ "second attempt"
+    end
+
+    test "gives a failure that is not a refused verdict as it was" do
+      comment = CompletenessComment.failure("the agent exited with code 1", false)
+
+      assert comment =~ "could not be completed"
+      assert comment =~ "the agent exited with code 1"
+      assert comment =~ "No judgement was recorded"
+    end
+
+    test "text in the reason cannot add lines or start a block" do
+      comment = CompletenessComment.failure("a\n\n# heading\n- item", false)
+
+      refute comment =~ "\n#"
+      refute comment =~ "\n-"
+    end
+  end
+
   describe "an evaluation that ends" do
     setup do
       dir = Path.join(System.tmp_dir!(), "cp-completeness-#{System.unique_integer([:positive])}")

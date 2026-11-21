@@ -25,6 +25,65 @@ defmodule ControlPlane.CompletenessComment do
     |> Enum.join("\n\n")
   end
 
+  @refusal "the verdict does not pass the completeness contract: "
+
+  @doc """
+  The comment for an evaluation that ended without a verdict. `second_attempt` says whether
+  it was already the second try after a refusal. The reason is what the executor reported:
+  for a refused verdict, the contract's own words, with a path into the verdict that a
+  person would have to count their way through, so the path is put in words.
+  """
+  @spec failure(String.t(), boolean()) :: String.t()
+  def failure(reason, second_attempt) do
+    what =
+      if String.starts_with?(reason, @refusal),
+        do: refused(String.replace_prefix(reason, @refusal, ""), second_attempt),
+        else: sentence(reason)
+
+    "**Hephaestium:** a completeness evaluation could not be completed: #{what} No judgement was recorded, so the ticket's state is as it was. It is judged again on the next scheduled check."
+  end
+
+  defp refused(fault, second_attempt) do
+    tried =
+      if second_attempt,
+        do: " This was already the second attempt, told what was wrong the first time.",
+        else: ""
+
+    "the agent's verdict broke the rules of the completeness contract, at #{place(fault)}.#{tried}"
+  end
+
+  # `/requirements/1/evidence/kind: "x" is not one of ...` becomes
+  # `requirement 2, evidence kind: "x" is not one of ...`. A path counts from zero; a person
+  # counts from one.
+  defp place(fault) do
+    fault = line(fault)
+
+    case Regex.run(~r{^(/[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*): (.*)$}, fault) do
+      [_, path, message] -> "#{path |> String.split("/", trim: true) |> in_words()}: #{message}"
+      _ -> fault
+    end
+  end
+
+  defp in_words(segments) do
+    segments
+    |> Enum.chunk_every(2, 1, [nil])
+    |> Enum.map(fn [segment, next] ->
+      cond do
+        match?({_, ""}, Integer.parse(segment)) ->
+          {number, ""} = Integer.parse(segment)
+          Integer.to_string(number + 1)
+
+        next && match?({_, ""}, Integer.parse(next)) ->
+          String.replace_suffix(segment, "s", "")
+
+        true ->
+          words(segment)
+      end
+    end)
+    |> Enum.join(" ")
+    |> String.replace(~r/^(\S+ \d+) /, "\\1, ")
+  end
+
   defp headline(verdict) do
     "**Hephaestium:** judged whether this ticket's goal is met, at `#{short(verdict["commit"])}` of the default branch: **#{words(verdict["verdict"])}**."
   end
