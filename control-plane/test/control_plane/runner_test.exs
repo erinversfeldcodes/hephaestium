@@ -90,6 +90,36 @@ defmodule ControlPlane.RunnerTest do
       assert "--deliver" in args
     end
 
+    test "that completed has its checkout deleted and what it said kept; one that failed keeps both",
+         %{dir: dir, id: id} do
+      configure(dir, StandIn.executor(Path.join(dir, "stand-in"), events: stream(id)))
+      File.mkdir_p!(Path.join(run_dir(dir, id), "work/repo"))
+      File.write!(Path.join(run_dir(dir, id), "work/repo/file"), "checkout")
+
+      assert :ok = run(id)
+
+      refute File.exists?(Path.join(run_dir(dir, id), "work"))
+      assert File.exists?(Path.join(run_dir(dir, id), "events.jsonl"))
+
+      {:ok, failing} = Workloads.create(workload())
+      # The end is stamped when the executor says it, which is now; the fixtures' own
+      # times are days ago and would put the end outside the window.
+      events =
+        failing.id
+        |> stream("OUTCOME_FAILED", "gate test failed")
+        |> List.replace_at(
+          3,
+          event(failing.id, 4, finished("OUTCOME_FAILED", "gate test failed"), DateTime.utc_now())
+        )
+
+      configure(dir, StandIn.executor(Path.join(dir, "stand-in-2"), events: events))
+      File.mkdir_p!(Path.join(run_dir(dir, failing.id), "work/repo"))
+
+      assert :ok = run(failing.id)
+
+      assert File.exists?(Path.join(run_dir(dir, failing.id), "work/repo"))
+    end
+
     test "that failed ends failed, with the reason the executor gave", %{dir: dir, id: id} do
       events = stream(id, "OUTCOME_FAILED", "gate test failed")
       configure(dir, StandIn.executor(Path.join(dir, "stand-in"), events: events))

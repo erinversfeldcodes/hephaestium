@@ -18,7 +18,7 @@ defmodule ControlPlane.Jobs.RunWorkload do
       states: [:available, :scheduled, :executing, :retryable]
     ]
 
-  alias ControlPlane.{Events, Runner, Tickets, Workloads}
+  alias ControlPlane.{Events, Runner, Tickets, Workloads, Workspaces}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"workload_id" => id}, attempt: attempt, max_attempts: max}) do
@@ -55,10 +55,8 @@ defmodule ControlPlane.Jobs.RunWorkload do
   end
 
   defp run_directory(workload) do
-    runs = Runner.config(:runs_dir) || Path.join(System.tmp_dir!(), "hephaestium-runs")
-
     Path.join([
-      runs,
+      Runner.runs_dir(),
       String.replace(workload.repository, "/", "-"),
       "#{workload.ticket_number}-#{workload.id}"
     ])
@@ -211,6 +209,8 @@ defmodule ControlPlane.Jobs.RunWorkload do
     end
 
     Tickets.ended(Workloads.get(id))
+    # Its record is kept; a completed run has no more use for its checkout.
+    Workspaces.clean(state.directory)
     :ok
   end
 end

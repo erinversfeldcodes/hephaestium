@@ -28,6 +28,11 @@ defmodule ControlPlane.Runner do
     end
   end
 
+  @doc "Where each run keeps its files."
+  @spec runs_dir() :: Path.t()
+  def runs_dir,
+    do: config(:runs_dir) || Path.join(System.tmp_dir!(), "hephaestium-runs")
+
   @doc false
   def config(key, default \\ nil),
     do: :control_plane |> Application.get_env(:runner, []) |> Keyword.get(key, default)
