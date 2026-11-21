@@ -289,7 +289,8 @@ defmodule ControlPlane.Reviews do
     end
   end
 
-  defp pack_names(ref) do
+  @doc false
+  def pack_names(ref) do
     case GitHub.get("repos/#{@athenaeum}/contents/packs?ref=#{ref}") do
       {:ok, entries} when is_list(entries) ->
         {:ok,
@@ -405,7 +406,9 @@ defmodule ControlPlane.Reviews do
   defp review(workload, pull, number, pack, text) do
     workload.workload
     |> Map.put("id", Ecto.UUID.generate())
-    |> Map.delete("revision")
+    # A review is a read of its own: it neither revises nor reads under lenses, and nothing
+    # of how the change was read before it was pushed is given to it.
+    |> Map.drop(["revision", "lenses", "prepushRounds"])
     |> put_in(["repository", "baseCommit"], pull["head"]["sha"])
     |> Map.put("review", %{
       "pullRequestNumber" => to_string(number),

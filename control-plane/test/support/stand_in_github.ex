@@ -113,6 +113,10 @@ defmodule ControlPlane.StandInGitHub do
   def fail(%{dir: dir}, endpoint, message),
     do: File.write!(Path.join(dir, "data/#{name(endpoint)}.err"), message)
 
+  @doc "Let a read that was made to fail work again."
+  def clear_failure(%{dir: dir}, endpoint),
+    do: File.rm(Path.join(dir, "data/#{name(endpoint)}.err"))
+
   @doc "Make the stand-in `heph` print this workload."
   def heph_prints(%{dir: dir}, workload) do
     File.rm(Path.join(dir, "heph.err"))

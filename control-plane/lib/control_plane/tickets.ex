@@ -389,7 +389,7 @@ defmodule ControlPlane.Tickets do
       question(workload.state, record),
       account(workload),
       pull_request(record),
-      cost(record)
+      cost_section(record)
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
@@ -438,6 +438,54 @@ defmodule ControlPlane.Tickets do
     do: "Pull request: #{url}"
 
   defp pull_request(_), do: nil
+
+  @doc """
+  What a run spent, as the status comment says it: the total, and for a run that read its own
+  change under lenses, what each kind of agent it started spent, so that what went on reading
+  can be told apart from what went on the work. Units are never added to each other.
+  """
+  @spec cost_section(map()) :: String.t() | nil
+  def cost_section(record) do
+    case {cost(record), breakdown(record["steps"])} do
+      {nil, _} -> nil
+      {total, nil} -> total
+      {total, parts} -> total <> "\n" <> parts
+    end
+  end
+
+  @units ["COST_UNIT_USD", "COST_UNIT_TOKENS", "COST_UNIT_CREDITS"]
+
+  @step_kinds [
+    {"KIND_IMPLEMENTATION", "the implementation"},
+    {"KIND_REVIEW", "reading under lenses"},
+    {"KIND_REVISION", "fixing what they found"}
+  ]
+
+  defp breakdown(steps) when is_list(steps) do
+    parts =
+      for {kind, label} <- @step_kinds,
+          spent = spent_by(steps, kind),
+          spent != [] do
+        "#{label} #{Enum.join(spent, " and ")}"
+      end
+
+    if parts == [], do: nil, else: "Of that: " <> Enum.join(parts, ", ")
+  end
+
+  defp breakdown(_), do: nil
+
+  # What the steps of one kind spent, in each unit on its own.
+  defp spent_by(steps, kind) do
+    steps
+    |> Enum.filter(&(&1["kind"] == kind))
+    |> Enum.flat_map(&(&1["costs"] || []))
+    |> Enum.group_by(& &1["unit"], & &1["amount"])
+    |> Enum.sort_by(fn {unit, _} -> Enum.find_index(@units, &(&1 == unit)) || length(@units) end)
+    |> Enum.map(fn {unit, amounts} ->
+      cost_part(%{"unit" => unit, "amount" => amounts |> Enum.filter(&is_number/1) |> Enum.sum()})
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
 
   defp cost(record) do
     parts =

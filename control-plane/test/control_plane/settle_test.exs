@@ -521,6 +521,22 @@ defmodule ControlPlane.SettleTest do
     defp revision_of(id),
       do: Enum.find(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
 
+    test "a revision keeps the lenses and rounds its first run carried, so its push is read too",
+         %{id: id} do
+      lenses = [%{"pack" => "rust", "document" => "the rust lens"}]
+      original = Workloads.get(id)
+
+      Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^id),
+        set: [workload: Map.merge(original.workload, %{"lenses" => lenses, "prepushRounds" => 2})]
+      )
+
+      assert result(id) == {:revising, 1}
+
+      revision = revision_of(id)
+      assert revision.workload["lenses"] == lenses
+      assert revision.workload["prepushRounds"] == 2
+    end
+
     test "a real failure starts a revision from the stored workload, on the head, and says so", %{
       gh: gh,
       id: id,
