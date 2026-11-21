@@ -51,4 +51,45 @@ defmodule ControlPlane.RuntimeConfigTest do
     assert config[:socket_dir] == "/tmp"
     assert config[:url] == "ecto://u:p@localhost/hephaestium_test"
   end
+
+  describe "the review App" do
+    defp review_app(environment) do
+      names = ["HEPH_REVIEW_APP_ID", "HEPH_REVIEW_APP_KEY_FILE"]
+      previous = for name <- names, do: {name, System.get_env(name)}
+
+      try do
+        for name <- names, do: System.delete_env(name)
+        for {name, value} <- environment, do: System.put_env(name, value)
+
+        config = Config.Reader.read!(@runtime, env: :test, target: :host)
+        get_in(config, [:control_plane, :review_app])
+      after
+        for {name, value} <- previous do
+          if value, do: System.put_env(name, value), else: System.delete_env(name)
+        end
+      end
+    end
+
+    test "its id and key file are read, and the file's path is made absolute" do
+      assert review_app([
+               {"HEPH_REVIEW_APP_ID", "5862313"},
+               {"HEPH_REVIEW_APP_KEY_FILE", "~/.config/hephaestium/review-app.pem"}
+             ]) == [
+               app_id: "5862313",
+               key_file: Path.join(System.user_home!(), ".config/hephaestium/review-app.pem")
+             ]
+    end
+
+    test "with nothing set there is no review App" do
+      assert review_app([]) == nil
+    end
+
+    test "an empty setting is no setting" do
+      assert review_app([{"HEPH_REVIEW_APP_ID", " "}, {"HEPH_REVIEW_APP_KEY_FILE", ""}]) == nil
+    end
+
+    test "either one alone is kept, and the App is still not enabled by it" do
+      assert review_app([{"HEPH_REVIEW_APP_ID", "5862313"}]) == [app_id: "5862313"]
+    end
+  end
 end

@@ -226,6 +226,10 @@ a setting that stays off until it is named, so a repository chooses how far it g
   a read-only workload pinned to one commit, and a blocking finding becomes a revision
   ([ADR 0025](./docs/adr/0025-a-review-is-a-workload-that-reads-one-commit-under-one-lens-and-ends-with-a-verdict.md),
   [ADR 0026](./docs/adr/0026-a-ticket-is-done-when-the-lenses-that-block-have-approved-its-head-commit.md)).
+- **Approving.** Where a review App is configured, a pull request is approved on GitHub, for
+  its head commit, when and only when every lens that blocks has approved that commit; one
+  lens short of that is no approval, and a new push dismisses it
+  ([ADR 0033](./docs/adr/0033-a-pull-request-is-approved-on-github-by-a-review-app-only-when-every-lens-that-blocks-has-approved-its-head-commit.md)).
 - **Merging.** A green, approved pull request is merged only when GitHub itself says it is
   clean, never by bypassing its rules.
 - **Judging a merged ticket**
@@ -253,6 +257,7 @@ a setting that stays off until it is named, so a repository chooses how far it g
 | `HEPH_REVISIONS` | How many revisions a pull request gets | 0 |
 | `HEPH_REVIEWS` | The repositories whose pull requests are reviewed under lenses | none |
 | `HEPH_AUTOMERGE` | The repositories whose green, approved pull requests are merged | none |
+| `HEPH_REVIEW_APP_ID`, `HEPH_REVIEW_APP_KEY_FILE` | The GitHub App that approves a pull request on GitHub, and the file that holds its private key (outside any repository). Both are needed. A pull request is approved, for its head commit, only when every lens that blocks has approved it; without them nothing is approved and a person merges as before | none |
 | `HEPH_ATHENAEUM_REF` | The Athenaeum release lenses and skills are read from | none |
 | `HEPH_COMPLETENESS` | The repositories whose merged tickets are judged | none |
 | `HEPH_CLOSURES` | The repositories where Hephaestium closes a ticket itself when its verdict is met on observed or tested evidence, nothing needs a person and it is not an epic (they must also be in `HEPH_COMPLETENESS`) | none |

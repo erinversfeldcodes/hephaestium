@@ -59,10 +59,10 @@ defmodule ControlPlane.GitHub do
   Change something on GitHub: a label, a comment, an issue. `gh` makes the request with its
   own credentials, so what it may change is what its login may.
   """
-  @spec write(String.t(), String.t(), [String.t() | {:typed, String.t()}]) ::
+  @spec write(String.t(), String.t(), [String.t() | {:typed, String.t()}], keyword()) ::
           {:ok, term()} | {:error, String.t()}
-  def write(method, endpoint, fields) do
-    run(["api", "-X", method, endpoint | Enum.flat_map(fields, &field/1)])
+  def write(method, endpoint, fields, options \\ []) do
+    run(["api", "-X", method, endpoint | Enum.flat_map(fields, &field/1)], options)
   end
 
   # A field is sent as text; one marked `:typed` is sent as what it looks like, a number
@@ -82,16 +82,24 @@ defmodule ControlPlane.GitHub do
     run(["api", "graphql", "-f", "query=#{query}" | flags])
   end
 
-  defp run(arguments) do
+  # `token:` makes `gh` act as that token for this one request, through its environment
+  # so that it is in no argument.
+  defp run(arguments, options \\ []) do
     if Programs.allowed?(command()) do
-      execute(arguments)
+      execute(arguments, options)
     else
       {:error, Programs.refusal(command())}
     end
   end
 
-  defp execute(arguments) do
-    case System.cmd(command(), arguments, stderr_to_stdout: true) do
+  defp execute(arguments, options) do
+    environment =
+      case options[:token] do
+        token when is_binary(token) -> [{"GH_TOKEN", token}]
+        _ -> []
+      end
+
+    case System.cmd(command(), arguments, stderr_to_stdout: true, env: environment) do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, decoded} -> {:ok, decoded}
