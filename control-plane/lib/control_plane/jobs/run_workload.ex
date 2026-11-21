@@ -18,12 +18,33 @@ defmodule ControlPlane.Jobs.RunWorkload do
       states: [:available, :scheduled, :executing, :retryable]
     ]
 
-  alias ControlPlane.{Events, Runner, Tickets, Workloads, Workspaces}
+  require Logger
+
+  alias ControlPlane.{Disk, Events, Runner, Tickets, Workloads, Workspaces}
+
+  # How long a workload waits for room before the disk is looked at again.
+  @wait_seconds 300
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"workload_id" => id}, attempt: attempt, max_attempts: max}) do
+    case Disk.room() do
+      :ok ->
+        claim(id, attempt >= max)
+
+      {:low, free, minimum} ->
+        # Not claimed, so the workload stays queued, and a snooze is not an attempt.
+        Logger.warning(
+          "not starting workload #{id}: #{free} MB free where the runs are kept, and " <>
+            "HEPH_MIN_FREE_MB asks for #{minimum}; trying again in #{@wait_seconds} seconds"
+        )
+
+        {:snooze, @wait_seconds}
+    end
+  end
+
+  defp claim(id, last_attempt?) do
     case Workloads.claim(id) do
-      {:ok, workload} -> dispatch(workload, attempt >= max)
+      {:ok, workload} -> dispatch(workload, last_attempt?)
       :already_claimed -> :ok
       :unknown -> {:discard, "there is no workload #{id}"}
     end

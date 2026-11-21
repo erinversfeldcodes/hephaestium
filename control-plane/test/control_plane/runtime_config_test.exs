@@ -131,4 +131,40 @@ defmodule ControlPlane.RuntimeConfigTest do
       end
     end
   end
+
+  describe "the free space below which a run is not started" do
+    defp min_free(value) do
+      previous = System.get_env("HEPH_MIN_FREE_MB")
+
+      try do
+        if value,
+          do: System.put_env("HEPH_MIN_FREE_MB", value),
+          else: System.delete_env("HEPH_MIN_FREE_MB")
+
+        config = Config.Reader.read!(@runtime, env: :test, target: :host)
+        get_in(config, [:control_plane, :runner]) |> List.wrap() |> Keyword.get(:min_free_mb)
+      after
+        if previous,
+          do: System.put_env("HEPH_MIN_FREE_MB", previous),
+          else: System.delete_env("HEPH_MIN_FREE_MB")
+      end
+    end
+
+    test "is the whole number of megabytes that is set, and 0 is a limit" do
+      assert min_free("2048") == 2048
+      assert min_free("0") == 0
+    end
+
+    test "is not set when nothing is" do
+      assert min_free(nil) == nil
+      assert min_free("") == nil
+    end
+
+    test "a value that is not a whole number of megabytes stops the start, naming the setting" do
+      for bad <- ["lots", "-5", "1.5", "10GB"] do
+        error = assert_raise RuntimeError, fn -> min_free(bad) end
+        assert error.message =~ "HEPH_MIN_FREE_MB"
+      end
+    end
+  end
 end
