@@ -326,7 +326,9 @@ the checks pass on `main` and those commits warrant it, a workflow creates the
 artefact as it is built and attached to that release; it is never committed, so
 there is no version file and no changelog file. The
 [releases](https://github.com/erinversfeldcodes/hephaestium/releases) are the
-changelog. Each release attaches a `heph` binary for Linux and macOS. See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
+changelog. Each release attaches one tarball for Linux and one for macOS, each holding the `heph` and
+`executor` binaries the control plane runs, and a `SHA256SUMS` file to check a download against
+(`shasum -a 256 -c SHA256SUMS`). See [ADR-0008](./docs/adr/0008-versions-come-from-conventional-commits.md).
 
 ## Prior art
 
