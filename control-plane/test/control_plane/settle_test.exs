@@ -863,6 +863,69 @@ defmodule ControlPlane.SettleTest do
     defp base_revision_of(id),
       do: Enum.find(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
 
+    # The pull request was green and settled, and it waits for a person (a required review, a
+    # merge). Main moves on while it waits, and nothing looked at it again.
+    test "a settled pull request that has fallen behind since is looked at again", %{id: id} do
+      Workloads.settle(id)
+      assert Workloads.get(id).settled_at
+
+      assert [%{workload_id: ^id, result: :unsettled}] = Settle.stale()
+      assert Workloads.get(id).settled_at == nil
+
+      assert result(id) == {:revising, 1}
+      assert base_revision_of(id)
+    end
+
+    test "a settled pull request that is not behind is left settled", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "clean"))
+      Workloads.settle(id)
+
+      assert Settle.stale() == []
+      assert Workloads.get(id).settled_at
+    end
+
+    test "a settled pull request that is behind and not green is not settled again for it", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "failure")]))
+      Workloads.settle(id)
+
+      assert Settle.stale() == []
+      assert Workloads.get(id).settled_at, "a failure is not announced again on every look"
+    end
+
+    test "a settled pull request that is closed is left alone", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, Map.put(behind_pull(@behind_branch), "state", "closed"))
+      Workloads.settle(id)
+
+      assert Settle.stale() == []
+    end
+
+    test "a settled pull request that is behind with no revision left is left settled", %{id: id} do
+      Application.put_env(:control_plane, :settle, revisions: 0)
+      Workloads.settle(id)
+
+      assert Settle.stale() == []
+      assert Workloads.get(id).settled_at
+    end
+
+    test "a settled pull request whose base gained nothing is left settled", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @compare, %{"commits" => [], "files" => []})
+      Workloads.settle(id)
+
+      assert Settle.stale() == []
+    end
+
+    test "a pull request not yet settled is not touched by looking for stale ones", %{id: id} do
+      assert Settle.stale() == []
+      assert Workloads.get(id).settled_at == nil
+    end
+
+    test "is found by a job" do
+      assert :ok = perform_job(ControlPlane.Jobs.KeepCurrent, %{})
+    end
+
     test "a green pull request that is behind is revised, with what came in and no failing check",
          %{gh: gh, id: id} do
       assert result(id) == {:revising, 1}

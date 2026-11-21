@@ -48,6 +48,46 @@ defmodule ControlPlane.Settle do
       {:error, message}
   end
 
+  @doc """
+  Look again at the pull requests that were settled while they waited for a person, and whose
+  branch has since fallen behind its base. A pull request is settled when its checks are green,
+  and then it waits for a review or a merge while the base branch moves on; settled, nothing
+  looked at it again, so it went stale unseen. One that is open, behind, still green and has a
+  revision left, and whose base gained something, is made awaiting settlement again, so the next
+  pass brings the base in as it would have before it was settled. A pull request that is not
+  green is left, because looking again would announce its failure again.
+  """
+  @spec stale() :: [%{workload_id: String.t(), result: :unsettled}]
+  def stale do
+    since = DateTime.add(DateTime.utc_now(), -14 * 86_400, :second)
+
+    for workload <- Workloads.settled_pull_requests(since), stale?(workload) do
+      Workloads.unsettle(workload.id)
+      %{workload_id: workload.id, result: :unsettled}
+    end
+  end
+
+  defp stale?(workload) do
+    with {:ok, number} <- Workloads.pull_request_number(workload),
+         {:ok, %{"state" => "open", "mergeable_state" => "behind"} = pull} <-
+           GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
+         {:ok, :done} <- verdict(workload, pull, number),
+         :yes <- revisable(workload, {pull, number}),
+         {:ok, %{"commits" => [_ | _]}} <- base_moved(workload, pull, number) do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    exception ->
+      Logger.error(
+        "could not look for a stale pull request of #{workload.id}: " <>
+          Exception.message(exception)
+      )
+
+      false
+  end
+
   defp settle(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload),
          {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
