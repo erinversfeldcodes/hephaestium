@@ -195,6 +195,46 @@ defmodule ControlPlane.RunnerTest do
     wait_until("the executor to stop", fn -> not StandIn.running?(Path.join(dir, "stand-in")) end)
   end
 
+  describe "an executor that will not stop" do
+    test "is killed at the end of the grace period, and the workload ends failed",
+         %{dir: dir, id: id} do
+      events = [event(id, 1, started())]
+      stand_in = Path.join(dir, "stand-in")
+
+      configure(dir, StandIn.executor(stand_in, events: events, then: :stubborn),
+        silence_limit_ms: 1_500,
+        kill_grace_ms: 300
+      )
+
+      task = Task.async(fn -> run(id) end)
+
+      assert {:ok, :ok} = Task.yield(task, 10_000) || Task.shutdown(task, :brutal_kill),
+             "the job is still waiting on an executor that ignores being told to stop"
+
+      done = Workloads.get(id)
+      assert done.state == "failed"
+      assert done.reason =~ "went silent"
+      wait_until("the executor to be gone", fn -> not StandIn.running?(stand_in) end)
+    end
+
+    test "that stops when told to is not killed", %{dir: dir, id: id} do
+      events = [event(id, 1, started())]
+      stand_in = Path.join(dir, "stand-in")
+
+      configure(dir, StandIn.executor(stand_in, events: events, then: :hang),
+        silence_limit_ms: 1_500,
+        kill_grace_ms: 300
+      )
+
+      assert :ok = run(id)
+
+      # Left alone past its grace period, the run has ended as it did before, by its own stop.
+      Process.sleep(600)
+      assert Workloads.get(id).reason =~ "went silent"
+      refute StandIn.running?(stand_in)
+    end
+  end
+
   describe "cancelling" do
     test "a running workload ends cancelled, as the executor says", %{dir: dir, id: id} do
       running = [event(id, 1, started()), event(id, 2, workspace_ready())]

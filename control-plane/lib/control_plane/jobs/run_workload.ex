@@ -169,6 +169,13 @@ defmodule ControlPlane.Jobs.RunWorkload do
 
       :cancel ->
         read(stop(state, nil))
+
+      # The grace period is over and the executor has not stopped: it is killed, and what
+      # is read from here is its end. Not sent to a process that has already gone, whose
+      # number may be another program's by now.
+      {:kill, ^port} ->
+        if Port.info(port, :os_pid), do: signal(state, "KILL")
+        read(state)
     after
       silence ->
         read(stop(state, "the executor went silent: nothing for #{silence} milliseconds"))
@@ -215,6 +222,7 @@ defmodule ControlPlane.Jobs.RunWorkload do
 
   defp finish(state, status) do
     id = state.workload.id
+    if state.stopping, do: Process.cancel_timer(state.stopping.timer)
     record = Path.join(state.directory, "record.json")
 
     with {:ok, text} <- File.read(record), {:ok, map} <- Jason.decode(text) do
