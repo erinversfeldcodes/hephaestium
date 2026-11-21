@@ -69,6 +69,35 @@ defmodule ControlPlane.Gaps do
   def after_verdict(_evaluation, _verdict), do: :none
 
   @doc """
+  Question each ticket whose latest verdict found the goal not met, or could not be judged,
+  and which has had no step since. A verdict starts the questioning as it ends, so this
+  finds the ones that did not: those judged before the questioning existed, or when it could
+  not be started.
+  """
+  @spec unquestioned() :: [result()]
+  def unquestioned do
+    (Application.get_env(:control_plane, :settle)[:completeness] || [])
+    |> Workloads.evaluations()
+    |> Enum.group_by(&{&1.repository, &1.ticket_number})
+    |> Enum.flat_map(fn {{repository, number}, evaluations} ->
+      latest = List.last(evaluations)
+
+      with %Workload{
+             state: "completed",
+             record: %{"completeness" => verdict},
+             finished_at: %DateTime{}
+           } <-
+             latest,
+           false <- stepped_since?(repository, number, latest),
+           result when result != :none <- after_verdict(latest, verdict) do
+        [result]
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  @doc """
   Take a step for each ticket Hephaestium closed on its evidence that a person has since
   reopened: a person who reopens it is saying the verdict was wrong. It is looked for among
   the tickets of repositories that let Hephaestium close, whose latest verdict was one that

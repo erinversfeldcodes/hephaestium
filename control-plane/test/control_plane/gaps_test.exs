@@ -296,6 +296,75 @@ defmodule ControlPlane.GapsTest do
     end
   end
 
+  describe "a verdict from before the questioning existed" do
+    defp judged(kind, at \\ ~U[2026-11-20 10:00:00Z]) do
+      {:ok, record} =
+        Workloads.create(Map.put(workload(), "completeness", %{"skillDocument" => "x"}))
+
+      {:ok, _} = Events.append(record.id, event(record.id, 1, started(), at))
+
+      {:ok, _} =
+        Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", ""), at))
+
+      Workloads.keep_record(record.id, %{"completeness" => verdict_for(kind)})
+      Workloads.get(record.id)
+    end
+
+    test "that found the goal not met is questioned, saying why" do
+      judged("not_met")
+
+      assert [{:started, _}] = Gaps.unquestioned()
+      assert [step] = steps()
+      assert step.workload["gap"]["because"] =~ "not met"
+    end
+
+    test "that could not be judged is questioned" do
+      judged("cannot_judge")
+
+      assert [{:started, _}] = Gaps.unquestioned()
+    end
+
+    test "that was met or owed is not" do
+      judged("met")
+      assert Gaps.unquestioned() == []
+      judged("owed")
+      assert Gaps.unquestioned() == []
+    end
+
+    test "is questioned once, however often it is looked for" do
+      judged("not_met")
+
+      assert [{:started, id}] = Gaps.unquestioned()
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
+
+      assert Gaps.unquestioned() == []
+      assert length(steps()) == 1
+    end
+
+    test "only the latest verdict counts" do
+      judged("not_met", ~U[2026-11-20 10:00:00Z])
+      judged("met", ~U[2026-11-20 12:00:00Z])
+
+      assert Gaps.unquestioned() == []
+    end
+
+    test "is not looked for in a repository that has not opted in" do
+      judged("not_met")
+      Application.put_env(:control_plane, :settle, completeness: [], athenaeum_ref: @ref)
+
+      assert Gaps.unquestioned() == []
+    end
+
+    test "is looked for by the job that answers replies" do
+      judged("not_met")
+
+      assert :ok = perform_job(ControlPlane.Jobs.AnswerReplies, %{})
+      assert length(steps()) == 1
+    end
+  end
+
   describe "a ticket reopened after Hephaestium closed it" do
     @events "repos/#{@repo}/issues/12/events?per_page=100"
 

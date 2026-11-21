@@ -6,6 +6,7 @@ defmodule ControlPlane.Jobs.AnswerReplies do
   @impl Oban.Worker
   def perform(_job) do
     ControlPlane.Gaps.replies()
+    ControlPlane.Gaps.unquestioned()
     ControlPlane.Gaps.reopened()
     :ok
   end
