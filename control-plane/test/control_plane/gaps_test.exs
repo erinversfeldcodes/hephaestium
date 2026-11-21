@@ -296,6 +296,121 @@ defmodule ControlPlane.GapsTest do
     end
   end
 
+  describe "a ticket reopened after Hephaestium closed it" do
+    @events "repos/#{@repo}/issues/12/events?per_page=100"
+
+    defp closing_verdict do
+      %{
+        "schema_version" => 0.0,
+        "ticket" => 12.0,
+        "commit" => "f6f2dc5f9df5fb32ff2a5c36ebee4e3bc9e159d5",
+        "verdict" => "met",
+        "decides" => "evidence",
+        "decides_because" => "every requirement is settled by evidence",
+        "epic" => false,
+        "requirements" => [
+          %{
+            "text" => "r",
+            "settled_by" => "evidence",
+            "status" => "met",
+            "evidence" => %{"kind" => "test", "where" => "w"}
+          }
+        ],
+        "goal" => %{"status" => "achieved", "why" => "x"},
+        "owed" => [],
+        "not_filed" => [],
+        "could_not_check" => []
+      }
+    end
+
+    # An evaluation that ended at 10:00 with a verdict the evidence decided.
+    defp closed_by_heph(verdict \\ closing_verdict()) do
+      {:ok, record} =
+        Workloads.create(Map.put(workload(), "completeness", %{"skillDocument" => "x"}))
+
+      at = ~U[2026-11-20 10:00:00Z]
+      {:ok, _} = Events.append(record.id, event(record.id, 1, started(), at))
+
+      {:ok, _} =
+        Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", ""), at))
+
+      Workloads.keep_record(record.id, %{"completeness" => verdict})
+      Workloads.get(record.id)
+    end
+
+    defp reopened(at), do: %{"event" => "reopened", "created_at" => at}
+
+    setup do
+      Application.put_env(:control_plane, :settle,
+        completeness: [@repo],
+        closures: [@repo],
+        athenaeum_ref: @ref
+      )
+    end
+
+    test "is taken as the verdict having been wrong, and starts the questioning", %{gh: gh} do
+      closed_by_heph()
+      StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
+
+      assert [{:started, _}] = Gaps.reopened()
+      assert [step] = steps()
+      assert step.workload["gap"]["because"] =~ "reopened"
+    end
+
+    test "is not looked for when the ticket was never reopened", %{gh: gh} do
+      closed_by_heph()
+
+      StandInGitHub.respond(gh, @events, [
+        %{"event" => "closed", "created_at" => "2026-11-20T10:01:00Z"}
+      ])
+
+      assert Gaps.reopened() == []
+    end
+
+    test "is not counted when it was reopened before the verdict", %{gh: gh} do
+      closed_by_heph()
+      StandInGitHub.respond(gh, @events, [reopened("2026-11-20T09:00:00Z")])
+
+      assert Gaps.reopened() == []
+    end
+
+    test "starts one step, however often it is looked for", %{gh: gh} do
+      closed_by_heph()
+      StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
+
+      assert [{:started, id}] = Gaps.reopened()
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
+
+      assert Gaps.reopened() == []
+      assert length(steps()) == 1
+    end
+
+    test "is not looked for when the verdict was not one that closes", %{gh: gh} do
+      closed_by_heph(Map.put(closing_verdict(), "decides", "person"))
+      StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
+
+      assert Gaps.reopened() == []
+    end
+
+    test "is not looked for in a repository that does not let Hephaestium close", %{gh: gh} do
+      closed_by_heph()
+      StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
+      Application.put_env(:control_plane, :settle, completeness: [@repo], athenaeum_ref: @ref)
+
+      assert Gaps.reopened() == []
+    end
+
+    test "is looked for by the same job that answers replies", %{gh: gh} do
+      closed_by_heph()
+      StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
+
+      assert :ok = perform_job(ControlPlane.Jobs.AnswerReplies, %{})
+      assert length(steps()) == 1
+    end
+  end
+
   describe "a person's reply" do
     @comments "repos/#{@repo}/issues/12/comments?per_page=100"
 
