@@ -57,6 +57,16 @@ defmodule ControlPlane.Evaluations do
   defp settled?(_), do: false
 
   @doc """
+  Whether the tracker records sub-issues under the ticket a workload is for. That makes it an
+  epic whatever an agent's verdict says of it: an epic is judged complete by a person.
+  """
+  @spec epic?(%Workload{}) :: boolean()
+  def epic?(%Workload{workload: %{"ticket" => %{"subIssues" => count}}}) when is_number(count),
+    do: count > 0
+
+  def epic?(_), do: false
+
+  @doc """
   Queue an evaluation of the ticket the merged workload was for, unless there is nothing
   to judge: the repository has not opted in, the ticket is already closed, or an
   evaluation of it is already under way.

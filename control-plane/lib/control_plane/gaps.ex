@@ -69,6 +69,78 @@ defmodule ControlPlane.Gaps do
   def after_verdict(_evaluation, _verdict), do: :none
 
   @doc """
+  Take a step for each ticket Hephaestium closed on its evidence that a person has since
+  reopened: a person who reopens it is saying the verdict was wrong. It is looked for among
+  the tickets of repositories that let Hephaestium close, whose latest verdict was one that
+  closes, and which have had no step since that verdict.
+  """
+  @spec reopened() :: [result()]
+  def reopened do
+    (Application.get_env(:control_plane, :settle)[:closures] || [])
+    |> Workloads.evaluations()
+    |> Enum.group_by(&{&1.repository, &1.ticket_number})
+    |> Enum.flat_map(fn {{repository, number}, evaluations} ->
+      latest = List.last(evaluations)
+
+      if closed_on_evidence?(latest) and not stepped_since?(repository, number, latest),
+        do: reopened_since(repository, number, latest),
+        else: []
+    end)
+  end
+
+  defp closed_on_evidence?(
+         %Workload{
+           state: "completed",
+           record: %{"completeness" => verdict},
+           finished_at: %DateTime{}
+         } =
+           evaluation
+       )
+       when is_map(verdict),
+       do: Evaluations.closes?(verdict) and not Evaluations.epic?(evaluation)
+
+  defp closed_on_evidence?(_), do: false
+
+  defp stepped_since?(repository, number, %Workload{finished_at: ended}) do
+    repository
+    |> Workloads.for_ticket(number)
+    |> Enum.any?(
+      &(step?(&1) and
+          DateTime.compare(DateTime.from_naive!(&1.inserted_at, "Etc/UTC"), ended) != :lt)
+    )
+  end
+
+  defp reopened_since(repository, number, %Workload{finished_at: ended}) do
+    case GitHub.get("repos/#{repository}/issues/#{number}/events?per_page=100") do
+      {:ok, events} when is_list(events) ->
+        if Enum.any?(events, &reopened_after?(&1, ended)),
+          do: [
+            start(
+              repository,
+              number,
+              "the ticket was reopened after Hephaestium closed it on its evidence, so the verdict was wrong"
+            )
+          ],
+          else: []
+
+      {:ok, _} ->
+        []
+
+      {:error, message} ->
+        [{:skipped, {:github_error, message}}]
+    end
+  end
+
+  defp reopened_after?(%{"event" => "reopened", "created_at" => at}, ended) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, at, _} -> DateTime.compare(at, ended) == :gt
+      _ -> false
+    end
+  end
+
+  defp reopened_after?(_event, _ended), do: false
+
+  @doc """
   Take the next step for each ticket whose last step is waiting on a person who has since
   said something: its last step asked a question, or failed, and a comment that is not
   Hephaestium's own was made after it ended.
