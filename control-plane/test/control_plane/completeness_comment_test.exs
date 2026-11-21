@@ -239,6 +239,58 @@ defmodule ControlPlane.CompletenessCommentTest do
       assert label_writes(gh) == []
     end
 
+    defp closes(gh),
+      do: for({"PATCH", @issue, fields} <- StandInGitHub.writes(gh), do: fields)
+
+    defp opt_in_to_closing do
+      Application.put_env(:control_plane, :settle, completeness: [@repo], closures: [@repo])
+    end
+
+    test "a verdict the evidence decides closes the ticket, with the reason on it first", %{
+      gh: gh,
+      id: id
+    } do
+      opt_in_to_closing()
+
+      assert :ok = ended(id, "OUTCOME_COMPLETED", "", %{"completeness" => verdict()})
+
+      assert [comment] = comments(gh)
+      assert comment =~ "The evidence supports closing this ticket"
+      assert comment =~ "closing this ticket"
+      assert comment =~ "Reopen it"
+      assert [["state=closed", "state_reason=completed"]] = closes(gh)
+      assert label_writes(gh) == []
+
+      writes = for {method, endpoint, _} <- StandInGitHub.writes(gh), do: {method, endpoint}
+      assert writes == [{"POST", @issue <> "/comments"}, {"PATCH", @issue}]
+    end
+
+    test "a repository that has not opted in to closing is only commented on", %{
+      gh: gh,
+      id: id
+    } do
+      Application.put_env(:control_plane, :settle, completeness: [@repo])
+
+      assert :ok = ended(id, "OUTCOME_COMPLETED", "", %{"completeness" => verdict()})
+
+      assert [comment] = comments(gh)
+      refute comment =~ "Reopen it"
+      assert closes(gh) == []
+    end
+
+    test "a verdict that needs a person is not closed, whatever the repository", %{
+      gh: gh,
+      id: id
+    } do
+      opt_in_to_closing()
+
+      needing = verdict(%{"verdict" => "owed", "decides" => "person", "decides_because" => "x"})
+      assert :ok = ended(id, "OUTCOME_COMPLETED", "", %{"completeness" => needing})
+
+      assert [_comment] = comments(gh)
+      assert closes(gh) == []
+    end
+
     test "an evaluation that failed says so and why, and changes no label", %{gh: gh, id: id} do
       assert :ok =
                ended(

@@ -98,6 +98,77 @@ defmodule ControlPlane.EvaluationsTest do
     assert evaluations(merged) == []
   end
 
+  describe "which verdicts close their ticket" do
+    @met_requirement %{
+      "text" => "the spec waits",
+      "settled_by" => "evidence",
+      "status" => "met",
+      "evidence" => %{"kind" => "test", "where" => "e2e/a.spec.ts"}
+    }
+
+    defp deciding(overrides),
+      do:
+        Map.merge(
+          %{
+            "verdict" => "met",
+            "decides" => "evidence",
+            "epic" => false,
+            "requirements" => [@met_requirement],
+            "owed" => [],
+            "could_not_check" => []
+          },
+          overrides
+        )
+
+    test "a verdict the evidence decides closes it" do
+      assert Evaluations.closes?(deciding(%{}))
+    end
+
+    test "observed evidence closes it as a test does" do
+      observed = put_in(@met_requirement, ["evidence", "kind"], "observed")
+      assert Evaluations.closes?(deciding(%{"requirements" => [observed]}))
+    end
+
+    test "nothing else does" do
+      shaky = fn changes -> Map.merge(@met_requirement, changes) end
+
+      for {why, verdict} <- [
+            {"not met", deciding(%{"verdict" => "not_met"})},
+            {"owed", deciding(%{"verdict" => "owed"})},
+            {"cannot judge", deciding(%{"verdict" => "cannot_judge"})},
+            {"a person decides", deciding(%{"decides" => "person"})},
+            {"an epic", deciding(%{"epic" => true})},
+            {"no requirements", deciding(%{"requirements" => []})},
+            {"something owed", deciding(%{"owed" => [%{"what" => "x"}]})},
+            {"something not checked", deciding(%{"could_not_check" => ["the logs"]})},
+            {"a requirement a person settles",
+             deciding(%{"requirements" => [shaky.(%{"settled_by" => "person"})]})},
+            {"a requirement not met",
+             deciding(%{"requirements" => [shaky.(%{"status" => "owed"})]})},
+            {"evidence that is only structure",
+             deciding(%{
+               "requirements" => [put_in(@met_requirement, ["evidence", "kind"], "structure")]
+             })},
+            {"evidence that is only a claim",
+             deciding(%{
+               "requirements" => [put_in(@met_requirement, ["evidence", "kind"], "claim")]
+             })},
+            {"no evidence",
+             deciding(%{"requirements" => [Map.delete(@met_requirement, "evidence")]})}
+          ] do
+        refute Evaluations.closes?(verdict), "closed on a verdict with #{why}"
+      end
+    end
+
+    test "a repository opts in to closing, apart from opting in to evaluation" do
+      Application.put_env(:control_plane, :settle, completeness: [@repo], closures: [])
+      refute Evaluations.closing?(@repo)
+
+      Application.put_env(:control_plane, :settle, completeness: [@repo], closures: [@repo])
+      assert Evaluations.closing?(@repo)
+    end
+  end
+
   describe "a ticket judged too often" do
     defp judged_times(merged, count, age_hours \\ 0) do
       for _ <- 1..count do

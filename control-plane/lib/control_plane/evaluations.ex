@@ -26,6 +26,36 @@ defmodule ControlPlane.Evaluations do
   @spec enabled?(String.t()) :: boolean()
   def enabled?(repository), do: repository in (settings()[:completeness] || [])
 
+  @doc "Whether this repository lets Hephaestium close a ticket whose verdict the evidence decides."
+  @spec closing?(String.t()) :: boolean()
+  def closing?(repository), do: repository in (settings()[:closures] || [])
+
+  @doc """
+  Whether a verdict closes its ticket. The contract's `decides` already says so; it is the
+  agent's word, so it is checked here against what the verdict itself holds: the verdict is
+  met, the ticket is not an epic, nothing is owed or left unchecked, and every requirement is
+  met, can be settled by evidence, and rests on evidence that was observed or tested, not on
+  the code existing or a claim. Anything short of that is for a person.
+  """
+  @spec closes?(map()) :: boolean()
+  def closes?(%{"verdict" => "met", "decides" => "evidence", "epic" => false} = verdict) do
+    requirements = verdict["requirements"]
+
+    verdict["owed"] in [nil, []] and verdict["could_not_check"] in [nil, []] and
+      is_list(requirements) and requirements != [] and Enum.all?(requirements, &settled?/1)
+  end
+
+  def closes?(_), do: false
+
+  defp settled?(%{
+         "status" => "met",
+         "settled_by" => "evidence",
+         "evidence" => %{"kind" => kind}
+       }),
+       do: kind in ["observed", "test"]
+
+  defp settled?(_), do: false
+
   @doc """
   Queue an evaluation of the ticket the merged workload was for, unless there is nothing
   to judge: the repository has not opted in, the ticket is already closed, or an

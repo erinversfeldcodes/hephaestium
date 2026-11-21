@@ -246,7 +246,8 @@ a setting that stays off until it is named, so a repository chooses how far it g
 | `HEPH_AUTOMERGE` | The repositories whose green, approved pull requests are merged | none |
 | `HEPH_ATHENAEUM_REF` | The Athenaeum release lenses and skills are read from | none |
 | `HEPH_COMPLETENESS` | The repositories whose merged tickets are judged | none |
-| `HEPH_COMPLETENESS_INTERVAL_HOURS`, `HEPH_COMPLETENESS_RECHECKS` | How long to wait before judging an owed ticket again, and how many more times | 24, 7 |
+| `HEPH_CLOSURES` | The repositories where Hephaestium closes a ticket itself when its verdict is met on observed or tested evidence, nothing needs a person and it is not an epic (they must also be in `HEPH_COMPLETENESS`) | none |
+| `HEPH_COMPLETENESS_INTERVAL_HOURS`, `HEPH_COMPLETENESS_RECHECKS` | How long to wait before judging an owed or failed ticket again, and how many more times | 24, 7 |
 
 The control plane starts the executor with its own environment, so the token files in
 [`docs/tokens.md`](./docs/tokens.md) are given to it the same way. It is not yet packaged to

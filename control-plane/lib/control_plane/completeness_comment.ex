@@ -10,8 +10,8 @@ defmodule ControlPlane.CompletenessComment do
   """
 
   @doc "The comment for a verdict, as the run record holds it."
-  @spec render(map()) :: String.t()
-  def render(verdict) do
+  @spec render(map(), boolean()) :: String.t()
+  def render(verdict, closing \\ false) do
     [
       headline(verdict),
       deciding(verdict),
@@ -19,7 +19,8 @@ defmodule ControlPlane.CompletenessComment do
       goal(verdict["goal"]),
       owed(verdict["owed"] || []),
       list("Not filed", verdict["not_filed"] || []),
-      list("Could not check", verdict["could_not_check"] || [])
+      list("Could not check", verdict["could_not_check"] || []),
+      closing(closing)
     ]
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join("\n\n")
@@ -83,6 +84,12 @@ defmodule ControlPlane.CompletenessComment do
     |> Enum.join(" ")
     |> String.replace(~r/^(\S+ \d+) /, "\\1, ")
   end
+
+  defp closing(true),
+    do:
+      "Hephaestium is closing this ticket on this evidence. Reopen it if the verdict is wrong; a reopened ticket is taken as the verdict having been wrong."
+
+  defp closing(false), do: ""
 
   defp headline(verdict) do
     "**Hephaestium:** judged whether this ticket's goal is met, at `#{short(verdict["commit"])}` of the default branch: **#{words(verdict["verdict"])}**."

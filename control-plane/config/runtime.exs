@@ -74,6 +74,12 @@ settle =
       [] -> []
       repositories -> [completeness: repositories]
     end ++
+    case System.get_env("HEPH_CLOSURES", "")
+         |> String.split(",", trim: true)
+         |> Enum.map(&String.trim/1) do
+      [] -> []
+      repositories -> [closures: repositories]
+    end ++
     case Integer.parse(System.get_env("HEPH_COMPLETENESS_INTERVAL_HOURS", "")) do
       {hours, ""} when hours > 0 -> [completeness_interval_hours: hours]
       _ -> []
