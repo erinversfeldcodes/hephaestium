@@ -296,6 +296,77 @@ defmodule ControlPlane.GapsTest do
     end
   end
 
+  describe "a verdict from before the questioning existed" do
+    defp judged(kind, at \\ ~U[2026-11-20 10:00:00Z]) do
+      {:ok, record} =
+        Workloads.create(Map.put(workload(), "completeness", %{"skillDocument" => "x"}))
+
+      {:ok, _} = Events.append(record.id, event(record.id, 1, started(), at))
+
+      {:ok, _} =
+        Events.append(record.id, event(record.id, 2, finished("OUTCOME_COMPLETED", ""), at))
+
+      Workloads.keep_record(record.id, %{"completeness" => verdict_for(kind)})
+      Workloads.get(record.id)
+    end
+
+    test "that found the goal not met is questioned, saying why" do
+      judged("not_met")
+
+      assert [{:started, _}] = Gaps.unquestioned()
+      assert [step] = steps()
+      assert step.workload["gap"]["because"] =~ "not met"
+    end
+
+    test "that could not be judged is questioned" do
+      judged("cannot_judge")
+
+      assert [{:started, _}] = Gaps.unquestioned()
+    end
+
+    test "that was met or owed is not" do
+      judged("met")
+      assert Gaps.unquestioned() == []
+      judged("owed")
+      assert Gaps.unquestioned() == []
+    end
+
+    test "is questioned once, however often it is looked for" do
+      judged("not_met")
+
+      assert [{:started, id}] = Gaps.unquestioned()
+      # It ended after everything before it, as a step that was started later does.
+      later = ~U[2026-11-22 00:00:00Z]
+      {:ok, _} = Events.append(id, event(id, 1, started(), later))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", ""), later))
+      Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
+
+      assert Gaps.unquestioned() == []
+      assert length(steps()) == 1
+    end
+
+    test "only the latest verdict counts" do
+      judged("not_met", ~U[2026-11-20 10:00:00Z])
+      judged("met", ~U[2026-11-20 12:00:00Z])
+
+      assert Gaps.unquestioned() == []
+    end
+
+    test "is not looked for in a repository that has not opted in" do
+      judged("not_met")
+      Application.put_env(:control_plane, :settle, completeness: [], athenaeum_ref: @ref)
+
+      assert Gaps.unquestioned() == []
+    end
+
+    test "is looked for by the job that answers replies" do
+      judged("not_met")
+
+      assert :ok = perform_job(ControlPlane.Jobs.AnswerReplies, %{})
+      assert length(steps()) == 1
+    end
+  end
+
   describe "a ticket reopened after Hephaestium closed it" do
     @events "repos/#{@repo}/issues/12/events?per_page=100"
 
@@ -379,8 +450,10 @@ defmodule ControlPlane.GapsTest do
       StandInGitHub.respond(gh, @events, [reopened("2026-11-20T12:00:00Z")])
 
       assert [{:started, id}] = Gaps.reopened()
-      {:ok, _} = Events.append(id, event(id, 1, started()))
-      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      # It ended after everything before it, as a step that was started later does.
+      later = ~U[2026-11-22 00:00:00Z]
+      {:ok, _} = Events.append(id, event(id, 1, started(), later))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", ""), later))
       Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
 
       assert Gaps.reopened() == []
@@ -474,8 +547,10 @@ defmodule ControlPlane.GapsTest do
       StandInGitHub.respond(gh, @comments, [comment_at("2026-11-20T11:00:00Z", "The button.")])
 
       assert [{:started, id}] = Gaps.replies()
-      {:ok, _} = Events.append(id, event(id, 1, started()))
-      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+      # It ended after everything before it, as a step that was started later does.
+      later = ~U[2026-11-22 00:00:00Z]
+      {:ok, _} = Events.append(id, event(id, 1, started(), later))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", ""), later))
       Workloads.keep_record(id, %{"gap" => %{"step" => "nothing", "text" => "x"}})
 
       assert Gaps.replies() == []
