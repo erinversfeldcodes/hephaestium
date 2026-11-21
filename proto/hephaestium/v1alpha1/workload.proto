@@ -34,6 +34,12 @@ message Workload {
   // verdict and changes nothing. A workload is never a completeness evaluation and a
   // revision or a review.
   Completeness completeness = 10;
+  // Set when this workload takes one step of the questioning that follows a ticket found
+  // not complete: it reads the ticket's thread and ends by asking the next question,
+  // proposing the tickets that close the gap, or saying there is nothing more to ask. It
+  // changes nothing. A workload is never a gap step and a revision, a review or a
+  // completeness evaluation.
+  Gap gap = 11;
 }
 
 // The ticket, as a maintainer approved it. The executor builds the agent's
@@ -172,6 +178,17 @@ message Completeness {
   // Set on a second attempt: why the first attempt's verdict was refused by the completeness
   // contract. It is output to read and not an instruction.
   string refused = 3;
+}
+
+// One step of the conversation that finds what is missing from a ticket that is not
+// complete. Each step stands alone: it reads the whole thread and does not rely on any
+// earlier step, so a question that waits for an answer costs nothing.
+message Gap {
+  // The text of the `close-the-gap` skill, as the pinned Athenaeum release has it.
+  string skill_document = 1;
+  // Why this step was started, in a sentence: the verdict found the goal not met, a
+  // person judged an epic incomplete, a closed ticket was reopened, or a person replied.
+  string because = 2;
 }
 
 // One thing a completeness verdict said cannot be settled yet.

@@ -22,6 +22,7 @@ use crate::claude_code::ClaudeCode;
 use crate::cli::Options;
 use crate::completeness;
 use crate::deliver;
+use crate::gap;
 use crate::review;
 use crate::secrets::{self, Secrets};
 use crate::stream::Stream;
@@ -180,6 +181,7 @@ fn keep(record: &mut RunRecord, verdict: Option<Said>) -> Result<(), Refused> {
             record.completeness =
                 Some(serde_json::from_value(said).map_err(|e| Refused(e.to_string()))?);
         }
+        Some(Said::Gap(step)) => record.gap = Some(step),
         None => {}
     }
     Ok(())
@@ -189,11 +191,12 @@ fn keep(record: &mut RunRecord, verdict: Option<Said>) -> Result<(), Refused> {
 enum Said {
     Review(serde_json::Value),
     Completeness(serde_json::Value),
+    Gap(contracts::v1alpha1::GapStep),
 }
 
 /// Whether the workload is held to changing nothing and ends with a verdict.
 fn read_only(workload: &Workload) -> bool {
-    workload.review.is_some() || workload.completeness.is_some()
+    workload.review.is_some() || workload.completeness.is_some() || workload.gap.is_some()
 }
 
 /// What a read-only run has to show for itself once the agent is done: the workspace is
@@ -205,6 +208,8 @@ fn judged(
 ) -> Result<Said, String> {
     if workload.completeness.is_some() {
         evaluated(workload, workspace, before).map(Said::Completeness)
+    } else if workload.gap.is_some() {
+        stepped(workload, workspace, before).map(Said::Gap)
     } else {
         reviewed(workload, workspace, before).map(Said::Review)
     }
@@ -230,6 +235,23 @@ fn evaluated(
         }
     }
     completeness::verdict(workspace, commit, ticket)
+}
+
+/// What a step of the questioning has to show: the workspace is what it was, and what it
+/// wrote is one of the three ways a step may end.
+fn stepped(
+    workload: &Workload,
+    workspace: &Path,
+    before: Option<&review::Snapshot>,
+) -> Result<contracts::v1alpha1::GapStep, String> {
+    let ticket = workload.ticket.as_ref().map_or(0, |t| t.number);
+    if let Some(before) = before {
+        let after = review::snapshot(workspace)?;
+        if let Some(changed) = review::changed_since_by("step", before, &after) {
+            return Err(changed);
+        }
+    }
+    gap::step(workspace, ticket)
 }
 
 /// What a review has to show for itself once the agent is done: the workspace is
@@ -645,6 +667,8 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     text.push_str(review::VERDICT_FILE);
     text.push('\n');
     text.push_str(completeness::VERDICT_FILE);
+    text.push('\n');
+    text.push_str(gap::STEP_FILE);
     text.push('\n');
     fs::write(&exclude, text)
         .map_err(|e| format!("could not keep the commit message out of the changes: {e}"))

@@ -45,11 +45,11 @@ fn environment_for(
                 .map(|value| (name.clone(), value))
         })
         .collect();
-    // An evaluation reads runs, caches, pull requests and issues, so it alone is given the
-    // read-only token, under the name `gh` looks for. It is the executor and not the
+    // An evaluation reads runs, caches, pull requests and issues, and a step of the questioning
+    // reads a ticket's thread, so those alone are given the read-only token, under the name `gh` looks for. It is the executor and not the
     // adapter that decides, so no adapter's plan can hand it to another kind of workload,
     // and the token that writes is never part of it.
-    if workload.completeness.is_some()
+    if (workload.completeness.is_some() || workload.gap.is_some())
         && let Some(token) = secrets.get(crate::secrets::READ_TOKEN)
     {
         environment.push(("GH_TOKEN".to_owned(), token.to_owned()));

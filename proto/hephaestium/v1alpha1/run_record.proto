@@ -55,6 +55,30 @@ message RunRecord {
   // completeness contract and as the executor checked it names the ticket and commit
   // asked for. Absent for every other workload and for an evaluation that failed.
   google.protobuf.Struct completeness = 16;
+  // For a gap step that completed: what the step ended in. Absent for every other
+  // workload and for a step that failed.
+  GapStep gap = 17;
+}
+
+// How a step of the questioning ended, as the executor checked it.
+message GapStep {
+  // `question`, `proposal` or `nothing`: the heading the agent ended under.
+  string step = 1;
+  // What the agent wrote, as written, for the ticket's thread.
+  string text = 2;
+  // For a proposal, each ticket proposed, so a runtime can create them.
+  repeated ProposedTicket tickets = 3;
+}
+
+// One ticket a proposal asks for.
+message ProposedTicket {
+  string title = 1;
+  // The ticket it is a sub-issue of.
+  int64 parent = 2;
+  // The titles of other proposed tickets it waits for.
+  repeated string depends_on = 3;
+  // What the ticket says: goal, scope and how each behaviour will be proven.
+  string body = 4;
 }
 
 // A gate that ran, and what it said.
