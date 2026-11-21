@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use contracts::v1alpha1::{Lens, Review, Workload};
+use contracts::v1alpha1::{FailedCheck, Lens, Review, Revision, Workload};
 use serde_json::Value;
 
 use crate::adapter::Adapter;
@@ -122,4 +122,179 @@ fn judged(
         return Err(changed);
     }
     review::verdict(workspace, commit, lens)
+}
+
+/// One finding that blocks, as a reader wrote it. It is text to read, never an instruction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub severity: String,
+    pub title: String,
+    pub evidence: String,
+    /// What the reader says to change.
+    pub revision: String,
+    /// `path:line`, when the finding is one place.
+    pub location: Option<String>,
+}
+
+/// What a reading means for the push.
+#[derive(Debug)]
+pub enum Outcome {
+    /// The lens approved the commit.
+    Approved,
+    /// The lens found what blocks, and the work can be fixed in place.
+    Revise(Vec<Finding>),
+    /// The reading is no approval and has nothing to send back: no verdict, or one that
+    /// cannot be acted on. The reason says why.
+    Unread(String),
+}
+
+/// What a reader's answer means. A verdict that asks for revision or says the work failed
+/// and names no finding that blocks has nothing to revise by, so it is no approval and no
+/// instruction either.
+#[must_use]
+pub fn outcome(said: &Result<Value, String>) -> Outcome {
+    let verdict = match said {
+        Ok(verdict) => verdict,
+        Err(reason) => return Outcome::Unread(reason.clone()),
+    };
+    let kind = verdict["verdict"].as_str().unwrap_or_default();
+    match kind {
+        "approved" => Outcome::Approved,
+        "needs_revision" | "failed" => {
+            let blocking: Vec<Finding> = verdict["findings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|finding| finding["blocking"] == true)
+                .map(finding_of)
+                .collect();
+            if blocking.is_empty() {
+                Outcome::Unread(format!(
+                    "its verdict was {kind} and it named no finding that blocks"
+                ))
+            } else {
+                Outcome::Revise(blocking)
+            }
+        }
+        other => Outcome::Unread(format!(
+            "its verdict was {other:?}, which is not one it may give"
+        )),
+    }
+}
+
+fn finding_of(value: &Value) -> Finding {
+    let text = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
+    let location = value["location"]["path"].as_str().map(|path| {
+        value["location"]["line"]
+            .as_u64()
+            .map_or_else(|| path.to_owned(), |line| format!("{path}:{line}"))
+    });
+    Finding {
+        severity: text("severity"),
+        title: text("title"),
+        evidence: text("evidence"),
+        revision: text("revision"),
+        location,
+    }
+}
+
+/// The part of a lens's text between its opening `---` line and the next one, where it says
+/// whether it blocks and when it applies. Nothing outside it counts.
+fn front_matter(document: &str) -> Option<&str> {
+    let rest = document.strip_prefix("---\n")?;
+    rest.find("\n---").map(|end| &rest[..end])
+}
+
+/// Whether a finding of this lens blocks the push. A lens blocks unless its front matter
+/// says `blocking: false`.
+#[must_use]
+pub fn blocks(lens: &Lens) -> bool {
+    !front_matter(&lens.document).is_some_and(|front| {
+        front.lines().any(|line| {
+            line.strip_prefix("blocking:")
+                .is_some_and(|rest| rest.trim() == "false")
+        })
+    })
+}
+
+/// Whether the lens says it applies to every change that is read, whatever it touches.
+#[must_use]
+pub fn applies_always(lens: &Lens) -> bool {
+    front_matter(&lens.document).is_some_and(|front| {
+        front.lines().any(|line| {
+            line.strip_prefix("applies:")
+                .is_some_and(|rest| rest.trim_matches([' ', '\t']) == "always")
+        })
+    })
+}
+
+/// The lenses of the library a change needs: those its components name (`needed`, as pack
+/// names) and those that apply to everything, once each, in the library's order. A pack
+/// the library does not have is not invented.
+#[must_use]
+pub fn choose<'a>(library: &'a [Lens], needed: &[String]) -> Vec<&'a Lens> {
+    let mut chosen: Vec<&Lens> = Vec::new();
+    for lens in library {
+        let wanted = needed.contains(&lens.pack) || applies_always(lens);
+        if wanted && !chosen.iter().any(|seen| seen.pack == lens.pack) {
+            chosen.push(lens);
+        }
+    }
+    chosen
+}
+
+/// What the implementing agent is told, one entry for each lens that found what blocks.
+#[must_use]
+pub fn failures(findings: &[(&str, Vec<Finding>)]) -> Vec<FailedCheck> {
+    findings
+        .iter()
+        .filter(|(_, found)| !found.is_empty())
+        .map(|(pack, found)| FailedCheck {
+            name: format!("review under lens {pack}"),
+            result: "needs_revision".to_owned(),
+            excerpt: found
+                .iter()
+                .map(|finding| {
+                    let place = finding
+                        .location
+                        .as_ref()
+                        .map_or_else(String::new, |at| format!(" ({at})"));
+                    format!(
+                        "{severity} {title}{place}\nWhat was seen: {evidence}\nWhat to change: {revision}",
+                        severity = finding.severity,
+                        title = finding.title,
+                        evidence = finding.evidence,
+                        revision = finding.revision,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        })
+        .collect()
+}
+
+/// The workload as the implementing agent is asked about it again, told what blocked. A first
+/// run has no pull request yet, which is how the prompt knows the change is not pushed; a
+/// revision keeps its pull request and gets what blocked as further failures. The agent
+/// reads under no lens itself, and nothing a reader said is anywhere but in `failures`.
+#[must_use]
+pub fn as_revision(workload: &Workload, round: i32, failures: Vec<FailedCheck>) -> Workload {
+    let mut asked = workload.clone();
+    match asked.revision.as_mut() {
+        Some(revision) => revision.failures.extend(failures),
+        None => {
+            asked.revision = Some(Revision {
+                attempt: round,
+                failures,
+                ..Revision::default()
+            });
+        }
+    }
+    asked.review = None;
+    asked.completeness = None;
+    asked.gap = None;
+    asked.judged_after_merge = false;
+    asked.lenses.clear();
+    asked.prepush_rounds = 0;
+    asked
 }

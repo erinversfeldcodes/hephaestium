@@ -134,26 +134,15 @@ fn run(command: &[&str], directory: &Path, token: &str, what: &str) -> Result<Ve
     }
 }
 
-/// Commit what the agent did, push it, and open the pull request.
-///
-/// # Errors
-///
-/// Returns why nothing could be delivered, or why delivery stopped part way:
-/// the reason the workload ends failed. Nothing already done is undone.
-///
-/// # Panics
-///
-/// If the workload has no ticket or repository. Reading a workload refuses one
-/// without them.
-pub fn deliver(
-    workload: &Workload,
-    workspace: &Path,
-    gh: &str,
-    token: &str,
-    deferred: &[Deferred],
-) -> Result<PullRequestOpened, String> {
-    let ticket = workload.ticket.clone().unwrap_or_default();
+/// What a local commit made.
+#[derive(Debug)]
+pub struct Committed {
+    /// The branch the commit is on, which is the one it will be pushed to.
+    pub branch: String,
+}
 
+/// The commit message the agent left, if it is one the repository's rule allows.
+fn read_message(workspace: &Path) -> Result<String, String> {
     let message_path = workspace.join(MESSAGE_FILE);
     let message = std::fs::read_to_string(&message_path).map_err(|_| {
         format!("the agent left no commit message: it must write a conventional commit subject to {MESSAGE_FILE}")
@@ -165,11 +154,29 @@ pub fn deliver(
             "{MESSAGE_FILE} does not start with a conventional commit subject (type: description): {subject:?}"
         ));
     }
+    Ok(message)
+}
+
+/// Commit what the agent did, on the branch it will be pushed to. Nothing is pushed and no
+/// token is held: this is the part of delivery that can be done, and read, before anything
+/// leaves the machine.
+///
+/// # Errors
+///
+/// Returns why there is nothing to commit: no message, one that is not conventional, or
+/// no change.
+///
+/// # Panics
+///
+/// If the workload has no ticket. Reading a workload refuses one without it.
+pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed, String> {
+    let ticket = workload.ticket.clone().unwrap_or_default();
+    let message = read_message(workspace)?;
 
     let tree_unchanged = run(
         &["git", "status", "--porcelain"],
         workspace,
-        token,
+        "",
         "git status",
     )?
     .is_empty();
@@ -182,7 +189,7 @@ pub fn deliver(
         && run(
             &["git", "log", "-1", "--format=%B"],
             workspace,
-            token,
+            "",
             "git log",
         )?
         .join("\n")
@@ -201,15 +208,88 @@ pub fn deliver(
     run(
         &["git", "switch", "-c", &branch],
         workspace,
-        token,
+        "",
         "git switch",
     )?;
-    run(&["git", "add", "-A"], workspace, token, "git add")?;
+    run(&["git", "add", "-A"], workspace, "", "git add")?;
     let mut commit = vec!["git", "commit", "-q", "-F", MESSAGE_FILE, "--cleanup=strip"];
     if account_only {
         commit.push("--allow-empty");
     }
-    run(&commit, workspace, token, "git commit")?;
+    run(&commit, workspace, "", "git commit")?;
+    Ok(Committed { branch })
+}
+
+/// Rewrite the commit that was made locally from what the working tree and the message now
+/// are, so a change fixed before it is pushed is still one commit.
+///
+/// # Errors
+///
+/// Returns why the commit could not be rewritten.
+pub fn amend_locally(_workload: &Workload, workspace: &Path) -> Result<(), String> {
+    read_message(workspace)?;
+    run(&["git", "add", "-A"], workspace, "", "git add")?;
+    run(
+        &[
+            "git",
+            "commit",
+            "-q",
+            "--amend",
+            "--allow-empty",
+            "-F",
+            MESSAGE_FILE,
+            "--cleanup=strip",
+        ],
+        workspace,
+        "",
+        "git commit --amend",
+    )?;
+    Ok(())
+}
+
+/// Commit what the agent did, push it, and open the pull request.
+///
+/// # Errors
+///
+/// Returns why nothing could be delivered, or why delivery stopped part way:
+/// the reason the workload ends failed. Nothing already done is undone.
+///
+/// # Panics
+///
+/// If the workload has no ticket or repository. Reading a workload refuses one
+/// without them.
+pub fn deliver(
+    workload: &Workload,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    deferred: &[Deferred],
+) -> Result<PullRequestOpened, String> {
+    let committed = commit_locally(workload, workspace)?;
+    push_and_open(workload, workspace, gh, token, deferred, &committed)
+}
+
+/// Push a commit that was made locally, and open the pull request, or for a revision update
+/// the one that exists.
+///
+/// # Errors
+///
+/// Returns why it could not be pushed or the pull request opened or updated.
+///
+/// # Panics
+///
+/// If the workload has no ticket or repository. Reading a workload refuses one
+/// without them.
+pub fn push_and_open(
+    workload: &Workload,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    deferred: &[Deferred],
+    committed: &Committed,
+) -> Result<PullRequestOpened, String> {
+    let message = read_message(workspace)?;
+    let branch = committed.branch.clone();
 
     let helper = format!("credential.helper=!{gh} auth git-credential");
     run(
