@@ -16,7 +16,8 @@ config :control_plane, Oban,
        {"* * * * *", ControlPlane.Jobs.SettleTickets},
        {"7 * * * *", ControlPlane.Jobs.RecheckOwed},
        {"*/10 * * * *", ControlPlane.Jobs.EvaluateMerged},
-       {"*/10 * * * *", ControlPlane.Jobs.RollUpEpics}
+       {"*/10 * * * *", ControlPlane.Jobs.RollUpEpics},
+       {"*/5 * * * *", ControlPlane.Jobs.AnswerReplies}
      ]}
   ]
 
