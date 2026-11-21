@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build heph for one target, prove it reports the version being released, and
-# package it into dist/.
+# Build heph and the executor for one target, prove each reports the version being
+# released, and package both into one tarball in dist/. The control plane runs both, so
+# a release that held only one of them could not be run.
 #
 #   HEPHAESTIUM_VERSION=1.2.3 build-artifact.sh <rust-target> <platform>
 #
@@ -17,17 +18,33 @@ version=${HEPHAESTIUM_VERSION:?HEPHAESTIUM_VERSION must name the version being b
 cd "$(git rev-parse --show-toplevel)"
 
 rustup target add "$target"
-cargo build --release --locked --target "$target" -p heph
+binaries=(heph executor)
 
-binary=target/$target/release/heph
-scripts/release.sh check-version "$binary" "$version"
+cargo build --release --locked --target "$target" -p heph -p executor
+
+for binary in "${binaries[@]}"; do
+  scripts/release.sh check-version "target/$target/release/$binary" "$version"
+done
 
 name=heph-v$version-$platform
 staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 mkdir "$staging/$name"
-cp "$binary" LICENSE README.md "$staging/$name/"
+for binary in "${binaries[@]}"; do
+  cp "target/$target/release/$binary" "$staging/$name/"
+done
+cp LICENSE README.md "$staging/$name/"
 
 mkdir -p dist
 tar -czf "dist/$name.tar.gz" -C "$staging" "$name"
+
+# The tarball is what is shipped, so it is what is checked: both binaries are in it.
+listing=$(tar -tzf "dist/$name.tar.gz")
+for binary in "${binaries[@]}"; do
+  if ! grep -qx "$name/$binary" <<<"$listing"; then
+    echo "dist/$name.tar.gz does not hold $binary" >&2
+    exit 1
+  fi
+done
+echo "$listing"
 echo "dist/$name.tar.gz"

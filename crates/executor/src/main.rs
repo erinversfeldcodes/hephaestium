@@ -16,7 +16,13 @@ const VERSION: &str = match option_env!("HEPHAESTIUM_VERSION") {
 };
 
 fn main() -> ExitCode {
-    let options = match cli::parse(std::env::args().skip(1)) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Alone, as `heph` takes it: a release proves each binary it ships reports its version.
+    if matches!(args.as_slice(), [flag] if flag == "--version" || flag == "-V") {
+        println!("executor {VERSION}");
+        return ExitCode::SUCCESS;
+    }
+    let options = match cli::parse(args) {
         Ok(options) => options,
         Err(message) => {
             eprintln!("executor: {message}\n\n{}", cli::USAGE);

@@ -14,7 +14,7 @@
 #
 # Adding a buildable component: build it in scripts/build-artifact.sh, or add
 # a script like it and a matching leg below and in ci.yml. Everything a build
-# leg uploads is attached to the release.
+# leg uploads is attached to the release, with a checksum file for it.
 name: release
 
 on:
@@ -116,6 +116,11 @@ jobs:
           pattern: heph-*
           path: dist
           merge-multiple: true
+      # One line per tarball, in the form `sha256sum -c` and `shasum -a 256 -c` read, so a
+      # download can be checked before it is run.
+      - name: Write the checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz | tee SHA256SUMS
       # The notes cover the commits since the previous tag, so they are
       # written before this release's tag exists.
       - name: Create the tag and the release
@@ -123,5 +128,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           scripts/release.sh notes > notes.md
-          gh release create "v$VERSION" dist/*.tar.gz \
+          gh release create "v$VERSION" dist/*.tar.gz dist/SHA256SUMS \
             --target "$TARGET" --title "v$VERSION" --notes-file notes.md
