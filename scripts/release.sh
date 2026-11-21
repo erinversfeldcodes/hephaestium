@@ -6,6 +6,8 @@
 #                        since the last release warrants one
 #   release.sh notes     print release notes for those commits
 #   release.sh lint      check the commit subjects read on stdin
+#   release.sh attribution
+#                        fail if the text on stdin credits an agent
 #   release.sh check-version BINARY VERSION
 #                        fail unless BINARY --version reports VERSION
 #
@@ -113,6 +115,29 @@ lint() {
   return $status
 }
 
+# Commit messages and pull request text carry no agent attribution: no trailer crediting
+# an agent as an author, no "generated with" credit, no link to a session. Each is a
+# line of the text; a human co-author, or a message that merely talks about an agent,
+# is not one.
+AGENTS_RE="claude|anthropic|openai|chatgpt|copilot|codex|gemini|cursor|aider|devin|\\[bot\\]"
+attribution() {
+  local text status=0 line
+  text=$(cat)
+  if [[ -z ${text//[[:space:]]/} ]]; then
+    echo "no text was given to check" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    if grep -qiE "^[[:space:]]*co-authored-by:.*($AGENTS_RE)" <<<"$line" \
+      || grep -qE "^[[:space:]]*Claude-Session:|claude\.ai/code/session" <<<"$line" \
+      || grep -qiE "generated (with|by)[^a-z]*($AGENTS_RE)" <<<"$line"; then
+      echo "agent attribution is not allowed in a commit message or pull request text: $line" >&2
+      status=1
+    fi
+  done <<<"$text"
+  return $status
+}
+
 # A binary that reports the wrong version is worse than one that reports
 # none, because it will be believed. The version is compiled in from the
 # environment at release, so this is the check that the build step passed it.
@@ -137,9 +162,10 @@ case ${1:-} in
   version) version ;;
   notes) notes ;;
   lint) lint ;;
+  attribution) attribution ;;
   check-version) check_version "${2:-}" "${3:-}" ;;
   *)
-    echo "usage: release.sh version|notes|lint|check-version BINARY VERSION" >&2
+    echo "usage: release.sh version|notes|lint|attribution|check-version BINARY VERSION" >&2
     exit 2
     ;;
 esac

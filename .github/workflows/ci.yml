@@ -40,6 +40,22 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: scripts/release.sh lint <<<"$TITLE"
+      # No agent attribution anywhere a change is described: the title, the body and the
+      # whole message of every commit.
+      - name: Pull request text carries no agent attribution
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: scripts/release.sh attribution <<<"$TITLE"$'\n'"$BODY"
+      - name: Commit messages carry no agent attribution
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: git log --no-merges --format=%B "$BASE..$HEAD" | scripts/release.sh attribution
+      - name: The attribution check refuses what it should
+        run: scripts/test-attribution.sh
       - name: Pull request commits
         if: github.event_name == 'pull_request'
         env:
