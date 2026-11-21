@@ -29,11 +29,28 @@ keep_hours =
       end
   end
 
+# The free space, in megabytes, below which a run is not started. 0 turns the check off.
+min_free_mb =
+  case System.get_env("HEPH_MIN_FREE_MB") do
+    value when value in [nil, ""] ->
+      nil
+
+    value ->
+      case Integer.parse(value) do
+        {megabytes, ""} when megabytes >= 0 ->
+          megabytes
+
+        _ ->
+          raise "HEPH_MIN_FREE_MB must be a whole number of megabytes, not #{inspect(value)}"
+      end
+  end
+
 runner =
   [
     executor: System.get_env("HEPH_EXECUTOR"),
     runs_dir: System.get_env("HEPH_RUNS_DIR"),
-    workspace_keep_hours: keep_hours
+    workspace_keep_hours: keep_hours,
+    min_free_mb: min_free_mb
   ]
   |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
 
