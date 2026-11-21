@@ -105,8 +105,26 @@ settle =
       repositories -> [automerge: repositories]
     end
 
+# How many rounds a run reads its own change under the lenses it needs before it pushes. Zero
+# reads nothing; not set, it is two.
+prepush_rounds =
+  case System.get_env("HEPH_PREPUSH_ROUNDS") do
+    value when value in [nil, ""] ->
+      []
+
+    value ->
+      case Integer.parse(value) do
+        {rounds, ""} when rounds >= 0 ->
+          [prepush_rounds: rounds]
+
+        _ ->
+          raise "HEPH_PREPUSH_ROUNDS must be a whole number of rounds, not #{inspect(value)}"
+      end
+  end
+
 settle =
   settle ++
+    prepush_rounds ++
     case System.get_env("HEPH_REVIEWS", "")
          |> String.split(",", trim: true)
          |> Enum.map(&String.trim/1) do

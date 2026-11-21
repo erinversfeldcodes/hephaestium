@@ -14,7 +14,7 @@ defmodule ControlPlane.Intake do
   about, is not an approval.
   """
 
-  alias ControlPlane.{Evaluations, GitHub, Programs, Runner, Tickets, Workloads}
+  alias ControlPlane.{Evaluations, GitHub, Prepush, Programs, Runner, Tickets, Workloads}
 
   @label "heph:ready"
   @writers ~w(admin maintain write)
@@ -117,10 +117,12 @@ defmodule ControlPlane.Intake do
 
     with {:ok, workload} <- build(repo, number, approval),
          :ok <- unblocked(workload),
-         {:ok, record} <- create(judged_afterwards(workload, repo)),
+         {:ok, workload} <- Prepush.add(judged_afterwards(workload, repo), repo),
+         {:ok, record} <- create(workload),
          {:ok, _job} <- Runner.enqueue(record.id) do
       :started
     else
+      {:error, message} when is_binary(message) -> {:skipped, {:could_not_build, message}}
       {:blocked, numbers} -> {:skipped, {:blocked_by, numbers}}
       {:github_error, message} -> {:skipped, {:github_error, message}}
       {:could_not_build, message} -> {:skipped, {:could_not_build, message}}

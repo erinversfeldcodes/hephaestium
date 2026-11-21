@@ -101,6 +101,17 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   and one whose merge GitHub refuses are left for a person, and the ticket says why
   (`Not merged: ...`). A state GitHub has not worked out yet, and a merge that failed
   for a reason that may pass, wait for the next pass. It is attempted once per ticket.
+- Reading a change before it is pushed
+  ([ADR 0035](../docs/adr/0035-a-change-is-reviewed-locally-under-every-lens-and-pushed-only-when-each-has-approved-it.md)).
+  For a repository whose reviews are asked for (below), a first run's workload and every
+  revision's carry every lens of the pinned release that has one, with its text, and
+  `prepushRounds`: `HEPH_PREPUSH_ROUNDS` (a whole number, two if it is not set, 0 to read
+  nothing). The executor reads its own change under the lenses the change needs and pushes
+  only when each that blocks has approved it. The library is read once for a release and kept,
+  and one that cannot be read means no workload is built until it can be, as with reviews. A
+  review of the pushed commit never carries them, nor anything of what the first round found.
+  When a run listed its agents, the ticket's comment says what the implementation, the reading
+  and the fixing each spent, units kept apart.
 - Asking for reviews is off by default and chosen per repository:
   `HEPH_REVIEWS=owner/name,...`, with `HEPH_ATHENAEUM_REF=v0.17.0` naming the
   Athenaeum release the lenses are read from (an operator's choice, never anything a

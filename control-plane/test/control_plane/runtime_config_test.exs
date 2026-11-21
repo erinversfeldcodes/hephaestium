@@ -167,4 +167,40 @@ defmodule ControlPlane.RuntimeConfigTest do
       end
     end
   end
+
+  describe "how many rounds a run reads its change in before it pushes" do
+    defp prepush_rounds(value) do
+      previous = System.get_env("HEPH_PREPUSH_ROUNDS")
+
+      try do
+        if value,
+          do: System.put_env("HEPH_PREPUSH_ROUNDS", value),
+          else: System.delete_env("HEPH_PREPUSH_ROUNDS")
+
+        config = Config.Reader.read!(@runtime, env: :test, target: :host)
+        get_in(config, [:control_plane, :settle]) |> List.wrap() |> Keyword.get(:prepush_rounds)
+      after
+        if previous,
+          do: System.put_env("HEPH_PREPUSH_ROUNDS", previous),
+          else: System.delete_env("HEPH_PREPUSH_ROUNDS")
+      end
+    end
+
+    test "is the whole number that is set, and 0 is a number" do
+      assert prepush_rounds("3") == 3
+      assert prepush_rounds("0") == 0
+    end
+
+    test "is not set when nothing is, and the default is the code's" do
+      assert prepush_rounds(nil) == nil
+      assert prepush_rounds("") == nil
+    end
+
+    test "a value that is not a whole number of rounds stops the start, naming the setting" do
+      for bad <- ["many", "-1", "1.5", "2 rounds"] do
+        error = assert_raise RuntimeError, fn -> prepush_rounds(bad) end
+        assert error.message =~ "HEPH_PREPUSH_ROUNDS"
+      end
+    end
+  end
 end
