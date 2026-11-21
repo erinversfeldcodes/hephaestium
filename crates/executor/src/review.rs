@@ -32,12 +32,31 @@ pub fn prompt(workload: &Workload, review: &Review) -> String {
     let repository = workload.repository.clone().unwrap_or_default();
     let lens_fence = fence_for(&review.lens_document);
     let schema_fence = fence_for(athenaeum::review::SCHEMA);
+    // A review of a commit that is not pushed yet has no pull request to name.
+    let (opening, subject) = if review.pull_request_url.is_empty() {
+        (
+            format!(
+                "You are reviewing a change in a clone of the repository, in the current directory. It was made for ticket #{number}: {title}\n\n{body}",
+                number = ticket.number,
+                title = ticket.title,
+                body = ticket.body,
+            ),
+            "the change",
+        )
+    } else {
+        (
+            format!(
+                "You are reviewing a pull request in a clone of the repository, in the current directory. The pull request is {url}. It was opened for ticket #{number}: {title}\n\n{body}",
+                url = review.pull_request_url,
+                number = ticket.number,
+                title = ticket.title,
+                body = ticket.body,
+            ),
+            "the pull request",
+        )
+    };
     format!(
-        "You are reviewing a pull request in a clone of the repository, in the current directory. The pull request is {url}. It was opened for ticket #{number}: {title}\n\n{body}\n\nThe working tree is at commit {commit}, the commit under review. Read what the pull request changes with `git diff origin/{base}...HEAD`, and read the files around it as you need to.\n\nYou review under one lens, `{lens}`. The lens says what to look for; judge the change by it and by nothing else, and say only what you can point to.\n\n{lens_fence}\n{lens_text}\n{lens_fence}\n\nDo not change any file, do not commit and do not push: a review reads. When you have finished, write your verdict as JSON to `{file}` in the current directory. It must name commit `{commit}` and lens `{lens}`, and must satisfy this JSON Schema, including its rules (an approval holds no blocking finding, and every blocking finding says what to revise):\n\n{schema_fence}\n{schema}\n{schema_fence}\n\nThen say in one short paragraph what you found.",
-        url = review.pull_request_url,
-        number = ticket.number,
-        title = ticket.title,
-        body = ticket.body,
+        "{opening}\n\nThe working tree is at commit {commit}, the commit under review. Read what {subject} changes with `git diff origin/{base}...HEAD`, and read the files around it as you need to.\n\nYou review under one lens, `{lens}`. The lens says what to look for; judge the change by it and by nothing else, and say only what you can point to.\n\n{lens_fence}\n{lens_text}\n{lens_fence}\n\nDo not change any file, do not commit and do not push: a review reads. When you have finished, write your verdict as JSON to `{file}` in the current directory. It must name commit `{commit}` and lens `{lens}`, and must satisfy this JSON Schema, including its rules (an approval holds no blocking finding, and every blocking finding says what to revise):\n\n{schema_fence}\n{schema}\n{schema_fence}\n\nThen say in one short paragraph what you found.",
         commit = repository.base_commit,
         base = repository.base_branch,
         lens = review.lens,
