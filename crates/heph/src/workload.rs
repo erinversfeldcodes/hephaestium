@@ -280,6 +280,10 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         completeness: None,
         gap: None,
         judged_after_merge: false,
+        // Nothing is read before the push for a workload built from a ticket alone: the
+        // control plane puts the lenses and the rounds in the workloads it hands on.
+        lenses: Vec::new(),
+        prepush_rounds: 0,
     };
     Ok(Built { workload, warnings })
 }

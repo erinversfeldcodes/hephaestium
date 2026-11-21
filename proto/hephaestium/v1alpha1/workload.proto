@@ -45,6 +45,21 @@ message Workload {
   // is of an open ticket and the agent's claim that it resolved the ticket does not stand in
   // place of it.
   bool judged_after_merge = 12;
+  // Every lens the pinned Athenaeum release has, each with its text, for a run that reads its
+  // own change under the lenses it needs before it pushes anything. The executor holds no
+  // GitHub token until the push and the lenses depend on what the agent changed, so they
+  // travel with the workload and the executor chooses from them. Empty: nothing is read
+  // before the push.
+  repeated Lens lenses = 13;
+  // How many rounds that reading may take. A round is every lens the change needs reading
+  // the commit, and a revision for what blocked. Zero: nothing is read before the push.
+  int32 prepush_rounds = 14;
+}
+
+// One pack's review lens: its name, never a path, and its text as the pinned release has it.
+message Lens {
+  string pack = 1;
+  string document = 2;
 }
 
 // The ticket, as a maintainer approved it. The executor builds the agent's
