@@ -162,6 +162,9 @@ impl<'a, W: Write> Stream<'a, W> {
             review: None,
             completeness: None,
             gap: None,
+            // A run that starts one agent has no steps to tell apart: its costs are that
+            // agent's. The executor lists them for a run that reads its own change.
+            steps: Vec::new(),
         })
     }
 }

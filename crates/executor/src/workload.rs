@@ -53,6 +53,7 @@ fn check_values(workload: &Workload) -> Result<(), String> {
     check_completeness(workload)?;
     check_gap(workload)?;
     check_review(workload)?;
+    check_prepush(workload)?;
 
     if !repository.manifest_path.is_empty()
         && !Path::new(&repository.manifest_path)
@@ -227,6 +228,76 @@ fn check_limits(workload: &Workload) -> Result<(), String> {
     }
     if !(budget.amount.is_finite() && budget.amount > 0.0) {
         return Err("the workload's budget is not above zero".to_owned());
+    }
+    Ok(())
+}
+
+/// What a workload that reads its own change before it pushes is given. The lenses are named
+/// and never paths, each has text to read and none is given twice; rounds without a lens would
+/// push a change nothing read, and lenses without a round would never be used, so each is
+/// refused beside the other. A review, an evaluation and a gap step change nothing and push
+/// nothing, so none of them reads its own change.
+fn check_prepush(workload: &Workload) -> Result<(), String> {
+    if workload.lenses.is_empty() && workload.prepush_rounds == 0 {
+        return Ok(());
+    }
+    if workload.review.is_some() {
+        return Err(
+            "the workload is a review and also reads its own change under lenses".to_owned(),
+        );
+    }
+    if workload.completeness.is_some() {
+        return Err(
+            "the workload is a completeness evaluation and also reads its own change under lenses"
+                .to_owned(),
+        );
+    }
+    if workload.gap.is_some() {
+        return Err(
+            "the workload is a gap step and also reads its own change under lenses".to_owned(),
+        );
+    }
+    if workload.prepush_rounds < 0 {
+        return Err(format!(
+            "the workload's rounds of reading its change ({}) are below zero",
+            workload.prepush_rounds
+        ));
+    }
+    if workload.lenses.is_empty() {
+        return Err(
+            "the workload asks for rounds of reading its change but carries no lens to read it under"
+                .to_owned(),
+        );
+    }
+    if workload.prepush_rounds == 0 {
+        return Err(
+            "the workload carries lenses but no rounds to read its change under them".to_owned(),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    for lens in &workload.lenses {
+        let name = &lens.pack;
+        let valid = name.len() <= 41
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !valid {
+            return Err(format!(
+                "the lens {name:?} is not a name (lower-case letters, digits and -, and not a path)"
+            ));
+        }
+        if lens.document.trim().is_empty() {
+            return Err(format!(
+                "the lens {name:?} has no text to read the change under"
+            ));
+        }
+        if !seen.insert(name.as_str()) {
+            return Err(format!("the lens {name:?} is given twice"));
+        }
     }
     Ok(())
 }

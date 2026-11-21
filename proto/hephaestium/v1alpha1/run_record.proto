@@ -58,6 +58,11 @@ message RunRecord {
   // For a gap step that completed: what the step ended in. Absent for every other
   // workload and for a step that failed.
   GapStep gap = 17;
+  // For a run that read its own change before it pushed: every agent it started, in order,
+  // and what each cost, so what a ticket spent on reading its change can be told apart from
+  // what it spent on making it. The totals in `costs` are these added up. Empty for a run that
+  // started one agent, whose costs are that agent's.
+  repeated Step steps = 18;
 }
 
 // How a step of the questioning ended, as the executor checked it.
@@ -86,6 +91,29 @@ message GateRun {
   string name = 1;
   // Athenaeum's gate result exactly as the gate produced it.
   google.protobuf.Struct result = 2;
+}
+
+// One agent a run started, and what it was for.
+message Step {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The agent that made the change.
+    KIND_IMPLEMENTATION = 1;
+    // An agent that read the change under one lens before it was pushed.
+    KIND_REVIEW = 2;
+    // The implementing agent again, told what a review found.
+    KIND_REVISION = 3;
+  }
+  Kind kind = 1;
+  // For a review: the lens it read under. Empty otherwise.
+  string lens = 2;
+  // Which round of reading it belongs to. Zero is the first implementation.
+  int32 round = 3;
+  // For a review: what it ended in (approved, needs_revision or failed), and empty if it left
+  // no verdict that passed the review contract.
+  string verdict = 4;
+  // What this step spent, in each unit and from each source.
+  repeated CostTotal costs = 5;
 }
 
 // An amount spent in one unit, from one source. Dollars, tokens and credits are
