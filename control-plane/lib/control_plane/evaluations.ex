@@ -111,9 +111,10 @@ defmodule ControlPlane.Evaluations do
     with :ok <- enabled(repository),
          :ok <- open(repository, number),
          :ok <- not_evaluating(repository, number),
-         :ok <- not_judged_too_often(repository, number),
+         approval = approval || approval(merged),
+         :ok <- not_judged_too_often(repository, number, approval.text),
          {:ok, skill} <- skill(),
-         {:ok, built} <- Intake.build(repository, number, approval || approval(merged)),
+         {:ok, built} <- Intake.build(repository, number, approval),
          {:ok, record} <-
            Workloads.create(
              with_evaluation(built, skill, open_items(repository, number), refused)
@@ -281,6 +282,14 @@ defmodule ControlPlane.Evaluations do
   # unjudged; it is tried again on the same schedule and under the same limits.
   defp failed?(%Workload{state: state}), do: state in ["failed", "timed_out"]
 
+  # An owed verdict waits for the day its measurement needs. A failed evaluation waits for
+  # nothing, so it is tried again soon, under the same limits.
+  @failure_wait_seconds 3600
+
+  defp waited?(%Workload{state: state, finished_at: %DateTime{} = at}, now)
+       when state in ["failed", "timed_out"],
+       do: DateTime.diff(now, at, :second) >= @failure_wait_seconds
+
   defp waited?(%Workload{finished_at: %DateTime{} = at}, now),
     do: DateTime.diff(now, at, :second) >= interval_hours() * 3600
 
@@ -336,21 +345,31 @@ defmodule ControlPlane.Evaluations do
     if evaluating?, do: {:skip, :already_evaluating}, else: :ok
   end
 
-  # However it was asked for, a ticket is judged at most this many times in a day. A judgement
-  # costs an agent run and writes a comment, so a path that asks again and again, as one did
-  # for as long as an approval label stood, must stop by itself.
+  # Under one approval, a ticket is judged at most this many times in a day. A judgement costs
+  # an agent run and writes a comment, so a path that asks again and again, as one did for as
+  # long as an approval label stood, must stop by itself. The count is for the approval and not
+  # for the ticket: a person approving a ticket again is a deliberate act that starts a count of
+  # its own, and the evaluations an earlier approval ran must not hold it.
   @daily_limit 6
 
-  defp not_judged_too_often(repository, number) do
+  defp not_judged_too_often(repository, number, approved_at) do
     since = NaiveDateTime.add(NaiveDateTime.utc_now(), -86_400, :second)
 
     count =
       repository
       |> Workloads.for_ticket(number)
-      |> Enum.count(&(evaluation?(&1) and NaiveDateTime.compare(&1.inserted_at, since) != :lt))
+      |> Enum.count(
+        &(evaluation?(&1) and approved?(&1, approved_at) and
+            NaiveDateTime.compare(&1.inserted_at, since) != :lt)
+      )
 
     if count >= @daily_limit, do: {:skip, :judged_too_often}, else: :ok
   end
+
+  defp approved?(%Workload{workload: %{"approval" => %{"approvedAt" => at}}}, approved_at),
+    do: at == approved_at
+
+  defp approved?(_, _), do: false
 
   defp evaluation?(%Workload{workload: %{"completeness" => _}}), do: true
   defp evaluation?(_), do: false
