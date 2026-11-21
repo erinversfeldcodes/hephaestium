@@ -67,6 +67,8 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Tested
         run: cargo test --locked
+      - name: The release installer
+        run: scripts/test-install-release.sh
       # The other half of the stamping rule: a build that was given no
       # version must not pass for a release.
       - name: A build with no version compiled in is not mistaken for a release
