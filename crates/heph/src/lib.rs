@@ -20,3 +20,4 @@ pub mod run;
 pub mod schema;
 pub mod sync;
 pub mod workload;
+pub mod workspaces;

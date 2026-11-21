@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::process::cancelled as heph_cancelled;
 use crate::workload::{self, Built};
+use crate::workspaces;
 
 /// The secrets the executor takes, with the file each is looked for in when it
 /// is not given another way, and whether a run cannot go on without it.
@@ -34,6 +35,9 @@ pub struct Options {
     pub budget_usd: f64,
     pub runs_dir: Option<PathBuf>,
     pub executor: Option<PathBuf>,
+    /// How long a run that did not complete keeps its checkout, in hours: the
+    /// option, else `HEPH_WORKSPACE_KEEP_HOURS`, else 72.
+    pub keep_hours: Option<u64>,
     /// The commit the project checkout is at, if it is one.
     pub local_head: Option<String>,
 }
@@ -120,6 +124,7 @@ fn executor_path(option: Option<&Path>, beside: Option<&Path>) -> PathBuf {
 /// secret is missing, the run's directory could not be made, or the executor
 /// could not be started or refused the workload.
 pub fn run(options: &Options) -> Result<Ended, String> {
+    let keep = keep_window(options.keep_hours)?;
     let Built { workload, warnings } = workload::build(
         &workload::Request {
             repository: &options.repository,
@@ -139,7 +144,13 @@ pub fn run(options: &Options) -> Result<Ended, String> {
     }
     let offered = secret_files()?;
 
-    let directory = runs_dir(options.runs_dir.as_deref())?
+    let runs = runs_dir(options.runs_dir.as_deref())?;
+    // Earlier runs' checkouts that are due go before this one's is made.
+    let swept = workspaces::sweep(&runs, keep, std::time::SystemTime::now());
+    for warning in &swept.warnings {
+        eprintln!("heph: warning: {warning}");
+    }
+    let directory = runs
         .join(options.repository.replace('/', "-"))
         .join(format!("{}-{}", options.ticket, workload.id));
     std::fs::DirBuilder::new()
@@ -204,7 +215,28 @@ pub fn run(options: &Options) -> Result<Ended, String> {
         ));
     }
 
-    summarise(&record, &directory)
+    let ended = summarise(&record, &directory)?;
+    // Its record is kept; a run that completed has no more use for its checkout.
+    if matches!(ended, Ended::Completed)
+        && let Err(warning) = workspaces::delete_checkout(&directory)
+    {
+        eprintln!("heph: warning: {warning}");
+    }
+    Ok(ended)
+}
+
+/// How long a run that did not complete keeps its checkout: the option, else the
+/// environment, else 72 hours. A setting that is not a whole number of hours is an
+/// error, found before anything is made.
+fn keep_window(option: Option<u64>) -> Result<Duration, String> {
+    let hours = match (option, environment("HEPH_WORKSPACE_KEEP_HOURS")) {
+        (Some(hours), _) => hours,
+        (None, Some(text)) => text.parse().map_err(|_| {
+            format!("HEPH_WORKSPACE_KEEP_HOURS must be a whole number of hours, not '{text}'")
+        })?,
+        (None, None) => workspaces::DEFAULT_KEEP_HOURS,
+    };
+    Ok(Duration::from_secs(hours.saturating_mul(3600)))
 }
 
 /// Show the executor's events as they come, and keep them. A stop asked of this

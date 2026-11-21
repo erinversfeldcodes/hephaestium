@@ -68,14 +68,17 @@ Commands:
 
   run TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
              [--timeout-seconds N] [--budget-usd X] [--runs-dir PATH]
-             [--executor PATH]
+             [--executor PATH] [--keep-hours N]
                          Run a ticket: build its workload as `workload` does,
                          run the executor on it with delivery, show what
                          happens as it does and end with the outcome, the cost
                          and the pull request. The run is kept in its own
                          directory outside your project, under --runs-dir
                          [default: $XDG_STATE_HOME/hephaestium/runs, or
-                         ~/.local/state/hephaestium/runs]. The GitHub token is
+                         ~/.local/state/hephaestium/runs]. A run that completed
+                         deletes its checkout; one that did not keeps it for
+                         --keep-hours [default: HEPH_WORKSPACE_KEEP_HOURS, or
+                         72], and the next run deletes it then. The GitHub token is
                          HEPH_GITHUB_TOKEN, or HEPH_GITHUB_TOKEN_FILE, or the
                          file ~/.config/hephaestium/github-token; the Claude
                          Code token is found the same way at claude-token.
@@ -888,6 +891,7 @@ struct WorkloadRequest {
     /// Only `run` takes these two.
     runs_dir: Option<String>,
     executor: Option<String>,
+    keep_hours: Option<u64>,
     /// Only `workload` takes these two.
     approver: Option<String>,
     approved_at: Option<pbjson_types::Timestamp>,
@@ -901,6 +905,7 @@ impl WorkloadRequest {
         let mut repo = None;
         let mut runs_dir = None;
         let mut executor = None;
+        let mut keep_hours = None;
         let mut approver = None;
         let mut approved_at = None;
         let mut root = ".".to_owned();
@@ -915,6 +920,7 @@ impl WorkloadRequest {
                 "--root" => (*remaining.next()?).clone_into(&mut root),
                 "--runs-dir" if for_run => runs_dir = Some((*remaining.next()?).to_owned()),
                 "--executor" if for_run => executor = Some((*remaining.next()?).to_owned()),
+                "--keep-hours" if for_run => keep_hours = Some(remaining.next()?.parse().ok()?),
                 "--approver" if !for_run => approver = Some(login(remaining.next()?)?),
                 "--approved-at" if !for_run => approved_at = Some(timestamp(remaining.next()?)?),
                 "--model" => (*remaining.next()?).clone_into(&mut model),
@@ -951,6 +957,7 @@ impl WorkloadRequest {
             budget_usd,
             runs_dir,
             executor,
+            keep_hours,
             approver,
             approved_at,
         })
@@ -1019,7 +1026,7 @@ fn run_workload(request: &WorkloadRequest) -> ExitCode {
 
 fn run_usage_error() -> ExitCode {
     eprintln!(
-        "heph: expected 'run TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME] [--timeout-seconds N] [--budget-usd X] [--runs-dir PATH] [--executor PATH]'\n\n{USAGE}"
+        "heph: expected 'run TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME] [--timeout-seconds N] [--budget-usd X] [--runs-dir PATH] [--executor PATH] [--keep-hours N]'\n\n{USAGE}"
     );
     ExitCode::from(USAGE_ERROR)
 }
@@ -1044,6 +1051,7 @@ fn run_ticket(request: &WorkloadRequest) -> ExitCode {
         budget_usd: request.budget_usd,
         runs_dir: request.runs_dir.as_ref().map(std::path::PathBuf::from),
         executor: request.executor.as_ref().map(std::path::PathBuf::from),
+        keep_hours: request.keep_hours,
         local_head: workload::head_of(root),
     };
     match run::run(&options) {

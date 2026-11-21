@@ -114,6 +114,9 @@ impl Rig {
              pwd > $d/seen/cwd.txt\n\
              prev=''\n\
              for a in \"$@\"; do [ \"$prev\" = '--record' ] && rec=\"$a\"; prev=\"$a\"; done\n\
+             prev=''\n\
+             for a in \"$@\"; do [ \"$prev\" = '--work-dir' ] && work=\"$a\"; prev=\"$a\"; done\n\
+             [ -n \"$work\" ] && mkdir -p \"$work/repo\" && echo checkout > \"$work/repo/file\"\n\
              [ -n \"$rec\" ] && cp $d/record.canned \"$rec\"\n\
              cat $d/stderr.canned >&2\n\
              cat $d/events.canned\n\
@@ -633,4 +636,246 @@ fn a_signal_to_heph_run_is_passed_to_the_executor_and_the_run_ends_cancelled() {
         );
         assert!(shown.contains("outcome: cancelled"), "{signal}: {shown}");
     }
+}
+
+// What a run leaves behind, and what deleting it may touch.
+
+const OLD_ID: &str = "11111111-2222-4333-8444-555555555555";
+
+impl Rig {
+    /// A run of an earlier `heph run`: its directory under the runs directory, its record
+    /// (if it has one) saying how it ended, and a checkout, which ended `hours` ago.
+    fn earlier_run(&self, name: &str, record: Option<&str>, hours: u64) -> PathBuf {
+        let directory = self.runs_dir().join("acme-widgets").join(name);
+        std::fs::create_dir_all(directory.join("work/repo")).expect("a checkout");
+        std::fs::write(directory.join("work/repo/file"), "checkout").expect("a file");
+        for kept in ["workload.json", "events.jsonl", "executor.log"] {
+            std::fs::write(directory.join(kept), "kept").expect("a kept file");
+        }
+        if let Some(text) = record {
+            let path = directory.join("record.json");
+            std::fs::write(&path, text).expect("a record");
+            let ended = std::time::SystemTime::now() - std::time::Duration::from_secs(hours * 3600);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("to open the record")
+                .set_modified(ended)
+                .expect("to date the record");
+        }
+        directory
+    }
+
+    fn started_runs(&self) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(self.runs_dir().join("acme-widgets"))
+            .map(|entries| entries.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        found.sort();
+        found
+    }
+}
+
+fn run_named(number: u32) -> String {
+    format!("{number}-{OLD_ID}")
+}
+
+#[test]
+fn a_run_that_completed_deletes_its_checkout_and_keeps_what_it_said() {
+    let rig = rig("cleanup-completed");
+    rig.token_file("github-token");
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let directory = rig.run_directory().expect("one run directory");
+    assert!(!directory.join("work").exists(), "the checkout is deleted");
+    assert!(
+        rig.seen("args.txt").contains("--work-dir"),
+        "the executor was given one to make"
+    );
+    for kept in [
+        "workload.json",
+        "events.jsonl",
+        "executor.log",
+        "record.json",
+    ] {
+        assert!(directory.join(kept).exists(), "{kept} is kept");
+    }
+}
+
+#[test]
+fn a_run_that_did_not_complete_keeps_its_checkout() {
+    let rig = rig("cleanup-failed");
+    rig.token_file("github-token");
+    rig.write_executor(0, "", &events(), &record("OUTCOME_FAILED", "a gate failed"));
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let directory = rig.run_directory().expect("one run directory");
+    assert!(directory.join("work/repo/file").exists());
+}
+
+#[test]
+fn the_next_run_deletes_the_checkouts_that_are_due_and_no_others() {
+    let rig = rig("cleanup-sweep");
+    rig.token_file("github-token");
+    let failed = record("OUTCOME_FAILED", "a gate failed");
+    let completed = record("OUTCOME_COMPLETED", "");
+    let old_failed = rig.earlier_run(&run_named(1), Some(&failed), 73);
+    let recent_failed = rig.earlier_run(&run_named(2), Some(&failed), 71);
+    let leftover_completed = rig.earlier_run(&run_named(3), Some(&completed), 0);
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!old_failed.join("work").exists(), "past the window");
+    assert!(recent_failed.join("work/repo/file").exists(), "inside it");
+    assert!(
+        !leftover_completed.join("work").exists(),
+        "a completed run has no use for its checkout"
+    );
+    for directory in [&old_failed, &recent_failed, &leftover_completed] {
+        assert!(directory.join("events.jsonl").exists());
+        assert!(directory.join("record.json").exists() || directory == &old_failed);
+    }
+}
+
+#[test]
+fn a_run_that_may_still_be_going_or_is_not_a_run_is_not_touched() {
+    let rig = rig("cleanup-untouched");
+    rig.token_file("github-token");
+    let failed = record("OUTCOME_FAILED", "");
+    let no_record = rig.earlier_run(&run_named(1), None, 0);
+    let not_json = rig.earlier_run(&run_named(2), Some("not json"), 500);
+    let unspecified = rig.earlier_run(
+        &run_named(3),
+        Some("{\"outcome\": \"OUTCOME_UNSPECIFIED\"}"),
+        500,
+    );
+    let no_outcome = rig.earlier_run(&run_named(4), Some("{}"), 500);
+    let badly_named = rig.earlier_run("notes", Some(&failed), 500);
+    let not_a_uuid = rig.earlier_run("5-not-a-workload-id", Some(&failed), 500);
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    for directory in [
+        no_record,
+        not_json,
+        unspecified,
+        no_outcome,
+        badly_named,
+        not_a_uuid,
+    ] {
+        assert!(
+            directory.join("work/repo/file").exists(),
+            "{} was touched",
+            directory.display()
+        );
+    }
+}
+
+#[test]
+fn a_symlink_is_removed_and_never_followed() {
+    let rig = rig("cleanup-symlink");
+    rig.token_file("github-token");
+    let outside = rig.home.0.join("outside");
+    std::fs::create_dir_all(&outside).expect("a directory");
+    std::fs::write(outside.join("precious"), "keep me").expect("a file");
+    let completed = record("OUTCOME_COMPLETED", "");
+
+    // A checkout that is a link out of the runs directory.
+    let linked = rig.earlier_run(&run_named(1), Some(&completed), 0);
+    std::fs::remove_dir_all(linked.join("work")).expect("to remove");
+    std::os::unix::fs::symlink(&outside, linked.join("work")).expect("a link");
+
+    // A run directory that is itself a link out.
+    let outside_run = rig.home.0.join("outside-run");
+    std::fs::create_dir_all(outside_run.join("work")).expect("a directory");
+    std::fs::write(outside_run.join("record.json"), &completed).expect("a record");
+    std::os::unix::fs::symlink(
+        &outside_run,
+        rig.runs_dir().join("acme-widgets").join(run_named(2)),
+    )
+    .expect("a link");
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(read(&outside.join("precious")), "keep me");
+    assert!(!linked.join("work").exists(), "the link itself is gone");
+    assert!(
+        outside_run.join("work").exists(),
+        "a linked run is not entered"
+    );
+}
+
+#[test]
+fn the_window_is_the_flag_else_the_environment_else_72_hours() {
+    let rig = rig("cleanup-window");
+    rig.token_file("github-token");
+    let failed = record("OUTCOME_FAILED", "");
+    let two_hours = rig.earlier_run(&run_named(1), Some(&failed), 2);
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(two_hours.join("work").exists(), "72 hours by default");
+
+    let output = rig.run(
+        &["12", "--repo", "acme/widgets"],
+        &[("HEPH_WORKSPACE_KEEP_HOURS", "1")],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!two_hours.join("work").exists(), "the environment's window");
+
+    let kept = rig.earlier_run(&run_named(2), Some(&failed), 2);
+    let output = rig.run(
+        &["12", "--repo", "acme/widgets", "--keep-hours", "5"],
+        &[("HEPH_WORKSPACE_KEEP_HOURS", "1")],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        kept.join("work").exists(),
+        "the flag wins over the environment"
+    );
+}
+
+#[test]
+fn a_window_that_is_not_a_whole_number_of_hours_ends_the_run_before_anything_is_made() {
+    let rig = rig("cleanup-bad-window");
+    rig.token_file("github-token");
+
+    for bad in ["soon", "-1", "1.5"] {
+        let output = rig.run(
+            &["12", "--repo", "acme/widgets"],
+            &[("HEPH_WORKSPACE_KEEP_HOURS", bad)],
+        );
+        assert_eq!(output.status.code(), Some(3), "{bad}: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains("HEPH_WORKSPACE_KEEP_HOURS"),
+            "{bad}"
+        );
+        assert!(rig.started_runs().is_empty(), "{bad}: nothing was made");
+    }
+}
+
+#[test]
+fn a_checkout_that_cannot_be_deleted_is_a_warning_and_does_not_change_how_the_run_ended() {
+    let rig = rig("cleanup-undeletable");
+    rig.token_file("github-token");
+    let completed = record("OUTCOME_COMPLETED", "");
+    let stuck = rig.earlier_run(&run_named(1), Some(&completed), 0);
+    let inner = stuck.join("work/repo");
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o500)).expect("to chmod");
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).expect("to restore");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("could not delete the checkout"),
+        "{}",
+        stderr(&output)
+    );
 }

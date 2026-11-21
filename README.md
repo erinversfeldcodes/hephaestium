@@ -153,7 +153,10 @@ happening one line at a time (the workspace, what the agent says and does, each 
 the pull request), and ends with the outcome, the cost and the pull request. The run is
 kept in a directory of its own outside your project, under
 `~/.local/state/hephaestium/runs/` (or `$XDG_STATE_HOME`), with the workload, the events,
-the executor's output, the run record and the workspace. The tokens are found in the
+the executor's output, the run record and the workspace. The workspace (a full
+checkout, which can be gigabytes) is deleted when the run completes; a run that ended
+any other way keeps it for `--keep-hours` (`HEPH_WORKSPACE_KEEP_HOURS`, else 72), and
+the next `heph run` deletes it then, going by each run's own record. The tokens are found in the
 environment or in `~/.config/hephaestium/github-token` and `claude-token`; what
 each needs, and how to make it, is in [`docs/tokens.md`](./docs/tokens.md). It exits 0
 if the workload completed and 1 if it ended any other way. Interrupting it (Ctrl-C, or a
