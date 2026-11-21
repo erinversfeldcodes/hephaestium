@@ -45,6 +45,27 @@ defmodule ControlPlane.DoneWordingTest do
 
   @reviews "Reviews:\n- rust: approved\nNo component owns the files: AGENTS.md."
 
+  describe "where the ticket is judged after the merge" do
+    setup do
+      settle = Application.get_env(:control_plane, :settle)
+      on_exit(fn -> Application.put_env(:control_plane, :settle, settle) end)
+      Application.put_env(:control_plane, :settle, completeness: [@repo])
+    end
+
+    test "the comment says it will be judged, and no longer that it has not been", %{
+      gh: gh,
+      workload: workload
+    } do
+      assert :ok = Tickets.settled(workload, :done, nil)
+
+      body = comment(gh)
+      assert body =~ "checks are green"
+      assert body =~ "judges whether the ticket's goal is met"
+      assert body =~ "once it merges"
+      refute body =~ "has not judged"
+    end
+  end
+
   test "approved reviews: the comment says checks are green and reviews approved, not that the ticket is done",
        %{gh: gh, workload: workload} do
     assert :ok = Tickets.settled(workload, :done, @reviews)
