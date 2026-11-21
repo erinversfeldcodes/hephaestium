@@ -265,6 +265,22 @@ defmodule ControlPlane.CompletenessCommentTest do
       assert writes == [{"POST", @issue <> "/comments"}, {"PATCH", @issue}]
     end
 
+    test "a ticket the tracker records sub-issues under is an epic, whatever the verdict says",
+         %{gh: gh} do
+      opt_in_to_closing()
+
+      epic = put_in(workload(), ["ticket", "subIssues"], 3)
+      epic = Map.put(epic, "completeness", %{"skillDocument" => "the skill"})
+      {:ok, record} = Workloads.create(epic)
+
+      # The agent said it is not an epic; the tracker says it has three sub-issues.
+      assert :ok = ended(record.id, "OUTCOME_COMPLETED", "", %{"completeness" => verdict()})
+
+      assert [comment] = comments(gh)
+      refute comment =~ "Reopen it"
+      assert closes(gh) == []
+    end
+
     test "a repository that has not opted in to closing is only commented on", %{
       gh: gh,
       id: id
