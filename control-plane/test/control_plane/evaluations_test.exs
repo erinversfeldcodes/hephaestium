@@ -404,6 +404,103 @@ defmodule ControlPlane.EvaluationsTest do
     end
   end
 
+  describe "an epic whose sub-issues are all closed" do
+    @listing "repos/#{@repo}/issues?state=open&per_page=100"
+    @epic_issue "repos/#{@repo}/issues/20"
+    @sub_issues "repos/#{@repo}/issues/20/sub_issues"
+
+    defp epic(summary, extra \\ %{}),
+      do:
+        Map.merge(
+          %{"number" => 20, "state" => "open", "sub_issues_summary" => summary},
+          extra
+        )
+
+    defp all_closed, do: %{"total" => 2, "completed" => 2, "percent_completed" => 100}
+
+    # Ticket 12 is a sub-issue that was closed at the given time, and was worked by heph.
+    defp epic_is(gh, issue, closed_at \\ "2026-11-20T10:00:00Z") do
+      StandInGitHub.respond(gh, @listing, [issue])
+      StandInGitHub.respond(gh, @epic_issue, %{"number" => 20, "state" => "open"})
+
+      StandInGitHub.respond(gh, @sub_issues, [
+        %{"number" => 12, "state" => "closed", "closed_at" => closed_at},
+        %{"number" => 13, "state" => "closed", "closed_at" => "2026-11-19T10:00:00Z"}
+      ])
+
+      StandInGitHub.heph_prints(
+        gh,
+        workload() |> put_in(["ticket", "number"], "20")
+      )
+    end
+
+    defp epic_evaluations,
+      do: Enum.filter(Workloads.for_ticket(@repo, 20), &is_map(&1.workload["completeness"]))
+
+    test "is judged, for the approval of the work beneath it", %{gh: gh, merged: merged} do
+      epic_is(gh, epic(all_closed()))
+
+      assert [{:started, id}] = Evaluations.epics()
+
+      assert [evaluation] = epic_evaluations()
+      assert evaluation.id == id
+
+      approval = merged.workload["approval"]
+
+      assert Enum.any?(
+               StandInGitHub.heph_calls(gh),
+               &(&1 ==
+                   "workload 20 --repo #{@repo} --approver #{approval["approvedBy"]} --approved-at #{approval["approvedAt"]}")
+             )
+    end
+
+    test "is not judged while a sub-issue is still open", %{gh: gh} do
+      epic_is(gh, epic(%{"total" => 2, "completed" => 1, "percent_completed" => 50}))
+
+      assert Evaluations.epics() == []
+      assert epic_evaluations() == []
+    end
+
+    test "is not judged when it has no sub-issues", %{gh: gh} do
+      epic_is(gh, epic(%{"total" => 0, "completed" => 0, "percent_completed" => 0}))
+
+      assert Evaluations.epics() == []
+    end
+
+    test "is not mistaken for a pull request", %{gh: gh} do
+      epic_is(gh, epic(all_closed(), %{"pull_request" => %{"url" => "x"}}))
+
+      assert Evaluations.epics() == []
+    end
+
+    test "is judged once, until another sub-issue closes after that", %{gh: gh} do
+      epic_is(gh, epic(all_closed()), "2026-11-01T10:00:00Z")
+
+      assert [{:started, id}] = Evaluations.epics()
+      # The judgement has ended, so only the rule can stop another.
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+      {:ok, _} = Events.append(id, event(id, 2, finished("OUTCOME_COMPLETED", "")))
+
+      assert Evaluations.epics() == []
+      assert length(epic_evaluations()) == 1
+
+      # A sub-issue closes in the future, after the judgement.
+      epic_is(gh, epic(all_closed()), "2099-01-01T00:00:00Z")
+      assert [{:started, _}] = Evaluations.epics()
+    end
+
+    test "is not looked at for a repository that has not opted in", %{gh: gh} do
+      epic_is(gh, epic(all_closed()))
+      Application.put_env(:control_plane, :settle, completeness: [], athenaeum_ref: @ref)
+
+      assert Evaluations.epics() == []
+    end
+
+    test "is found by a job" do
+      assert :ok = perform_job(ControlPlane.Jobs.RollUpEpics, %{})
+    end
+  end
+
   describe "a pull request that merged after its ticket was settled" do
     @pull "repos/#{@repo}/pulls/52"
 

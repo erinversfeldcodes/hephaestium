@@ -60,7 +60,9 @@ defmodule ControlPlane.Tickets do
 
   defp evaluated(%Workload{state: "completed", record: %{"completeness" => verdict}} = workload)
        when is_map(verdict) do
-    closing = Evaluations.closing?(workload.repository) and Evaluations.closes?(verdict)
+    closing =
+      Evaluations.closing?(workload.repository) and not epic?(workload) and
+        Evaluations.closes?(verdict)
 
     # The reason is on the ticket before it is closed, so a closure is never without one.
     with :ok <- post(workload, CompletenessComment.render(verdict, closing)) do
@@ -86,6 +88,13 @@ defmodule ControlPlane.Tickets do
       _ -> announce_failed(workload)
     end
   end
+
+  # The tracker's record that a ticket has sub-issues is what makes it an epic, whatever the
+  # agent's verdict says of it: an epic is judged complete by a person.
+  defp epic?(%Workload{workload: %{"ticket" => %{"subIssues" => count}}}) when is_number(count),
+    do: count > 0
+
+  defp epic?(_), do: false
 
   defp close(workload),
     do: write("PATCH", issue(workload), ["state=closed", "state_reason=completed"])
