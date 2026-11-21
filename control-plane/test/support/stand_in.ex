@@ -12,7 +12,8 @@ defmodule ControlPlane.StandIn do
     * `:events` - the lines it prints, as maps (encoded as JSON) or strings
     * `:record` - the run record it writes, as a map, if any
     * `:exit` - its exit status, default 0
-    * `:then` - `:exit` (default), `:hang` (go quiet, and stop when told to) or
+    * `:then` - `:exit` (default), `:hang` (go quiet, and stop when told to),
+      `:stubborn` (go quiet and ignore being told to stop, so only a kill ends it) or
       `{:stop_with, lines, record}` (wait, and when told to stop print `lines`,
       write `record` and exit)
   """
@@ -33,6 +34,12 @@ defmodule ControlPlane.StandIn do
         :hang ->
           {~S"""
            trap 'exit 143' TERM
+           while :; do sleep 0.2; done
+           """, nil}
+
+        :stubborn ->
+          {~S"""
+           trap '' TERM
            while :; do sleep 0.2; done
            """, nil}
 
@@ -78,9 +85,17 @@ defmodule ControlPlane.StandIn do
   defp encode(line) when is_binary(line), do: line
   defp encode(line), do: Jason.encode!(line)
 
-  @doc "Whether the stand-in's process is still running."
+  @doc """
+  Whether the stand-in's process is still running. The process has to be the stand-in:
+  a number that is another program's by now, and a process that has ended and not yet been
+  collected, are not it.
+  """
   def running?(dir) do
     pid = dir |> Path.join("pid.txt") |> File.read!() |> String.trim()
-    match?({_, 0}, System.cmd("kill", ["-0", pid], stderr_to_stdout: true))
+
+    case System.cmd("ps", ["-o", "command=", "-p", pid], stderr_to_stdout: true) do
+      {command, 0} -> String.contains?(command, Path.join(dir, "executor"))
+      _ -> false
+    end
   end
 end
