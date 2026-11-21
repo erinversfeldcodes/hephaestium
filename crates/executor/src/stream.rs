@@ -66,6 +66,13 @@ impl<'a, W: Write> Stream<'a, W> {
         }
     }
 
+    /// What has been spent so far, for each unit and source, so that what a step spent is
+    /// the difference between two looks.
+    #[must_use]
+    pub fn costs(&self) -> &BTreeMap<(i32, i32), f64> {
+        &self.costs
+    }
+
     /// Write the next event.
     ///
     /// # Errors

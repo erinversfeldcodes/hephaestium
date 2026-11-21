@@ -193,6 +193,21 @@ and `--deliver` pushes to the pull request's own branch with a plain push, never
 and opens nothing. The branch must be one the runtime made (`heph/...`), and a revision
 that names no failing check, no pull request or an attempt of zero is refused.
 
+A workload that carries `lenses` (every lens of the pinned Athenaeum release, with its text) and
+`prepush_rounds` is read before it is pushed
+([ADR 0035](./docs/adr/0035-a-change-is-reviewed-locally-under-every-lens-and-pushed-only-when-each-has-approved-it.md)).
+After the gates pass, the work is committed locally and the lenses the change needs (those its
+components name, and those that apply to everything) each read the commit with a fresh read-only
+agent, which is told nothing of the implementing agent and holds no token. A reader's verdict
+counts only if the workspace is as it was and the verdict passes the review contract for that
+commit and lens. What a lens that blocks found goes back to the implementing agent as fenced data,
+the gates run again, and the commit is rewritten, for as many rounds as the workload allows;
+nothing is pushed until every lens that blocks has approved the commit about to be pushed, and a
+change still blocked when the rounds are used up is not pushed (the run fails, naming what was
+found, and its workspace is kept). A lens whose text says `blocking: false` is read and never stops
+the push. Every agent spends from the workload's one budget, and the run record's `steps` lists the
+implementation, each reading and each revision with its own cost.
+
 ### The control plane
 
 The control plane (Elixir, Oban and Postgres, in [`control-plane/`](./control-plane)) takes

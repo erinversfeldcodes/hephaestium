@@ -1,6 +1,7 @@
 //! Running one workload: prepare a workspace, play the agent, say how it ended.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,8 +10,10 @@ use std::time::Duration;
 use contracts::v1alpha1::agent_runtime::Kind as AgentKind;
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
+use contracts::v1alpha1::step::Kind as StepKind;
 use contracts::v1alpha1::{
-    BaseMoved, GateFinished, GateStarted, Revision, RunRecord, Started, Workload, WorkspaceReady,
+    BaseMoved, CostTotal, GateFinished, GateStarted, Lens, Revision, RunRecord, Started, Step,
+    Workload, WorkspaceReady,
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
@@ -23,6 +26,7 @@ use crate::cli::Options;
 use crate::completeness;
 use crate::deliver;
 use crate::gap;
+use crate::prepush::{self, Reading};
 use crate::review;
 use crate::secrets::{self, Secrets};
 use crate::stream::Stream;
@@ -89,6 +93,8 @@ pub fn run(
     // What the workload has spent on every agent it has run, so that asking the agent a
     // second time spends from the budget the first left and not from a new one.
     let spent = Cell::new(0.0_f64);
+    // Which agents the run started and what each spent, when it reads its own change.
+    let steps = RefCell::new(Vec::<Step>::new());
     let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
         Ok((manifest, since)) => {
             // A review or an evaluation is held to changing nothing, so what the
@@ -133,6 +139,7 @@ pub fn run(
                         options,
                         secrets,
                         spent: &spent,
+                        steps: &steps,
                     };
                     finish_first_run(
                         &asking,
@@ -166,6 +173,7 @@ pub fn run(
     };
 
     let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
+    record.steps = steps.into_inner();
     keep(&mut record, verdict)?;
     write_record(&options.record, &record)
 }
@@ -445,6 +453,8 @@ struct Asking<'a> {
     options: &'a Options,
     secrets: &'a Secrets,
     spent: &'a Cell<f64>,
+    /// The agents the run started, in order, as the run record lists them.
+    steps: &'a RefCell<Vec<Step>>,
 }
 
 /// What a first run or a revision does once its agent is done: carry the work onto the base
@@ -474,7 +484,242 @@ fn finish_first_run<W: Write>(
         Err(reason) => return Ok((Outcome::Failed, reason)),
     };
     match run_gates(manifest, workspace, &since, secrets, stream)? {
+        Ok(deferred) if delivering && reads_before_push(workload) => read_before_push(
+            asking, workload, workspace, manifest, &since, deferred, stream,
+        ),
         Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
+        Err(reason) => Ok((Outcome::Failed, reason)),
+    }
+}
+
+/// Whether the run reads its own change under lenses before it pushes: it was given lenses and
+/// rounds to read them in. A workload that is itself a read is never one that reads.
+fn reads_before_push(workload: &Workload) -> bool {
+    !workload.lenses.is_empty() && workload.prepush_rounds > 0 && !read_only(workload)
+}
+
+/// What a step spent: what the run had spent after it, less what it had before.
+fn spent_between(
+    before: &BTreeMap<(i32, i32), f64>,
+    after: &BTreeMap<(i32, i32), f64>,
+) -> Vec<CostTotal> {
+    after
+        .iter()
+        .filter_map(|(&(unit, source), now)| {
+            let amount = now - before.get(&(unit, source)).copied().unwrap_or(0.0);
+            (amount > 0.0).then_some(CostTotal {
+                unit,
+                amount,
+                source,
+            })
+        })
+        .collect()
+}
+
+/// Record a step: the agent that ran, for what, and what it spent.
+fn note_step(
+    asking: &Asking<'_>,
+    kind: StepKind,
+    lens: &str,
+    round: i32,
+    verdict: &str,
+    costs: Vec<CostTotal>,
+) {
+    asking.steps.borrow_mut().push(Step {
+        kind: kind as i32,
+        lens: lens.to_owned(),
+        round,
+        verdict: verdict.to_owned(),
+        costs,
+    });
+}
+
+/// The lenses the change needs, from what it changed and the components that own it, out of
+/// the library the workload carries.
+fn lenses_needed<'a>(
+    workload: &'a Workload,
+    manifest: &Manifest,
+    workspace: &Path,
+    since: &str,
+) -> Result<Vec<&'a Lens>, String> {
+    let changed = changed_files(workspace, since)?;
+    let plan = heph::lenses::plan(manifest, &changed).map_err(|error| error.to_string())?;
+    let needed: Vec<String> = plan.lenses.iter().map(|lens| lens.pack.clone()).collect();
+    Ok(prepush::choose(&workload.lenses, &needed))
+}
+
+/// What the run says when the rounds were used up and a lens that blocks had not approved.
+fn not_pushed(unsatisfied: &[(String, prepush::Outcome)], rounds: i32) -> String {
+    let mut details = Vec::new();
+    for (pack, outcome) in unsatisfied {
+        match outcome {
+            prepush::Outcome::Revise(findings) => {
+                let titles: Vec<&str> = findings.iter().map(|f| f.title.as_str()).collect();
+                details.push(format!("lens {pack} found: {}", titles.join("; ")));
+            }
+            prepush::Outcome::Unread(reason) => {
+                details.push(format!("lens {pack} gave no approval: {reason}"));
+            }
+            prepush::Outcome::Approved => {}
+        }
+    }
+    format!(
+        "the change was read under its lenses for {rounds} round(s) and a lens that blocks did not approve it, so: {}. Nothing was pushed, and the workspace is kept.",
+        details.join("; ")
+    )
+}
+
+/// Read the change under every lens it needs before it is pushed, and push it only when each
+/// lens that blocks has approved the commit about to be pushed. What blocks goes back to the
+/// implementing agent, the gates run again on what it changed, and the commit is rewritten, in
+/// as many rounds as the workload allows. A change that is still blocked when they are used
+/// up is not pushed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one loop, read top to bottom: read, decide, revise, gate, amend, push"
+)]
+fn read_before_push<W: Write>(
+    asking: &Asking<'_>,
+    workload: &Workload,
+    workspace: &Path,
+    manifest: &Manifest,
+    since: &str,
+    mut deferred: Vec<deliver::Deferred>,
+    stream: &mut Stream<'_, W>,
+) -> Result<(Outcome, String), Refused> {
+    let (options, secrets) = (asking.options, asking.secrets);
+    let Some(token) = secrets.get(secrets::GITHUB_TOKEN) else {
+        return Ok((Outcome::Failed, "no token to push with".to_owned()));
+    };
+    let committed = match deliver::commit_locally(workload, workspace) {
+        Ok(committed) => committed,
+        Err(reason) => return Ok((Outcome::Failed, reason)),
+    };
+    // Everything spent so far is the implementation's.
+    let mut marked = stream.costs().clone();
+    note_step(
+        asking,
+        StepKind::Implementation,
+        "",
+        0,
+        "",
+        spent_between(&BTreeMap::new(), &marked),
+    );
+
+    let reading = Reading {
+        adapter: asking.adapter,
+        heartbeat: options.heartbeat,
+        secrets,
+        spent: asking.spent,
+    };
+    let rounds = workload.prepush_rounds;
+    let mut round = 1;
+    loop {
+        if heph::process::cancelled() {
+            return Ok((
+                Outcome::Failed,
+                "cancelled while the change was being read".to_owned(),
+            ));
+        }
+        let head = match git_output(&["rev-parse", "HEAD"], workspace) {
+            Ok(head) => head.trim().to_owned(),
+            Err(reason) => return Ok((Outcome::Failed, reason)),
+        };
+        let chosen = match lenses_needed(workload, manifest, workspace, since) {
+            Ok(chosen) => chosen,
+            Err(reason) => return Ok((Outcome::Failed, reason)),
+        };
+
+        // Every chosen lens reads the commit, each with a fresh agent.
+        let mut unsatisfied: Vec<(String, prepush::Outcome)> = Vec::new();
+        for lens in chosen {
+            let said = prepush::read(&reading, workload, lens, workspace, &head, stream)?;
+            let now = stream.costs().clone();
+            let verdict = said
+                .as_ref()
+                .ok()
+                .and_then(|value| value["verdict"].as_str())
+                .unwrap_or_default();
+            note_step(
+                asking,
+                StepKind::Review,
+                &lens.pack,
+                round,
+                verdict,
+                spent_between(&marked, &now),
+            );
+            marked = now;
+            // A lens that does not block is read and reported, and never stops the push.
+            let outcome = prepush::outcome(&said);
+            if prepush::blocks(lens) && !matches!(outcome, prepush::Outcome::Approved) {
+                unsatisfied.push((lens.pack.clone(), outcome));
+            }
+        }
+        if unsatisfied.is_empty() {
+            break;
+        }
+        if round >= rounds {
+            return Ok((Outcome::Failed, not_pushed(&unsatisfied, rounds)));
+        }
+
+        // What blocks goes back to the implementing agent, as data. A lens that could not
+        // review has nothing to send back, so it is read again in the next round.
+        let findings: Vec<(&str, Vec<prepush::Finding>)> = unsatisfied
+            .iter()
+            .filter_map(|(pack, outcome)| match outcome {
+                prepush::Outcome::Revise(found) => Some((pack.as_str(), found.clone())),
+                _ => None,
+            })
+            .collect();
+        if !findings.is_empty() {
+            let asked = prepush::as_revision(workload, round, prepush::failures(&findings));
+            match agent::run(
+                asking.adapter,
+                &asked,
+                workspace,
+                options.heartbeat,
+                secrets,
+                asking.spent,
+                stream,
+            )? {
+                End::Done => {}
+                End::Failed(reason) => return Ok((Outcome::Failed, reason)),
+                End::TimedOut(reason) => return Ok((Outcome::TimedOut, reason)),
+                End::Cancelled => return Ok((Outcome::Failed, String::new())),
+            }
+            let now = stream.costs().clone();
+            note_step(
+                asking,
+                StepKind::Revision,
+                "",
+                round,
+                "",
+                spent_between(&marked, &now),
+            );
+            marked = now;
+            match run_gates(manifest, workspace, since, secrets, stream)? {
+                Ok(still_deferred) => deferred = still_deferred,
+                Err(reason) => return Ok((Outcome::Failed, reason)),
+            }
+            if let Err(reason) = deliver::amend_locally(workload, workspace) {
+                return Ok((Outcome::Failed, reason));
+            }
+        }
+        round += 1;
+    }
+
+    match deliver::push_and_open(
+        workload,
+        workspace,
+        &options.gh,
+        token,
+        &deferred,
+        &committed,
+    ) {
+        Ok(pull_request) => {
+            stream.emit(Kind::PullRequestOpened(pull_request))?;
+            Ok((Outcome::Completed, String::new()))
+        }
         Err(reason) => Ok((Outcome::Failed, reason)),
     }
 }
