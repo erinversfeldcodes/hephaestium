@@ -83,11 +83,9 @@ defmodule ControlPlane.Tickets do
 
   defp announce_failed(%Workload{} = workload) do
     why = if workload.reason in [nil, ""], do: workload.state, else: workload.reason
+    second_attempt = workload.workload["completeness"]["refused"] not in [nil, ""]
 
-    post(
-      workload,
-      "**Hephaestium:** a completeness evaluation could not be completed: #{why}"
-    )
+    post(workload, CompletenessComment.failure(why, second_attempt))
   end
 
   defp post(workload, text),

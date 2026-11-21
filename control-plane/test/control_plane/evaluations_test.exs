@@ -260,7 +260,31 @@ defmodule ControlPlane.EvaluationsTest do
       assert Evaluations.recheck(later(48)) == []
     end
 
-    test "an evaluation that failed is not judged again for being owed" do
+    test "an evaluation that failed is judged again once the interval has passed, with nothing taken from it",
+         %{gh: gh} do
+      evaluated(verdict("owed"), "OUTCOME_FAILED")
+      StandInGitHub.heph_prints(gh, Map.put(workload(), "id", Ecto.UUID.generate()))
+
+      assert [{:started, id}] = Evaluations.recheck(later(25))
+
+      again = Enum.find(all_evaluations(), &(&1.id == id))
+      assert again.workload["completeness"]["openItems"] == []
+    end
+
+    test "an evaluation that failed is not judged again before the interval has passed" do
+      evaluated(verdict("owed"), "OUTCOME_FAILED")
+
+      assert Evaluations.recheck(later(2)) == []
+    end
+
+    test "an evaluation that failed is judged again only as often as the limit allows" do
+      Application.put_env(:control_plane, :settle,
+        completeness: [@repo],
+        athenaeum_ref: @ref,
+        completeness_rechecks: 1
+      )
+
+      evaluated(verdict("owed"), "OUTCOME_FAILED")
       evaluated(verdict("owed"), "OUTCOME_FAILED")
 
       assert Evaluations.recheck(later(48)) == []

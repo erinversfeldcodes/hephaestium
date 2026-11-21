@@ -137,9 +137,10 @@ defmodule ControlPlane.Evaluations do
     |> Enum.flat_map(fn {_ticket, evaluations} ->
       latest = List.last(evaluations)
 
-      if owed?(latest) and length(evaluations) < 1 + rechecks() and waited?(latest, now),
-        do: [after_merge(latest)],
-        else: []
+      if (owed?(latest) or failed?(latest)) and length(evaluations) < 1 + rechecks() and
+           waited?(latest, now),
+         do: [after_merge(latest)],
+         else: []
     end)
   end
 
@@ -147,6 +148,10 @@ defmodule ControlPlane.Evaluations do
     do: true
 
   defp owed?(_), do: false
+
+  # An evaluation that ended without a verdict judged nothing, so the ticket is still
+  # unjudged; it is tried again on the same schedule and under the same limits.
+  defp failed?(%Workload{state: state}), do: state in ["failed", "timed_out"]
 
   defp waited?(%Workload{finished_at: %DateTime{} = at}, now),
     do: DateTime.diff(now, at, :second) >= interval_hours() * 3600
