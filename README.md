@@ -221,7 +221,11 @@ a setting that stays off until it is named, so a repository chooses how far it g
   always agrees with `Closes` or `Refs`), and the known risks and shortcomings. A first run is carried onto the base branch's tip
   before its pull request is opened
   ([ADR 0031](./docs/adr/0031-a-run-brings-in-the-base-branch-and-reconfirms-its-change.md)).
-  A conflict is not yet handed to the agent: it fails the run and names the files.
+  If the base changed a file the change also touches, the two are merged in the working tree
+  and the agent is asked again, in the same run and from the same budget, to resolve what is
+  left and reconfirm its change; a conflict marker it leaves fails the run and pushes
+  nothing. A change that turns out to be already made by the base is not yet reported as a
+  draft pull request.
 - **Reviews.** The lenses a change needs are chosen from the files it touches, each review is
   a read-only workload pinned to one commit, and a blocking finding becomes a revision
   ([ADR 0025](./docs/adr/0025-a-review-is-a-workload-that-reads-one-commit-under-one-lens-and-ends-with-a-verdict.md),

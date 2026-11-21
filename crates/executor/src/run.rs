@@ -1,6 +1,6 @@
 //! Running one workload: prepare a workspace, play the agent, say how it ended.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use contracts::v1alpha1::agent_runtime::Kind as AgentKind;
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::{
-    GateFinished, GateStarted, RunRecord, Started, Workload, WorkspaceReady,
+    BaseMoved, GateFinished, GateStarted, Revision, RunRecord, Started, Workload, WorkspaceReady,
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
@@ -86,6 +86,9 @@ pub fn run(
     }))?;
 
     let mut verdict: Option<Said> = None;
+    // What the workload has spent on every agent it has run, so that asking the agent a
+    // second time spends from the budget the first left and not from a new one.
+    let spent = Cell::new(0.0_f64);
     let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
         Ok((manifest, since)) => {
             // A review or an evaluation is held to changing nothing, so what the
@@ -112,6 +115,7 @@ pub fn run(
                 &workspace,
                 options.heartbeat,
                 secrets,
+                &spent,
                 &mut stream,
             )? {
                 End::Done if read_only(&workload) => {
@@ -123,26 +127,21 @@ pub fn run(
                         Err(reason) => (Outcome::Failed, reason),
                     }
                 }
-                End::Done => 'done: {
-                    // A first run that is about to open a pull request is carried onto
-                    // the base branch as it is now, before its gates judge it.
-                    let delivering =
-                        options.deliver && secrets.get(secrets::GITHUB_TOKEN).is_some();
-                    let since = match carry_if(delivering, &workload, &workspace, since) {
-                        Ok(since) => since,
-                        Err(reason) => break 'done (Outcome::Failed, reason),
+                End::Done => {
+                    let asking = Asking {
+                        adapter: adapter.as_ref(),
+                        options,
+                        secrets,
+                        spent: &spent,
                     };
-                    match run_gates(&manifest, &workspace, &since, secrets, &mut stream)? {
-                        Ok(deferred) => deliver_if_asked(
-                            options,
-                            secrets,
-                            &workload,
-                            &workspace,
-                            &deferred,
-                            &mut stream,
-                        )?,
-                        Err(reason) => (Outcome::Failed, reason),
-                    }
+                    finish_first_run(
+                        &asking,
+                        &workload,
+                        &workspace,
+                        &manifest,
+                        since,
+                        &mut stream,
+                    )?
                 }
                 End::Failed(reason) => (Outcome::Failed, reason),
                 End::TimedOut(reason) => (Outcome::TimedOut, reason),
@@ -403,6 +402,109 @@ fn deliver_if_asked<W: Write>(
     }
 }
 
+/// What carrying the work onto the base branch came to.
+enum Carried {
+    /// The work stands on this commit and nothing more is needed.
+    Onto(String),
+    /// The work and what the base gained are merged in the working tree, and the agent is to
+    /// resolve what is left and reconfirm its change.
+    Merged(Merge),
+}
+
+/// A change merged with what the base gained, left in the working tree for the agent.
+struct Merge {
+    /// The base branch's tip, which the merged work stands on.
+    tip: String,
+    /// What came in, one line a commit.
+    commits: Vec<String>,
+    /// The files both the change and the base changed.
+    overlap: Vec<String>,
+    /// The files where both changed the same lines, which hold conflict markers.
+    conflicted: Vec<String>,
+}
+
+/// The workload as the agent is asked about it a second time: its own first change, which no
+/// pull request holds yet, and what came in. A revision with no pull request is how the
+/// prompt says so.
+fn asked_again(workload: &Workload, merge: &Merge) -> Workload {
+    let mut asked = workload.clone();
+    asked.revision = Some(Revision {
+        attempt: 1,
+        base_moved: Some(BaseMoved {
+            commits: merge.commits.clone(),
+            overlapping_files: merge.overlap.clone(),
+        }),
+        ..Revision::default()
+    });
+    asked
+}
+
+/// What asking the agent a second time needs, besides the workload.
+struct Asking<'a> {
+    adapter: &'a dyn Adapter,
+    options: &'a Options,
+    secrets: &'a Secrets,
+    spent: &'a Cell<f64>,
+}
+
+/// What a first run or a revision does once its agent is done: carry the work onto the base
+/// branch as it is now, asking the agent to resolve what the base changed, then judge it by
+/// the repository's gates and open the pull request.
+fn finish_first_run<W: Write>(
+    asking: &Asking<'_>,
+    workload: &Workload,
+    workspace: &Path,
+    manifest: &Manifest,
+    since: String,
+    stream: &mut Stream<'_, W>,
+) -> Result<(Outcome, String), Refused> {
+    let (options, secrets) = (asking.options, asking.secrets);
+    let delivering = options.deliver && secrets.get(secrets::GITHUB_TOKEN).is_some();
+    let since = match carry_if(delivering, workload, workspace, since) {
+        Ok(Carried::Onto(since)) => since,
+        // The base changed what the agent changed: the agent resolves the difference and
+        // reconfirms its change, in this run and within its budget, and what it leaves is
+        // checked before anything is judged.
+        Ok(Carried::Merged(merge)) => {
+            match resolve_merge(asking, workload, workspace, &merge, stream)? {
+                Ok(since) => since,
+                Err(ended) => return Ok(ended),
+            }
+        }
+        Err(reason) => return Ok((Outcome::Failed, reason)),
+    };
+    match run_gates(manifest, workspace, &since, secrets, stream)? {
+        Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
+        Err(reason) => Ok((Outcome::Failed, reason)),
+    }
+}
+
+/// Ask the agent to resolve what the base changed and reconfirm its change, and check what it
+/// left. The inner error is how the run ended, when it did not go on.
+fn resolve_merge<W: Write>(
+    asking: &Asking<'_>,
+    workload: &Workload,
+    workspace: &Path,
+    merge: &Merge,
+    stream: &mut Stream<'_, W>,
+) -> Result<Result<String, (Outcome, String)>, Refused> {
+    match agent::run(
+        asking.adapter,
+        &asked_again(workload, merge),
+        workspace,
+        asking.options.heartbeat,
+        asking.secrets,
+        asking.spent,
+        stream,
+    )? {
+        End::Done => {}
+        End::Failed(reason) => return Ok(Err((Outcome::Failed, reason))),
+        End::TimedOut(reason) => return Ok(Err((Outcome::TimedOut, reason))),
+        End::Cancelled => return Ok(Err((Outcome::Failed, String::new()))),
+    }
+    Ok(settle_merge(workspace, merge).map_err(|reason| (Outcome::Failed, reason)))
+}
+
 /// Carry the work onto the base branch when it is about to be delivered, and leave it
 /// where it is otherwise: a run that opens no pull request has no ground to be on.
 fn carry_if(
@@ -410,11 +512,11 @@ fn carry_if(
     workload: &Workload,
     workspace: &Path,
     since: String,
-) -> Result<String, String> {
+) -> Result<Carried, String> {
     if delivering {
         carry_onto_base(workload, workspace, &since)
     } else {
-        Ok(since)
+        Ok(Carried::Onto(since))
     }
 }
 
@@ -425,12 +527,12 @@ fn carry_if(
 /// Work that touches nothing the base branch touched is carried over mechanically, with
 /// no commit of its own: the checkout moves to the tip and the uncommitted work goes
 /// with it, so the pull request has one commit on current ground. Work that touches
-/// a file the base also touched is not carried over, and the run ends with the files
-/// named. Returns the commit the work now stands on, which what the agent changed is
-/// judged from.
-fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result<String, String> {
+/// a file the base also touched is merged with it in the working tree, and what is left,
+/// conflict markers where both changed the same lines, goes to the agent to resolve.
+/// Returns where the work now stands.
+fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result<Carried, String> {
     if workload.revision.is_some() || workload.review.is_some() {
-        return Ok(since.to_owned());
+        return Ok(Carried::Onto(since.to_owned()));
     }
     let base = &workload
         .repository
@@ -446,24 +548,22 @@ fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result
         .trim()
         .to_owned();
     if tip == since {
-        return Ok(tip);
+        return Ok(Carried::Onto(tip));
     }
     let ours = changed_files(workspace, since)?;
     if ours.is_empty() {
         // Nothing to carry: delivery says the agent changed nothing.
-        return Ok(since.to_owned());
+        return Ok(Carried::Onto(since.to_owned()));
     }
     let range = format!("{since}..{tip}");
     let gained = git_output(&["diff", "--name-only", &range], workspace)?;
-    let overlap: Vec<&str> = gained
+    let overlap: Vec<String> = gained
         .lines()
         .filter(|file| ours.iter().any(|mine| mine == file))
+        .map(str::to_owned)
         .collect();
     if !overlap.is_empty() {
-        return Err(format!(
-            "the base branch '{base}' changed {} too since this run began, so the change cannot be carried onto it without a person or the agent resolving the difference",
-            overlap.join(", ")
-        ));
+        return merge_with_base(workspace, since, &tip, overlap);
     }
     git(
         &["stash", "push", "--quiet", "--include-untracked"],
@@ -487,7 +587,143 @@ fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result
         workspace,
         "could not put the work back on the base branch's tip",
     )?;
-    Ok(tip)
+    Ok(Carried::Onto(tip))
+}
+
+/// Arguments for a git command that makes a commit or a merge, with an identity of its own
+/// so that nothing depends on the checkout's configuration.
+fn with_identity<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    [
+        "-c",
+        "user.name=Hephaestium",
+        "-c",
+        "user.email=hephaestium@users.noreply.invalid",
+        "-c",
+        "commit.gpgsign=false",
+    ]
+    .into_iter()
+    .chain(args.iter().copied())
+    .collect()
+}
+
+/// Merge the agent's work with what the base gained, in the working tree. The work is
+/// committed for a moment, on the commit the run began at, so that git can merge it as it
+/// merges anything: the result is left staged with conflict markers where both changed the
+/// same lines, and is not committed. That commit is never pushed.
+fn merge_with_base(
+    workspace: &Path,
+    since: &str,
+    tip: &str,
+    overlap: Vec<String>,
+) -> Result<Carried, String> {
+    git(
+        &["add", "--all"],
+        workspace,
+        "could not set the work aside to merge it",
+    )?;
+    git(
+        &with_identity(&[
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            "the agent's change, set aside to be merged",
+        ]),
+        workspace,
+        "could not set the work aside to merge it",
+    )?;
+    let work = git_output(&["rev-parse", "HEAD"], workspace)?
+        .trim()
+        .to_owned();
+    git(
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "--quiet",
+            "--detach",
+            tip,
+        ],
+        workspace,
+        "could not check out the base branch's tip",
+    )?;
+    // Exit 1 is a merge with conflicts, which is what the agent is for; any other failure
+    // is a merge that could not be made.
+    let code = git_exit(
+        &with_identity(&["merge", "--no-commit", "--no-ff", "--quiet", &work]),
+        workspace,
+    )?;
+    if code > 1 {
+        return Err(format!(
+            "git could not merge the change with what the base branch gained (exit code {code})"
+        ));
+    }
+    let conflicted: Vec<String> =
+        git_output(&["diff", "--name-only", "--diff-filter=U"], workspace)?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+    let range = format!("{since}..{tip}");
+    let commits: Vec<String> =
+        git_output(&["log", "--format=%h %s", "-n", "30", &range], workspace)?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+    Ok(Carried::Merged(Merge {
+        tip: tip.to_owned(),
+        commits,
+        overlap,
+        conflicted,
+    }))
+}
+
+/// What the agent left of the merge: no file may still hold a conflict marker. Then the
+/// merge is given up as a merge and the resolved tree is kept as uncommitted work on the
+/// base's tip, as the mechanical carry leaves it, so that what delivery commits is one
+/// commit on current ground. Returns the commit the work stands on.
+fn settle_merge(workspace: &Path, merge: &Merge) -> Result<String, String> {
+    let mut files: Vec<&String> = merge.overlap.iter().chain(&merge.conflicted).collect();
+    files.sort();
+    files.dedup();
+    let left: Vec<&str> = files
+        .into_iter()
+        .filter(|file| holds_a_marker(&workspace.join(file)))
+        .map(String::as_str)
+        .collect();
+    if !left.is_empty() {
+        return Err(format!(
+            "the agent left a conflict marker in {}, so the change was not delivered",
+            left.join(", ")
+        ));
+    }
+    git(&["merge", "--quit"], workspace, "could not leave the merge")?;
+    git(
+        &["reset", "--quiet", "--mixed", &merge.tip],
+        workspace,
+        "could not put the resolved work on the base branch's tip",
+    )?;
+    Ok(merge.tip.clone())
+}
+
+/// Whether a file has a line git would have written to mark a conflict.
+fn holds_a_marker(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|text| {
+        text.lines().any(|line| {
+            ["<<<<<<<", ">>>>>>>"]
+                .iter()
+                .any(|mark| line == *mark || line.starts_with(&format!("{mark} ")))
+        })
+    })
+}
+
+/// The exit code of a git command, for one whose failure is an answer.
+fn git_exit(args: &[&str], directory: &Path) -> Result<i32, String> {
+    let mut command = vec!["git".to_owned()];
+    command.extend(args.iter().map(|a| (*a).to_owned()));
+    match execute(&command, directory, CLONE_TIMEOUT, true, say) {
+        Ok((Ended::Exited(code), _)) => Ok(code),
+        _ => Err(format!("git {} could not be run", args.join(" "))),
+    }
 }
 
 /// What a git command wrote to standard output.
