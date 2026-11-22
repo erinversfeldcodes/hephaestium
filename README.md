@@ -212,7 +212,9 @@ verdict that passes the contract) is started again, up to twice more, in the sam
 `HEPH_READER_RETRY_WAIT_MS` (ten seconds by default), so an outage does not use up the rounds;
 a verdict that was given, a reader that changed a file and one that met the budget are never
 retried. A lens whose text says `blocking: false` is read and never stops
-the push. Every agent spends from the workload's one budget, and the run record's `steps` lists the
+the push. The event stream says which agent is running (`stepStarted` and `stepFinished`, around the agent's own events: the
+implementation, each reading with its lens and round, each revision, and for a reading what it ended in), and
+`heph run` shows them as lines like "reading under lens rust, round 1" and "lens rust: needs_revision". Every agent spends from the workload's one budget, and the run record's `steps` lists the
 implementation, each reading and each revision with its own cost. A cost in tokens carries the parts
 the runtime gave (input, output, cache creation and cache read) beside the total, on each event, in the
 record's totals and on each step; a runtime that gives none gives none, and tokens are never converted

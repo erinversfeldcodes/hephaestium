@@ -14,7 +14,7 @@ use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::step::Kind as StepKind;
 use contracts::v1alpha1::{
     BaseMoved, CostTotal, GateFinished, GateStarted, Lens, Revision, RunRecord, Started, Step,
-    TokenBreakdown, Workload, WorkspaceReady,
+    StepFinished, StepStarted, TokenBreakdown, Workload, WorkspaceReady,
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
@@ -116,15 +116,16 @@ pub fn run(
             } else {
                 None
             };
-            match agent::run(
+            let ended = run_first_agent(
                 adapter.as_ref(),
                 &workload,
                 &workspace,
-                options.heartbeat,
+                options,
                 secrets,
                 &spent,
                 &mut stream,
-            )? {
+            )?;
+            match ended {
                 End::Done if read_only(&workload) => {
                     match judged(&workload, &workspace, before.as_ref()) {
                         Ok(said) => {
@@ -177,6 +178,38 @@ pub fn run(
     record.steps = steps.into_inner();
     keep(&mut record, verdict)?;
     write_record(&options.record, &record)
+}
+
+/// Run the agent that makes the change. A run that reads its own change says which agent is
+/// running, so this one is told too.
+fn run_first_agent<W: Write>(
+    adapter: &dyn Adapter,
+    workload: &Workload,
+    workspace: &Path,
+    options: &Options,
+    secrets: &Secrets,
+    spent: &Cell<f64>,
+    stream: &mut Stream<'_, W>,
+) -> Result<End, Refused> {
+    let told = options.deliver
+        && secrets.get(secrets::GITHUB_TOKEN).is_some()
+        && reads_before_push(workload);
+    if told {
+        step_started(stream, StepKind::Implementation, 0, "")?;
+    }
+    let ended = agent::run(
+        adapter,
+        workload,
+        workspace,
+        options.heartbeat,
+        secrets,
+        spent,
+        stream,
+    )?;
+    if told {
+        step_finished(stream, StepKind::Implementation, 0, "", "")?;
+    }
+    Ok(ended)
 }
 
 /// Put the verdict that was kept, if there is one, in the record.
@@ -501,6 +534,39 @@ fn reads_before_push(workload: &Workload) -> bool {
     !workload.lenses.is_empty() && workload.prepush_rounds > 0 && !read_only(workload)
 }
 
+/// Say that the agent of a step has started: its events follow, and this is what tells one
+/// agent's from another's. The kind is the run record's, whose values the event's mirror.
+fn step_started<W: Write>(
+    stream: &mut Stream<'_, W>,
+    kind: StepKind,
+    round: i32,
+    lens: &str,
+) -> Result<(), Refused> {
+    stream.emit(Kind::StepStarted(StepStarted {
+        kind: kind as i32,
+        round,
+        lens: lens.to_owned(),
+    }))?;
+    Ok(())
+}
+
+/// Say that the agent of a step has ended, and for a reading what it ended in.
+fn step_finished<W: Write>(
+    stream: &mut Stream<'_, W>,
+    kind: StepKind,
+    round: i32,
+    lens: &str,
+    verdict: &str,
+) -> Result<(), Refused> {
+    stream.emit(Kind::StepFinished(StepFinished {
+        kind: kind as i32,
+        round,
+        lens: lens.to_owned(),
+        verdict: verdict.to_owned(),
+    }))?;
+    Ok(())
+}
+
 /// What a step spent: what the run had spent after it, less what it had before. The parts of a
 /// token cost are taken the same way, and a step whose runtime gave none has none.
 fn spent_between(
@@ -658,7 +724,8 @@ fn read_before_push<W: Write>(
                 }
                 fixes += 1;
                 let asked = prepush::as_revision(workload, fixes, failed.checks);
-                match agent::run(
+                step_started(stream, StepKind::Revision, fixes, "")?;
+                let ended = agent::run(
                     asking.adapter,
                     &asked,
                     workspace,
@@ -666,7 +733,9 @@ fn read_before_push<W: Write>(
                     secrets,
                     asking.spent,
                     stream,
-                )? {
+                )?;
+                step_finished(stream, StepKind::Revision, fixes, "", "")?;
+                match ended {
                     End::Done => {}
                     End::Failed(reason) => return Ok((Outcome::Failed, reason)),
                     End::TimedOut(reason) => return Ok((Outcome::TimedOut, reason)),
@@ -723,6 +792,7 @@ fn read_before_push<W: Write>(
             // the readers find. A verdict that was given is the reader's judgement and is not.
             let mut tries = 1;
             let said = loop {
+                step_started(stream, StepKind::Review, round, &lens.pack)?;
                 let said = prepush::read(&reading, workload, lens, workspace, &head, stream)?;
                 let now = stream.costs().clone();
                 let verdict = said
@@ -730,6 +800,7 @@ fn read_before_push<W: Write>(
                     .ok()
                     .and_then(|value| value["verdict"].as_str())
                     .unwrap_or_default();
+                step_finished(stream, StepKind::Review, round, &lens.pack, verdict)?;
                 note_step(
                     asking,
                     StepKind::Review,
@@ -777,7 +848,8 @@ fn read_before_push<W: Write>(
             .collect();
         if !findings.is_empty() {
             let asked = prepush::as_revision(workload, round, prepush::failures(&findings));
-            match agent::run(
+            step_started(stream, StepKind::Revision, round, "")?;
+            let ended = agent::run(
                 asking.adapter,
                 &asked,
                 workspace,
@@ -785,7 +857,9 @@ fn read_before_push<W: Write>(
                 secrets,
                 asking.spent,
                 stream,
-            )? {
+            )?;
+            step_finished(stream, StepKind::Revision, round, "", "")?;
+            match ended {
                 End::Done => {}
                 End::Failed(reason) => return Ok((Outcome::Failed, reason)),
                 End::TimedOut(reason) => return Ok((Outcome::TimedOut, reason)),
