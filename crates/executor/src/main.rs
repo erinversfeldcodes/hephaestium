@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 
 use executor::cli;
-use executor::run::run;
+use executor::run::{keep_out_of_the_log, run};
 use executor::secrets::{self, Secrets};
 
 /// What a build reports when no version was compiled in.
@@ -55,10 +55,14 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(1);
     }
+    keep_out_of_the_log(&secrets);
     match run(&options, VERSION, &secrets, &mut std::io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(refused) => {
-            eprintln!("executor: {refused}");
+            eprintln!(
+                "executor: {}",
+                executor::run::for_the_log(&refused.to_string())
+            );
             ExitCode::from(1)
         }
     }

@@ -12,8 +12,9 @@ use contracts::v1alpha1::event::Kind;
 use serde_json::{Value, json};
 
 /// What the agent sees: `GH_TOKEN`, then the write token, then the read token by its own
-/// name, each or `none`.
-const SEES: &str = r#"printf '{"agentMessage":{"text":"%s|%s|%s"}}\n' "${GH_TOKEN:-none}" "${HEPH_GITHUB_TOKEN:-none}" "${HEPH_GITHUB_READ_TOKEN:-none}""#;
+/// name, each or `none`, in capitals: a token printed as it is would be replaced by the
+/// executor with a marker, as it should be, and this says what the agent was given.
+const SEES: &str = r#"u() { printf %s "$1" | tr a-z A-Z; }; printf '{"agentMessage":{"text":"%s|%s|%s"}}\n' "$(u "${GH_TOKEN:-none}")" "$(u "${HEPH_GITHUB_TOKEN:-none}")" "$(u "${HEPH_GITHUB_READ_TOKEN:-none}")""#;
 
 fn arguments() -> Vec<String> {
     vec![
@@ -65,7 +66,7 @@ fn an_evaluation_is_given_the_read_token_as_gh_token_and_nothing_else_by_name() 
         &[("HEPH_GITHUB_READ_TOKEN", "read-only-token")],
     );
 
-    assert_eq!(said, "read-only-token|none|none");
+    assert_eq!(said, "READ-ONLY-TOKEN|NONE|NONE");
 }
 
 #[test]
@@ -79,8 +80,8 @@ fn the_token_that_writes_never_reaches_an_evaluation() {
         ],
     );
 
-    assert_eq!(said, "read-only-token|none|none");
-    assert!(!said.contains("write-token"));
+    assert_eq!(said, "READ-ONLY-TOKEN|NONE|NONE");
+    assert!(!said.contains("WRITE-TOKEN"));
 }
 
 #[test]
@@ -91,14 +92,14 @@ fn a_workload_that_is_not_an_evaluation_is_never_given_the_read_token() {
         &[("HEPH_GITHUB_READ_TOKEN", "read-only-token")],
     );
 
-    assert_eq!(said, "none|none|none");
+    assert_eq!(said, "NONE|NONE|NONE");
 }
 
 #[test]
 fn an_evaluation_with_no_read_token_has_none() {
     let said = seen("token-absent", true, &[]);
 
-    assert_eq!(said, "none|none|none");
+    assert_eq!(said, "NONE|NONE|NONE");
 }
 
 #[test]
@@ -128,7 +129,7 @@ fn the_read_token_can_be_kept_in_a_file_and_is_still_only_the_evaluations() {
             _ => None,
         })
         .expect("the agent said something");
-    assert_eq!(said, "token-from-a-file|none|none");
+    assert_eq!(said, "TOKEN-FROM-A-FILE|NONE|NONE");
 }
 
 #[test]
@@ -142,5 +143,5 @@ fn a_gap_step_reads_the_thread_so_it_is_given_the_read_token_as_well() {
         &[("HEPH_GITHUB_READ_TOKEN", "read-only-token")],
     );
 
-    assert_eq!(said, "read-only-token|none|none");
+    assert_eq!(said, "READ-ONLY-TOKEN|NONE|NONE");
 }
