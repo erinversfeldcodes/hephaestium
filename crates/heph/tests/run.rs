@@ -924,3 +924,95 @@ fn progress_says_which_agent_is_running_and_what_a_reader_found() {
     });
     assert_eq!(heph::run::render(&end_of_implementation), None);
 }
+
+/// The canned record with `steps` added.
+fn record_with_steps(steps: &serde_json::Value) -> String {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&record("OUTCOME_COMPLETED", "")).expect("the canned record is JSON");
+    value["steps"] = steps.clone();
+    value.to_string()
+}
+
+fn usd(amount: f64) -> serde_json::Value {
+    json!({"unit": "COST_UNIT_USD", "amount": amount, "source": "SOURCE_REPORTED_BY_RUNTIME"})
+}
+
+fn tokens(amount: u64) -> serde_json::Value {
+    json!({"unit": "COST_UNIT_TOKENS", "amount": amount, "source": "SOURCE_REPORTED_BY_RUNTIME"})
+}
+
+/// The lines of the summary after `cost:` and before `pull request:`.
+fn step_lines(shown: &str) -> Vec<String> {
+    shown
+        .lines()
+        .skip_while(|l| !l.starts_with("cost:"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("pull request:"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_summary_lists_each_step_in_order_with_what_it_ended_in_and_what_it_spent() {
+    let rig = rig("run-steps");
+    rig.token_file("github-token");
+    let steps = json!([
+        {"kind": "KIND_IMPLEMENTATION", "costs": [usd(0.5)]},
+        {"kind": "KIND_REVIEW", "lens": "rust", "round": 1, "verdict": "needs_revision", "costs": [usd(0.2)]},
+        {"kind": "KIND_REVIEW", "lens": "docs", "round": 1, "costs": [usd(0.1)]},
+        {"kind": "KIND_REVISION", "round": 1, "costs": [usd(0.3)]}
+    ]);
+    rig.write_executor(0, "", &events(), &record_with_steps(&steps));
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        step_lines(&stdout(&output)),
+        [
+            "  implementation: $0.500",
+            "  review rust round 1: needs_revision, $0.200",
+            "  review docs round 1: no verdict, $0.100",
+            "  revision round 1: $0.300",
+        ],
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn a_step_with_dollars_and_tokens_shows_both_and_never_adds_them() {
+    let rig = rig("run-steps-units");
+    rig.token_file("github-token");
+    let steps = json!([
+        {"kind": "KIND_REVIEW", "lens": "rust", "round": 2, "verdict": "approved", "costs": [usd(0.25), tokens(1200)]}
+    ]);
+    rig.write_executor(0, "", &events(), &record_with_steps(&steps));
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    assert_eq!(
+        step_lines(&stdout(&output)),
+        ["  review rust round 2: approved, $0.250, 1200 tokens"],
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn a_record_with_no_steps_prints_no_step_lines() {
+    let rig = rig("run-no-steps");
+    rig.token_file("github-token");
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    let shown = stdout(&output);
+    assert!(
+        step_lines(&shown).is_empty(),
+        "step lines without steps:\n{shown}"
+    );
+    assert!(
+        shown.contains("cost: $0.125, 144096 tokens\npull request: "),
+        "the summary changed:\n{shown}"
+    );
+}
