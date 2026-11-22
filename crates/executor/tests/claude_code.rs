@@ -73,6 +73,80 @@ fn the_recorded_run_becomes_the_right_events_in_order() {
     assert_eq!(message.text, "The magic word is **pelican**.");
 }
 
+fn costs_of(line: &str) -> Vec<contracts::v1alpha1::Cost> {
+    ClaudeCode
+        .translate(line)
+        .expect("a line the adapter understands")
+        .into_iter()
+        .filter_map(|kind| match kind {
+            Kind::Cost(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_token_cost_carries_the_parts_the_runtime_gave_and_they_add_up_to_the_total() {
+    let events = translate_all(RECORDED);
+    let tokens: Vec<_> = events
+        .iter()
+        .filter_map(|kind| match kind {
+            Kind::Cost(c) if c.unit == CostUnit::Tokens as i32 => Some(c),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(tokens.len(), 1);
+    let parts = tokens[0].breakdown.as_ref().expect("the parts");
+    // The recorded run's own usage block: 4 input, 21,363 cache creation, 40,868 cache read, 259 output.
+    assert!((parts.input - 4.0).abs() < f64::EPSILON, "{parts:?}");
+    assert!((parts.output - 259.0).abs() < f64::EPSILON, "{parts:?}");
+    assert!(
+        (parts.cache_creation - 21_363.0).abs() < f64::EPSILON,
+        "{parts:?}"
+    );
+    assert!(
+        (parts.cache_read - 40_868.0).abs() < f64::EPSILON,
+        "{parts:?}"
+    );
+    let sum = parts.input + parts.output + parts.cache_creation + parts.cache_read;
+    assert!(
+        (sum - tokens[0].amount).abs() < f64::EPSILON,
+        "{sum} against the total"
+    );
+}
+
+#[test]
+fn a_dollar_cost_has_no_parts_because_only_tokens_are_made_of_parts() {
+    let events = translate_all(RECORDED);
+    let dollars: Vec<_> = events
+        .iter()
+        .filter_map(|kind| match kind {
+            Kind::Cost(c) if c.unit == CostUnit::Usd as i32 => Some(c),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(dollars.len(), 1);
+    assert!(dollars[0].breakdown.is_none());
+}
+
+#[test]
+fn parts_the_runtime_did_not_give_are_not_invented_and_a_runtime_that_gave_none_has_none() {
+    let only_output = r#"{"type":"result","subtype":"success","is_error":false,"result":"x","usage":{"output_tokens":7}}"#;
+    let tokens = costs_of(only_output);
+    assert_eq!(tokens.len(), 1);
+    let parts = tokens[0].breakdown.as_ref().expect("the one part it gave");
+    assert!((parts.output - 7.0).abs() < f64::EPSILON);
+    assert!(parts.input.abs() < f64::EPSILON && parts.cache_read.abs() < f64::EPSILON);
+    assert!((tokens[0].amount - 7.0).abs() < f64::EPSILON);
+
+    let no_usage = r#"{"type":"result","subtype":"success","is_error":false,"result":"x","total_cost_usd":0.5}"#;
+    let costs = costs_of(no_usage);
+    assert_eq!(costs.len(), 1, "only the dollars");
+    assert!(costs[0].breakdown.is_none());
+}
+
 #[test]
 fn the_result_line_becomes_a_dollar_cost_and_a_token_cost_each_as_reported() {
     let events = translate_all(RECORDED);

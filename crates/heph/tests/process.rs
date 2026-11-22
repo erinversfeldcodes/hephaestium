@@ -97,8 +97,15 @@ fn a_command_past_its_deadline_is_stopped_with_everything_it_started() {
     assert!(!alive(&pid), "the grandchild {pid} outlived its parent");
 }
 
-fn tailed(script: &str, capture_stdout: bool, most: usize) -> (Ended, Option<Vec<u8>>, Tail) {
-    let scratch = Scratch::new("process-tail");
+/// Run a script with a tail. Each caller names its own scratch directory, because tests run in
+/// parallel and one that shared a name would delete another's directory under it.
+fn tailed(
+    name: &str,
+    script: &str,
+    capture_stdout: bool,
+    most: usize,
+) -> (Ended, Option<Vec<u8>>, Tail) {
+    let scratch = Scratch::new(name);
     let tail = Tail::new(most);
     let (ended, captured) = execute_with_tail(
         &words(&["sh", "-c", script]),
@@ -116,6 +123,7 @@ fn tailed(script: &str, capture_stdout: bool, most: usize) -> (Ended, Option<Vec
 #[test]
 fn a_tail_keeps_the_last_lines_a_command_printed_on_either_stream() {
     let (ended, _, tail) = tailed(
+        "process-tail-lines",
         "for i in 1 2 3 4 5; do echo out$i; echo err$i >&2; done; exit 1",
         false,
         4,
@@ -137,7 +145,12 @@ fn a_tail_keeps_the_last_lines_a_command_printed_on_either_stream() {
 
 #[test]
 fn a_tail_leaves_the_captured_standard_output_whole_and_keeps_only_what_went_to_standard_error() {
-    let (ended, captured, tail) = tailed("echo '{\"a\": 1}'; echo warning >&2", true, 10);
+    let (ended, captured, tail) = tailed(
+        "process-tail-captured",
+        "echo '{\"a\": 1}'; echo warning >&2",
+        true,
+        10,
+    );
 
     assert_eq!(ended, Ended::Exited(0));
     assert_eq!(
@@ -151,10 +164,10 @@ fn a_tail_leaves_the_captured_standard_output_whole_and_keeps_only_what_went_to_
 
 #[test]
 fn a_tail_of_a_command_that_prints_nothing_is_empty_and_text_that_is_not_utf8_does_not_end_it() {
-    let (_, _, quiet) = tailed("exit 0", false, 5);
+    let (_, _, quiet) = tailed("process-tail-quiet", "exit 0", false, 5);
     assert_eq!(quiet.text(), "");
 
-    let (ended, _, odd) = tailed("printf 'caf\\351\\n' >&2", false, 5);
+    let (ended, _, odd) = tailed("process-tail-odd", "printf 'caf\\351\\n' >&2", false, 5);
     assert_eq!(ended, Ended::Exited(0));
     assert!(odd.text().starts_with("caf"), "{}", odd.text());
 }

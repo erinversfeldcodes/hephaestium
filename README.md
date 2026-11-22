@@ -213,7 +213,10 @@ verdict that passes the contract) is started again, up to twice more, in the sam
 a verdict that was given, a reader that changed a file and one that met the budget are never
 retried. A lens whose text says `blocking: false` is read and never stops
 the push. Every agent spends from the workload's one budget, and the run record's `steps` lists the
-implementation, each reading and each revision with its own cost.
+implementation, each reading and each revision with its own cost. A cost in tokens carries the parts
+the runtime gave (input, output, cache creation and cache read) beside the total, on each event, in the
+record's totals and on each step; a runtime that gives none gives none, and tokens are never converted
+into dollars or back ([ADR 0036](./docs/adr/0036-spend-is-kept-as-an-append-only-ledger-by-step-ticket-epic-and-branch.md)).
 
 ### The control plane
 

@@ -14,7 +14,7 @@ use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::step::Kind as StepKind;
 use contracts::v1alpha1::{
     BaseMoved, CostTotal, GateFinished, GateStarted, Lens, Revision, RunRecord, Started, Step,
-    Workload, WorkspaceReady,
+    TokenBreakdown, Workload, WorkspaceReady,
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
@@ -30,7 +30,7 @@ use crate::gap;
 use crate::prepush::{self, Reading};
 use crate::review;
 use crate::secrets::{self, Secrets};
-use crate::stream::Stream;
+use crate::stream::{Spent, Stream};
 use crate::{transcript, workload};
 
 /// How long cloning and checking out may take.
@@ -501,22 +501,50 @@ fn reads_before_push(workload: &Workload) -> bool {
     !workload.lenses.is_empty() && workload.prepush_rounds > 0 && !read_only(workload)
 }
 
-/// What a step spent: what the run had spent after it, less what it had before.
+/// What a step spent: what the run had spent after it, less what it had before. The parts of a
+/// token cost are taken the same way, and a step whose runtime gave none has none.
 fn spent_between(
-    before: &BTreeMap<(i32, i32), f64>,
-    after: &BTreeMap<(i32, i32), f64>,
+    before: &BTreeMap<(i32, i32), Spent>,
+    after: &BTreeMap<(i32, i32), Spent>,
 ) -> Vec<CostTotal> {
     after
         .iter()
         .filter_map(|(&(unit, source), now)| {
-            let amount = now - before.get(&(unit, source)).copied().unwrap_or(0.0);
-            (amount > 0.0).then_some(CostTotal {
+            let was = before.get(&(unit, source)).cloned().unwrap_or_default();
+            let amount = now.amount - was.amount;
+            (amount > 0.0).then(|| CostTotal {
                 unit,
                 amount,
                 source,
+                breakdown: parts_between(was.breakdown.as_ref(), now.breakdown.as_ref()),
             })
         })
         .collect()
+}
+
+/// The parts of tokens a step spent: those after it, less those before. None when no part
+/// grew, which is a step whose runtime did not say how its tokens were made up.
+fn parts_between(
+    before: Option<&TokenBreakdown>,
+    after: Option<&TokenBreakdown>,
+) -> Option<TokenBreakdown> {
+    let now = after?;
+    let was = before.copied().unwrap_or_default();
+    let spent = TokenBreakdown {
+        input: now.input - was.input,
+        output: now.output - was.output,
+        cache_creation: now.cache_creation - was.cache_creation,
+        cache_read: now.cache_read - was.cache_read,
+    };
+    let grew = [
+        spent.input,
+        spent.output,
+        spent.cache_creation,
+        spent.cache_read,
+    ]
+    .iter()
+    .any(|part| *part > 0.0);
+    grew.then_some(spent)
 }
 
 /// Record a step: the agent that ran, for what, and what it spent.
