@@ -351,6 +351,8 @@ left `queued` until the executor of the person who approved its ticket asks for 
 these routes exists and the API is as it was. The executor opens every connection (a long poll
 and plain `POST`s, so nothing listens on the developer's machine and any proxy carries it). It
 holds a device token and nothing else.
+The executor's side is `heph worker --control-plane URL` (see the repository README), which takes the
+token from `HEPH_WORKER_TOKEN`, `HEPH_WORKER_TOKEN_FILE` or `~/.config/hephaestium/worker-token`.
 
 | Route | Who | What it does |
 | --- | --- | --- |
