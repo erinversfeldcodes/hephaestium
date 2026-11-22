@@ -1,0 +1,87 @@
+schema_version = 0
+
+# Hephaestium run on its own tickets. The components say which review lens a change needs, and
+# the gates are the checks the workspace can run before a change is pushed. What it cannot
+# (the control plane's tests need Postgres) is left to the CI check that runs it.
+
+# The Rust crates: the executor, the command-line tool and the contracts they share.
+[components.rust]
+pack = "rust"
+root = "."
+paths = ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+
+# The contracts and the cases that grade a reader of them.
+[components.contracts]
+pack = "protobuf"
+root = "."
+paths = ["proto/**", "cases/**", "buf.yaml", "buf.gen.yaml"]
+
+# The control plane.
+[components.control-plane]
+pack = "elixir"
+root = "control-plane"
+paths = ["control-plane/**"]
+
+# What is not code and is read as the project's own account of itself: the decisions, the
+# README and the design notes. No pack names a lens for prose; the lenses that apply to every
+# change read these.
+[components.docs]
+root = "."
+paths = ["docs/**", "README.md", "AGENTS.md", "LICENSE"]
+
+# The pipeline and the scripts it and the releases run.
+[components.platform]
+root = "."
+paths = [".github/**", "scripts/**", ".athenaeum/**", ".gitignore"]
+
+[gates.format-rust]
+run = ["cargo", "fmt", "--all", "--check"]
+when_paths = ["crates/**", "Cargo.toml", "Cargo.lock"]
+timeout_seconds = 300
+
+[gates.lint-rust]
+run = ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"]
+when_paths = ["crates/**", "Cargo.toml", "Cargo.lock"]
+timeout_seconds = 3600
+
+[gates.test-rust]
+run = ["cargo", "test", "--locked", "--workspace"]
+when_paths = ["crates/**", "proto/**", "cases/**", "Cargo.toml", "Cargo.lock"]
+timeout_seconds = 3600
+# CI's `rust` job runs the same command, so a workspace that cannot may leave the gate to it.
+ci_check = "rust"
+
+[gates.contracts]
+run = ["buf", "lint"]
+when_paths = ["proto/**", "buf.yaml"]
+timeout_seconds = 300
+# CI's `contracts` job runs this and the breaking-change check against the base branch.
+ci_check = "contracts"
+
+[gates.format-elixir]
+run = ["sh", "-c", "cd control-plane && mix format --check-formatted"]
+when_paths = ["control-plane/**"]
+timeout_seconds = 300
+
+# The control plane's tests run against a real Postgres, which a workspace does not have.
+# CI's `control-plane` job has one.
+[gates.test-elixir]
+run = ["sh", "-c", "cd control-plane && mix test"]
+when_paths = ["control-plane/**", "proto/**", "cases/**"]
+timeout_seconds = 3600
+ci_check = "control-plane"
+
+[gates.test-elixir.requires]
+DATABASE_URL = "env"
+
+[gates.docs]
+run = ["scripts/check-doc-links.sh"]
+when_paths = ["docs/**", "README.md", "control-plane/README.md"]
+timeout_seconds = 300
+ci_check = "docs"
+
+[gates.attribution]
+run = ["scripts/test-attribution.sh"]
+when_paths = ["scripts/**"]
+timeout_seconds = 300
+ci_check = "commits"
