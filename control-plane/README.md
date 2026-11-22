@@ -307,6 +307,7 @@ the app, the Neon project and the secrets is done by hand once, and is not part 
 | `HEPH_LEASE_SECONDS` | With the link on: how long a claimed workload stays held after the last event or heartbeat (120). |
 | `HEPH_CLAIM_WAIT_SECONDS` | With the link on: how long a claim waits for a workload before answering that there is none (25; keep it under the idle time of any proxy in front). |
 | `HEPH_API_STATIC_DIR` | A directory holding the built dashboard (`index.html` and its assets), which the API then serves on its own listener. The image sets it. Off if not set: the API then answers exactly as it did without it. The control plane does not start if it is set to a directory with no `index.html`. |
+| `HEPH_WEBHOOK_SECRET_FILE` | The path of a file holding the webhook secret, which turns on `POST /webhooks/github` (see below). Off if not set; it needs `HEPH_API_PORT`, and the control plane does not start if the file is empty or cannot be read. The file is read again for each delivery, so the secret can be rotated without a restart. |
 | `HEPH_API_BASE_URL` | The address the API is served at, such as `https://heph.example`. The callback is `<base>/auth/callback`. Cookies are marked secure unless this is `http://`. |
 
 `GET /health` answers `200` with `{"status":"ok"}` when the database answers a query, and `503`
@@ -320,7 +321,7 @@ With `HEPH_API_PORT` set, a listener of its own serves a login and read-only end
 except the three login routes is behind a session, and any other request is `401`, a path that
 does not exist included. Only `GET` and `HEAD` are answered: every other method is `405`, because
 nothing here writes, except the six `POST` routes of the executor link below, which exist only
-while the link is on.
+while the link is on, and the webhook route, which exists only while webhooks are on.
 
 | Route | What it gives |
 | --- | --- |
@@ -383,6 +384,31 @@ fewer than twice; otherwise it is failed, as a lost run is locally. The events t
 stay kept (events are append-only) and the next claim says where the numbering goes on
 (`nextSequence`). A workload whose approver's executor is not connected waits, for as long as it
 takes.
+
+### Webhooks
+
+With `HEPH_WEBHOOK_SECRET_FILE` set, the API also serves `POST /webhooks/github`, and the control
+plane learns what happened from GitHub's deliveries instead of asking every minute. Off, the route
+does not exist and the control plane polls as before.
+
+A delivery is accepted only if `X-Hub-Signature-256` is the HMAC-SHA256 of the exact body under the
+secret (compared in constant time); anything else is `401` before the body is read, stored or
+enqueued. A good one is answered `202` after one transaction that keeps its `X-GitHub-Delivery` id
+and one job; a delivery id seen before is `200` and nothing more, and ids are forgotten after a
+week. The job holds only the control plane's own event (kind, repository, number, actor, time,
+delivery id) and never GitHub's payload. A delivery for a repository not in `HEPH_REPOSITORIES`, or
+of a kind not subscribed to, is acknowledged and dropped.
+
+Subscribe the App to `issues`, `issue_comment`, `pull_request`, `pull_request_review`,
+`check_run` and `push`. A delivery is a hint to look: the handler reads the current state through
+the tracker and the code host and calls what the poll calls, so a late or repeated delivery does
+nothing and a forged approval is no approval.
+
+With webhooks on, the six jobs that read the code host (intake, settling, keeping pull requests
+current, judging merges, rolling up epics, answering replies) run once an hour, each at its own
+minute, and once when the control plane starts, as the backstop for a delivery that was dropped.
+A pass that finds work a delivery should have woken logs `missed delivery of <kind>`. A workload
+that ends settles its pull request at once, because no webhook says that it ended.
 
 ### Oban's notifier and Neon's pooler
 
