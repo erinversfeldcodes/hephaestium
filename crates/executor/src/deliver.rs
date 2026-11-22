@@ -369,29 +369,6 @@ pub fn check_push(
     })
 }
 
-/// Commit what the agent did, push it, and open the pull request.
-///
-/// # Errors
-///
-/// Returns why nothing could be delivered, or why delivery stopped part way:
-/// the reason the workload ends failed. Nothing already done is undone.
-///
-/// # Panics
-///
-/// If the workload has no ticket or repository. Reading a workload refuses one
-/// without them.
-pub fn deliver(
-    workload: &Workload,
-    workspace: &Path,
-    gh: &str,
-    token: &str,
-    deferred: &[Deferred],
-    tick: &mut Tick<'_>,
-) -> Result<PullRequestOpened, String> {
-    let committed = commit_locally(workload, workspace)?;
-    push_and_open(workload, workspace, gh, token, deferred, &committed, tick)
-}
-
 /// Push a commit that was made locally, and open the pull request, or for a revision update
 /// the one that exists.
 ///

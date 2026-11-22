@@ -13,8 +13,8 @@ use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::step::Kind as StepKind;
 use contracts::v1alpha1::{
-    BaseMoved, CostTotal, GateFinished, GateStarted, Heartbeat, Lens, Revision, RunRecord, Started,
-    Step, StepFinished, StepStarted, TokenBreakdown, Workload, WorkspaceReady,
+    BaseMoved, CostTotal, DeliveryBegan, GateFinished, GateStarted, Heartbeat, Lens, Revision,
+    RunRecord, Started, Step, StepFinished, StepStarted, TokenBreakdown, Workload, WorkspaceReady,
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
@@ -462,9 +462,22 @@ fn deliver_if_asked<W: Write>(
     let (true, Some(token)) = (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) else {
         return Ok((Outcome::Completed, String::new()));
     };
+    let committed = match deliver::commit_locally(workload, workspace) {
+        Ok(committed) => committed,
+        Err(reason) => return Ok((Outcome::Failed, reason)),
+    };
+    stream.emit(Kind::DeliveryBegan(DeliveryBegan {}))?;
     // The push and the pull request's creation reach the network and can take minutes.
     let delivered = beating(options.heartbeat, stream, |tick| {
-        deliver::deliver(workload, workspace, &options.gh, token, deferred, tick)
+        deliver::push_and_open(
+            workload,
+            workspace,
+            &options.gh,
+            token,
+            deferred,
+            &committed,
+            tick,
+        )
     })?;
     match delivered {
         Ok(pull_request) => {
@@ -996,6 +1009,9 @@ fn read_before_push<W: Write>(
         round += 1;
     }
 
+    // Said before the push and not after it: a run whose executor is lost from here on may have
+    // published, and must not be started again, however the push went.
+    stream.emit(Kind::DeliveryBegan(DeliveryBegan {}))?;
     let pushed = beating(options.heartbeat, stream, |tick| {
         deliver::push_and_open(
             workload,
