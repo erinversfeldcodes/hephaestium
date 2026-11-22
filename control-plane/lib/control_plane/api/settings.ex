@@ -16,7 +16,8 @@ defmodule ControlPlane.Api.Settings do
           github: module(),
           session_ttl: pos_integer(),
           poll_ms: pos_integer(),
-          secure: boolean()
+          secure: boolean(),
+          static_dir: Path.t() | nil
         }
 
   @doc "The settings from a keyword list (the application's `:api` environment), or it raises."
@@ -50,9 +51,14 @@ defmodule ControlPlane.Api.Settings do
       session_ttl: config[:session_ttl] || @default_ttl,
       poll_ms: config[:poll_ms] || 1_000,
       # A cookie is secure unless the API is served over plain http, which is only a laptop.
-      secure: not String.starts_with?(base_url, "http://")
+      secure: not String.starts_with?(base_url, "http://"),
+      static_dir: static_dir(config[:static_dir])
     }
   end
+
+  # Where the dashboard's built files are, or nil: nothing is served and the API is as it was.
+  defp static_dir(dir) when dir in [nil, ""], do: nil
+  defp static_dir(dir), do: ControlPlane.Api.Static.check!(dir)
 
   @doc "Whether a GitHub login may sign in. An empty allowlist lets no one in."
   @spec allowed?(t(), String.t()) :: boolean()

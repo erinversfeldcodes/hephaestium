@@ -269,8 +269,8 @@ and no model key or repository code. Everything is read from environment variabl
 starts.
 
 ```
-cd control-plane
-docker build -t hephaestium-control-plane .
+# from the repository's root: the image holds the dashboard, which is built from ../dashboard
+docker build -f control-plane/Dockerfile -t hephaestium-control-plane .
 
 # bring the database to the current schema, as the platform does before a deploy
 docker run --rm -e DATABASE_URL=ecto://user:password@host/database \
@@ -284,7 +284,8 @@ curl -i localhost:8080/health
 
 `fly.toml` is the Fly configuration: `release_command` runs `/app/bin/migrate` on a temporary
 machine made from the new image before the running machines are replaced, and a non-zero exit
-stops the deploy. Deploy to one machine (`fly deploy --ha=false`) from this directory. Creating
+stops the deploy. Deploy to one machine from the repository's root, which is the build context the image needs
+(`fly deploy --config control-plane/fly.toml --ha=false`). Creating
 the app, the Neon project and the secrets is done by hand once, and is not part of the image.
 
 ### Settings
@@ -305,6 +306,7 @@ the app, the Neon project and the secrets is done by hand once, and is not part 
 | `HEPH_EXECUTOR_LINK` | `workers` lets executors on developers' machines run the workloads over the API (see below); `local` or unset keeps the control plane starting an executor itself. `workers` needs `HEPH_API_PORT`. |
 | `HEPH_LEASE_SECONDS` | With the link on: how long a claimed workload stays held after the last event or heartbeat (120). |
 | `HEPH_CLAIM_WAIT_SECONDS` | With the link on: how long a claim waits for a workload before answering that there is none (25; keep it under the idle time of any proxy in front). |
+| `HEPH_API_STATIC_DIR` | A directory holding the built dashboard (`index.html` and its assets), which the API then serves on its own listener. The image sets it. Off if not set: the API then answers exactly as it did without it. The control plane does not start if it is set to a directory with no `index.html`. |
 | `HEPH_API_BASE_URL` | The address the API is served at, such as `https://heph.example`. The callback is `<base>/auth/callback`. Cookies are marked secure unless this is `http://`. |
 
 `GET /health` answers `200` with `{"status":"ok"}` when the database answers a query, and `503`
@@ -330,6 +332,11 @@ while the link is on.
 | `GET /api/workloads/:id/events/stream` | The events after `after` (or `Last-Event-ID`), then each one as it is kept, as server-sent events, until the event that finishes the workload. |
 | `GET /api/spend/tickets/...`, `/epics/...`, `/branch`, `/days` | The spend roll-ups. |
 | `GET /api/questions` | Workloads that ended blocked with a question, for tickets with no later workload. |
+
+With `HEPH_API_STATIC_DIR` set, any `GET` or `HEAD` outside `/api`, `/auth` and `/worker` is answered
+with the file it names, or with `index.html` when it names none and has no file extension (so a reload
+of a page of the dashboard works), or `404` when it has an extension and no file. These files need no
+session; they hold no data. A path that could leave the directory is `404`.
 
 A person signs in with GitHub, and the login must be on `HEPH_API_ALLOWED_LOGINS`; the allowlist
 decides who may open the API and gives no authority over a repository. The session is a signed
