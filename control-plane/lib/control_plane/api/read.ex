@@ -7,7 +7,7 @@ defmodule ControlPlane.Api.Read do
 
   import Ecto.Query
 
-  alias ControlPlane.{Event, Repo, Workload, Workloads}
+  alias ControlPlane.{Account, Event, Repo, Workload, Workloads}
 
   @max_page 500
 
@@ -139,6 +139,23 @@ defmodule ControlPlane.Api.Read do
   @spec event(%Event{}) :: map()
   def event(%Event{} = e),
     do: %{sequence: e.sequence, time: e.time, kind: e.kind, event: e.event}
+
+  @doc """
+  What an agent wrote in a run, which is read only behind the login: its last message as its
+  account and, for a run that stopped to ask, its question. Both are cleaned of terminal escapes
+  and are otherwise what the executor sent, whose redaction of the secrets it holds has already
+  been applied. Either is nil when there is none.
+  """
+  @spec agent_text(%Workload{}) :: map()
+  def agent_text(%Workload{} = w) do
+    question =
+      case (w.record || %{})["question"] do
+        text when is_binary(text) and text != "" -> Account.clean(text) |> String.trim()
+        _ -> nil
+      end
+
+    %{workload: w.id, account: Account.last_message(w.id), question: question}
+  end
 
   @doc "The steps a workload's record lists, or none."
   @spec steps(%Workload{}) :: [map()]
