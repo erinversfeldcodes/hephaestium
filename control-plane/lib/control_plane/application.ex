@@ -15,6 +15,7 @@ defmodule ControlPlane.Application do
     ]
 
     children = children ++ health_listener(Application.get_env(:control_plane, :health))
+    children = children ++ ControlPlane.Api.children(Application.get_env(:control_plane, :api))
 
     with {:ok, supervisor} <-
            Supervisor.start_link(children, strategy: :one_for_one, name: ControlPlane.Supervisor) do

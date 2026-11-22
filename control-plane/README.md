@@ -298,11 +298,47 @@ the app, the Neon project and the secrets is done by hand once, and is not part 
 | `HEPH_OBAN_NOTIFIER` | `pg` or `postgres` (the default); see below. |
 | `HEPH_HEALTH_PORT` | Starts the health listener on this port. Off if not set. |
 | `HEPH_REVIEW_APP_ID`, `HEPH_REVIEW_APP_KEY` | The review App, with its private key held in the variable itself, for a platform whose secrets are variables. `HEPH_REVIEW_APP_KEY_FILE` (a path) still works and is what the laptop uses; if both are set the variable is used. |
+| `HEPH_API_PORT` | Starts the HTTP API (the login and the read-only endpoints) on this port. Off if not set. When it is set the next four are needed, and the control plane does not start without them. |
+| `HEPH_API_SECRET_KEY_BASE` | The key sessions are signed with, at least 32 bytes (`openssl rand -base64 48`). `HEPH_API_SECRET_KEY_BASE_FILE` names a file that holds it. Changing it signs everyone out. |
+| `HEPH_API_GITHUB_CLIENT_ID`, `HEPH_API_GITHUB_CLIENT_SECRET` | The GitHub App's client id and a client secret, for its user authorization. `HEPH_API_GITHUB_CLIENT_SECRET_FILE` (and `_ID_FILE`) name files that hold them. |
+| `HEPH_API_ALLOWED_LOGINS` | The GitHub logins that may sign in, comma-separated, compared without regard to case. Empty lets no one in. |
+| `HEPH_API_BASE_URL` | The address the API is served at, such as `https://heph.example`. The callback is `<base>/auth/callback`. Cookies are marked secure unless this is `http://`. |
 
 `GET /health` answers `200` with `{"status":"ok"}` when the database answers a query, and `503`
 with the reason when it does not or does not answer within two seconds. Nothing else is served.
 The Claude and GitHub tokens are used only by the executor, which does not run in the container,
 so the container is given neither.
+
+### The API and the login
+
+With `HEPH_API_PORT` set, a listener of its own serves a login and read-only endpoints. Everything
+except the three login routes is behind a session, and any other request is `401`, a path that
+does not exist included. Only `GET` and `HEAD` are answered: every other method is `405`, because
+nothing here writes.
+
+| Route | What it gives |
+| --- | --- |
+| `GET /auth/login`, `/auth/callback`, `/auth/logout` | The login (GitHub App user authorization), and ending the session. Logout is a `GET`, so it can be sent cross-site; all it can do is sign the person out. |
+| `GET /api/session` | The login of the session. |
+| `GET /api/tickets` | The tickets with workloads: title, how many workloads, the latest and its state (`limit`, `offset`). |
+| `GET /api/tickets/:owner/:name/:number` | A ticket's workloads and what it spent. |
+| `GET /api/workloads/:id`, `/events`, `/steps` | A workload; a page of its events (`after`, `limit`); the steps its record lists. |
+| `GET /api/workloads/:id/events/stream` | The events after `after` (or `Last-Event-ID`), then each one as it is kept, as server-sent events, until the event that finishes the workload. |
+| `GET /api/spend/tickets/...`, `/epics/...`, `/branch`, `/days` | The spend roll-ups. |
+| `GET /api/questions` | Workloads that ended blocked with a question, for tickets with no later workload. |
+
+A person signs in with GitHub, and the login must be on `HEPH_API_ALLOWED_LOGINS`; the allowlist
+decides who may open the API and gives no authority over a repository. The session is a signed
+cookie (secure, http-only, same-site `Lax`, eight hours) holding the login and nothing else, and is
+checked against the allowlist on every request. A login state is good for one callback and ten
+minutes.
+
+Wiring the GitHub App for the first time (the live flow has not been exercised against github.com):
+set the App's callback URL to exactly `<HEPH_API_BASE_URL>/auth/callback`; the flow asks for no
+OAuth scopes and reads only the login, so the App needs no user permissions for it; turn off
+"Expire user authorization tokens" only if you want it, since the token is dropped as soon as the
+login is read; check that a login that is on the list reaches `GET /api/session` and one that is
+not gets `403`.
 
 ### Oban's notifier and Neon's pooler
 
