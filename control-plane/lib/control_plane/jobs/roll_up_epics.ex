@@ -5,7 +5,8 @@ defmodule ControlPlane.Jobs.RollUpEpics do
 
   @impl Oban.Worker
   def perform(_job) do
-    ControlPlane.Evaluations.epics()
+    results = ControlPlane.Evaluations.epics()
+    ControlPlane.Webhooks.missed(:ticket_closed, Enum.count(results, &match?({:started, _}, &1)))
     :ok
   end
 end

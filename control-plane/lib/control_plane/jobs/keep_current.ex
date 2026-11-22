@@ -5,7 +5,7 @@ defmodule ControlPlane.Jobs.KeepCurrent do
 
   @impl Oban.Worker
   def perform(_job) do
-    ControlPlane.Settle.stale()
+    ControlPlane.Webhooks.missed(:base_moved, length(ControlPlane.Settle.stale()))
     :ok
   end
 end

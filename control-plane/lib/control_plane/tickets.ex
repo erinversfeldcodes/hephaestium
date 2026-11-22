@@ -49,24 +49,33 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
-  @doc "The workload has ended: leave the label that says how, and a comment."
+  @doc """
+  The workload has ended: leave the label that says how, and a comment, and have its pull
+  request settled at once when webhooks are on, because no webhook says that it ended.
+  """
   @spec ended(%Workload{}) :: :ok | {:error, String.t()}
+  def ended(%Workload{} = workload) do
+    result = finish(workload)
+    ControlPlane.Webhooks.wake_settling(workload)
+    result
+  end
+
   # A review reads a pull request and says nothing on the ticket by itself: what its
   # verdict means for the ticket is decided where the verdicts are counted. What it found
   # is written on the pull request, where a person reviewing it looks.
-  def ended(%Workload{workload: %{"review" => _}} = workload),
+  defp finish(%Workload{workload: %{"review" => _}} = workload),
     do: PullRequestComments.review(workload)
 
   # A completeness evaluation judges a ticket and changes no label: what it found is a
   # comment on the ticket, and a person or a later decision acts on it.
-  def ended(%Workload{workload: %{"completeness" => _}} = workload), do: evaluated(workload)
+  defp finish(%Workload{workload: %{"completeness" => _}} = workload), do: evaluated(workload)
 
   # A step of the questioning says what it found as a comment, and changes no label: a
   # person's reply, and a person's approval of any ticket it proposed, are what act.
-  def ended(%Workload{workload: %{"gap" => _}} = workload), do: stepped(workload)
+  defp finish(%Workload{workload: %{"gap" => _}} = workload), do: stepped(workload)
 
   # A revision's account is on the pull request as well as the ticket.
-  def ended(%Workload{} = workload),
+  defp finish(%Workload{} = workload),
     do: first_error([end_ticket(workload), PullRequestComments.revision(workload)])
 
   defp evaluated(%Workload{state: "completed", record: %{"completeness" => verdict}} = workload)

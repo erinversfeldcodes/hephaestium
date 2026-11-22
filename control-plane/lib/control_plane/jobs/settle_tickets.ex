@@ -5,7 +5,12 @@ defmodule ControlPlane.Jobs.SettleTickets do
 
   @impl Oban.Worker
   def perform(_job) do
-    ControlPlane.Settle.run()
+    results = ControlPlane.Settle.run()
+    ControlPlane.Webhooks.missed(:checks_completed, Enum.count(results, &acted?/1))
     :ok
   end
+
+  # A workload still waiting for its checks is not work a delivery missed.
+  defp acted?(%{result: {:waiting, _}}), do: false
+  defp acted?(_), do: true
 end

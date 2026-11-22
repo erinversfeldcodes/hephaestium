@@ -5,7 +5,8 @@ defmodule ControlPlane.Jobs.EvaluateMerged do
 
   @impl Oban.Worker
   def perform(_job) do
-    ControlPlane.Evaluations.merged()
+    results = ControlPlane.Evaluations.merged()
+    ControlPlane.Webhooks.missed(:change_merged, Enum.count(results, &match?({:started, _}, &1)))
     :ok
   end
 end
