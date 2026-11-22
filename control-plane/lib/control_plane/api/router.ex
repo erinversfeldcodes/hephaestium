@@ -7,17 +7,27 @@ defmodule ControlPlane.Api.Router do
   allowlist, and any other request, including one for a path that does not exist, is 401. A
   route cannot be reached around the session because there is no other way to dispatch to it.
 
-  Only GET and HEAD are answered. Nothing the API serves writes, so every other method is 405
-  before anything else is looked at, which is also what makes cross-site request forgery
-  nothing to forge: there is no state-changing request to send. A route that changes state
-  must add a CSRF check when it is added.
+  The API reads: only GET and HEAD are answered, and every other method is 405 before
+  anything else is looked at, which is also what makes cross-site request forgery nothing to
+  forge. The exceptions are the routes below whose method is `POST`, and nothing else. They
+  exist only while the executor link is on, and are of two kinds that never stand in for each
+  other:
+
+    * `:session_write`: a person's own device tokens. These need the session cookie and a
+      CSRF token, and ignore any bearer token.
+    * `:worker`: an executor's. These need a device token as a bearer token, and ignore any
+      cookie, so a browser can never be made to act as an executor and a token is no way to
+      act as a person.
+
+  A route that changes state must say which of the two it is, and has no third way in.
   """
 
   @behaviour Plug
 
   import Plug.Conn
 
-  alias ControlPlane.Api.{Auth, Endpoints, Session, Settings}
+  alias ControlPlane.Api.{Auth, Csrf, DeviceTokens, Endpoints, Session, Settings, Worker}
+  alias ControlPlane.ExecutorLink
 
   @routes [
     %{method: "GET", path: ~w(auth login), access: :public, handler: {Auth, :login}},
@@ -79,34 +89,115 @@ defmodule ControlPlane.Api.Router do
       access: :session,
       handler: {Endpoints, :spend_days}
     },
-    %{method: "GET", path: ~w(api questions), access: :session, handler: {Endpoints, :questions}}
+    %{method: "GET", path: ~w(api questions), access: :session, handler: {Endpoints, :questions}},
+
+    # The executor link. Present only while it is on.
+    %{
+      method: "GET",
+      path: ~w(api csrf),
+      access: :session,
+      link: true,
+      handler: {DeviceTokens, :csrf}
+    },
+    %{
+      method: "GET",
+      path: ~w(api device-tokens),
+      access: :session,
+      link: true,
+      handler: {DeviceTokens, :index}
+    },
+    %{
+      method: "POST",
+      path: ~w(api device-tokens),
+      access: :session_write,
+      link: true,
+      handler: {DeviceTokens, :issue}
+    },
+    %{
+      method: "POST",
+      path: ~w(api device-tokens :id revoke),
+      access: :session_write,
+      link: true,
+      handler: {DeviceTokens, :revoke}
+    },
+    %{
+      method: "POST",
+      path: ~w(worker claim),
+      access: :worker,
+      link: true,
+      handler: {Worker, :claim}
+    },
+    %{
+      method: "POST",
+      path: ~w(worker workloads :id events),
+      access: :worker,
+      link: true,
+      handler: {Worker, :events}
+    },
+    %{
+      method: "POST",
+      path: ~w(worker workloads :id heartbeat),
+      access: :worker,
+      link: true,
+      handler: {Worker, :heartbeat}
+    },
+    %{
+      method: "POST",
+      path: ~w(worker workloads :id record),
+      access: :worker,
+      link: true,
+      handler: {Worker, :record}
+    }
   ]
 
   @doc "Every route: its method, its path as segments (`:name` is a parameter), its access."
   @spec routes() :: [map()]
   def routes, do: @routes
 
+  @doc "The routes that change something: the only ones that answer a method other than GET."
+  @spec write_routes() :: [map()]
+  def write_routes, do: Enum.filter(@routes, &(&1.method != "GET"))
+
   @impl true
   def init(opts), do: opts
 
   @impl true
-  def call(%Plug.Conn{method: method} = conn, _opts) when method not in ["GET", "HEAD"] do
-    conn
-    |> put_resp_header("allow", "GET, HEAD")
-    |> json(405, %{error: "this API only reads"})
-  end
-
   def call(conn, opts) do
     settings = opts[:settings] || Settings.build!(Application.fetch_env!(:control_plane, :api))
+    method = if conn.method == "HEAD", do: "GET", else: conn.method
 
-    case find(conn.path_info) do
-      %{access: :public, handler: handler} = _route ->
-        dispatch(conn, handler, route_params(conn.path_info), settings, nil)
+    case find(method, conn.path_info) do
+      nil when method != "GET" ->
+        conn
+        |> put_resp_header("allow", allowed(conn.path_info))
+        |> json(405, %{error: "this API only reads, except where a route says otherwise"})
+
+      %{access: :public, handler: handler} ->
+        dispatch(conn, handler, route_params(method, conn.path_info), settings, nil)
+
+      %{access: :worker} = route ->
+        # A device token and nothing else: the cookie is never looked at.
+        with {:ok, presented} <- bearer(conn),
+             {:ok, token} <- ControlPlane.DeviceTokens.authenticate(presented, settings) do
+          dispatch(conn, route.handler, route_params(method, conn.path_info), settings, token)
+        else
+          _ -> json(conn, 401, %{error: "not authorized"})
+        end
+
+      %{access: :session_write} = route ->
+        # The session and a CSRF token and nothing else: a bearer token is never looked at.
+        with {:ok, login} <- Session.login(conn, settings),
+             {:csrf, true} <- {:csrf, Csrf.valid?(conn, settings, login)} do
+          dispatch(conn, route.handler, route_params(method, conn.path_info), settings, login)
+        else
+          {:csrf, false} -> json(conn, 403, %{error: "the CSRF token is missing or not valid"})
+          :error -> json(conn, 401, %{error: "not signed in"})
+        end
 
       route ->
         case Session.login(conn, settings) do
           {:ok, login} when route != nil ->
-            dispatch(conn, route.handler, route_params(conn.path_info), settings, login)
+            dispatch(conn, route.handler, route_params(method, conn.path_info), settings, login)
 
           {:ok, _login} ->
             json(conn, 404, %{error: "not found"})
@@ -117,10 +208,40 @@ defmodule ControlPlane.Api.Router do
     end
   end
 
+  defp bearer(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] when token != "" -> {:ok, token}
+      _ -> :error
+    end
+  end
+
+  # The methods a path answers, for the `allow` header: what is served there, and HEAD with GET.
+  defp allowed(segments) do
+    methods =
+      for route <- available(), matches?(route.path, segments), uniq: true, do: route.method
+
+    methods
+    |> Enum.flat_map(fn
+      "GET" -> ["GET", "HEAD"]
+      other -> [other]
+    end)
+    |> case do
+      [] -> ["GET", "HEAD"]
+      methods -> methods
+    end
+    |> Enum.join(", ")
+  end
+
   defp dispatch(conn, {module, function}, params, settings, login),
     do: apply(module, function, [conn, params, settings, login])
 
-  defp find(segments), do: Enum.find(@routes, &matches?(&1.path, segments))
+  defp find(method, segments),
+    do: Enum.find(available(), &(&1.method == method and matches?(&1.path, segments)))
+
+  # The link's routes are there only while the link is on; off, the API is as it was without it.
+  defp available do
+    if ExecutorLink.enabled?(), do: @routes, else: Enum.reject(@routes, & &1[:link])
+  end
 
   defp matches?(pattern, segments) when length(pattern) == length(segments),
     do: Enum.zip(pattern, segments) |> Enum.all?(&segment?/1)
@@ -132,8 +253,8 @@ defmodule ControlPlane.Api.Router do
   defp segment?(_), do: false
 
   # The parameters of the route a request matched.
-  defp route_params(segments) do
-    %{path: pattern} = find(segments)
+  defp route_params(method, segments) do
+    %{path: pattern} = find(method, segments)
 
     for {":" <> name, value} <- Enum.zip(pattern, segments), into: %{}, do: {name, value}
   end

@@ -31,6 +31,7 @@ pub fn kind_name(kind: &Kind) -> &'static str {
         Kind::PullRequestOpened(_) => "pull_request_opened",
         Kind::StepStarted(_) => "step_started",
         Kind::StepFinished(_) => "step_finished",
+        Kind::DeliveryBegan(_) => "delivery_began",
         Kind::Finished(_) => "finished",
     }
 }

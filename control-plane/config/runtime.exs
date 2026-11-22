@@ -81,6 +81,38 @@ if port = whole_number.("HEPH_API_PORT", 1..65535) do
       |> Enum.map(&String.trim/1)
 end
 
+# Executors on developers' machines run the workloads, over the API, instead of this process
+# starting one. Off unless `workers` is named. It needs the API, which is where executors
+# connect, so it is refused without one.
+case System.get_env("HEPH_EXECUTOR_LINK") do
+  value when value in [nil, "", "local"] ->
+    :ok
+
+  "workers" ->
+    if System.get_env("HEPH_API_PORT", "") == "" do
+      raise "HEPH_EXECUTOR_LINK=workers needs HEPH_API_PORT: executors connect through the API"
+    end
+
+    link = [enabled: true]
+
+    link =
+      case whole_number.("HEPH_LEASE_SECONDS", 10..3600) do
+        nil -> link
+        seconds -> Keyword.put(link, :lease_seconds, seconds)
+      end
+
+    link =
+      case whole_number.("HEPH_CLAIM_WAIT_SECONDS", 1..55) do
+        nil -> link
+        seconds -> Keyword.put(link, :claim_wait_ms, seconds * 1000)
+      end
+
+    config :control_plane, :executor_link, link
+
+  value ->
+    raise "HEPH_EXECUTOR_LINK must be local or workers, not #{inspect(value)}"
+end
+
 # How Oban's nodes tell each other that work arrived. By default the database does, with
 # LISTEN/NOTIFY, which a pooled connection in transaction mode cannot carry; `pg` uses Erlang's
 # process groups instead and sends nothing through the database.

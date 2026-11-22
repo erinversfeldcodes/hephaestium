@@ -36,6 +36,12 @@ defmodule ControlPlane.Recovery do
       Repo.all(
         from w in Workload,
           where: w.state in ^@in_flight and w.updated_at < ^started_at,
+          # An executor on a developer's machine still holds this one, and goes on holding it
+          # across a restart of the control plane: its lease lapsing is what loses it.
+          where:
+            w.id not in subquery(
+              from l in ControlPlane.WorkloadLease, where: l.active, select: l.workload_id
+            ),
           order_by: w.inserted_at
       )
 

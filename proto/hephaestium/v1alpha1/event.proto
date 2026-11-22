@@ -39,6 +39,7 @@ message Event {
     Finished finished = 21;
     StepStarted step_started = 22;
     StepFinished step_finished = 23;
+    DeliveryBegan delivery_began = 24;
   }
 }
 
@@ -148,6 +149,14 @@ message StepFinished {
 
 // The executor is alive. It carries nothing; its arrival is the message.
 message Heartbeat {}
+
+// The executor is about to publish: the next thing it does is push the branch and open the pull
+// request. It is sent once, before the push, after the gates and the pre-push reading have
+// passed. Until it has been seen, nothing of the run is outside the machine the executor runs
+// on, so a run whose executor was lost may be started again; after it, the push may have
+// happened, and a run that is started again could do it twice. It carries nothing; its arrival
+// is the message.
+message DeliveryBegan {}
 
 // The executor opened the pull request.
 message PullRequestOpened {
