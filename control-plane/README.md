@@ -64,7 +64,12 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   beside a cancelled check fails at once without spending a re-run. A cancelled run
   that a newer run replaced, or a check the ruleset does not require, is not re-run.
   A re-run GitHub refuses waits and is not counted. The final failure comment says
-  the check was re-run.
+  the check was re-run. A check that ended `cancelled` because its job reached its time
+  limit is not a cancellation: GitHub says so only in the job's annotations ("The job has
+  exceeded the maximum execution time"), which settle reads, and the check is then a
+  `timed_out` failure that is never re-run (a re-run is cold again and times out again) and is
+  revised or fails the ticket like any other, with the end of its log. Annotations that cannot
+  be read leave it a cancellation.
 - Gates left to CI ([ADR 0028](../docs/adr/0028-a-gate-the-workspace-cannot-run-is-left-to-the-ci-check-that-exercises-it.md)).
   When the executor could not run a gate in the workspace and the repository names a
   `ci_check` for it, the run record says so, and settle adds that check to the ones

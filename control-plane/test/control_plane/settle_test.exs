@@ -411,6 +411,47 @@ defmodule ControlPlane.SettleTest do
       assert hd(comments(gh)) =~ "re-run 2 times"
     end
 
+    @annotations "repos/#{@repo}/check-runs/77/annotations"
+
+    test "a check cancelled because its job reached its time limit is a failure, not a re-run",
+         %{gh: gh, id: id} do
+      reruns(3)
+
+      StandInGitHub.respond(gh, @annotations, [
+        %{
+          "annotation_level" => "failure",
+          "message" => "The job has exceeded the maximum execution time of 15m0s"
+        }
+      ])
+
+      assert result(id) == {:failed, ["ci"]}
+      assert rerun_writes(gh) == [], "a re-run is cold again and times out again"
+      assert Workloads.get(id).reruns in [nil, %{}], "and does not spend one"
+    end
+
+    test "a cancelled check whose annotations say nothing of a time limit is re-run as before",
+         %{gh: gh, id: id} do
+      reruns(2)
+
+      StandInGitHub.respond(gh, @annotations, [
+        %{"annotation_level" => "warning", "message" => "Node.js 20 actions are deprecated"}
+      ])
+
+      assert {:waiting, _} = result(id)
+      assert rerun_writes(gh) == ["repos/#{@repo}/actions/jobs/77/rerun"]
+    end
+
+    test "annotations that cannot be read leave it a cancellation, re-run as before", %{
+      gh: gh,
+      id: id
+    } do
+      reruns(2)
+      StandInGitHub.fail(gh, @annotations, "gh: HTTP 500")
+
+      assert {:waiting, _} = result(id)
+      assert rerun_writes(gh) == ["repos/#{@repo}/actions/jobs/77/rerun"]
+    end
+
     test "a check that failed or timed out is never re-run", %{gh: gh, id: id} do
       reruns(3)
       StandInGitHub.respond(gh, @rules, [required(["ci", "e2e"])])
@@ -535,6 +576,25 @@ defmodule ControlPlane.SettleTest do
       revision = revision_of(id)
       assert revision.workload["lenses"] == lenses
       assert revision.workload["prepushRounds"] == 2
+    end
+
+    test "a check cancelled by its time limit is revised as a timeout, with the end of its log",
+         %{
+           gh: gh,
+           id: id
+         } do
+      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "cancelled")]))
+
+      StandInGitHub.respond(gh, "repos/#{@repo}/check-runs/31/annotations", [
+        %{"message" => "The job has exceeded the maximum execution time of 15m0s"}
+      ])
+
+      assert result(id) == {:revising, 1}
+
+      [failure] = revision_of(id).workload["revision"]["failures"]
+      assert failure["name"] == "ci"
+      assert failure["result"] == "timed_out", "named as what it was, not as a cancellation"
+      assert failure["excerpt"] =~ "FAILED: reset spec at reset.rs:40", "what the job was doing"
     end
 
     test "a real failure starts a revision from the stored workload, on the head, and says so", %{
