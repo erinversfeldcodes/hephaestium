@@ -790,3 +790,220 @@ fn a_run_whose_runtime_gave_no_parts_has_none_and_one_that_gave_some_of_them_doe
         "only what was given, and no more: {sum}"
     );
 }
+
+/// The step events of a run, in order, as (what, kind, round, lens, verdict). What each is: "start"
+/// or "end".
+fn step_events(ran: &Ran) -> Vec<(&'static str, i32, i32, String, String)> {
+    ran.events()
+        .iter()
+        .filter_map(|event| match event.kind.as_ref()? {
+            contracts::v1alpha1::event::Kind::StepStarted(step) => Some((
+                "start",
+                step.kind,
+                step.round,
+                step.lens.clone(),
+                String::new(),
+            )),
+            contracts::v1alpha1::event::Kind::StepFinished(step) => Some((
+                "end",
+                step.kind,
+                step.round,
+                step.lens.clone(),
+                step.verdict.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_events_say_which_agent_is_running_around_each_agents_own_events() {
+    use contracts::v1alpha1::step_started::Kind as Step;
+    let went = go(
+        setup("events-order"),
+        &[implements("v1"), reads("rust", "approved", None)],
+        |_| {},
+        true,
+    );
+
+    assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
+    assert_eq!(
+        step_events(&went.ran),
+        [
+            (
+                "start",
+                Step::Implementation as i32,
+                0,
+                String::new(),
+                String::new()
+            ),
+            (
+                "end",
+                Step::Implementation as i32,
+                0,
+                String::new(),
+                String::new()
+            ),
+            (
+                "start",
+                Step::Review as i32,
+                1,
+                "rust".to_owned(),
+                String::new()
+            ),
+            (
+                "end",
+                Step::Review as i32,
+                1,
+                "rust".to_owned(),
+                "approved".to_owned()
+            ),
+        ]
+    );
+
+    // The reader's own events fall between its start and its end.
+    let events = went.ran.events();
+    let at = |wanted: &str, nth: usize| {
+        kinds(&events)
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| **name == wanted)
+            .nth(nth)
+            .map(|(index, _)| index)
+            .expect("an event of that kind")
+    };
+    let (started, finished) = (at("step_started", 1), at("step_finished", 1));
+    let spoke = at("agent_message", 1);
+    assert!(started < spoke && spoke < finished, "{:?}", kinds(&events));
+}
+
+#[test]
+fn a_revision_for_what_blocked_and_each_round_are_told() {
+    use contracts::v1alpha1::step_started::Kind as Step;
+    let went = go(
+        setup("events-revision"),
+        &[
+            implements("v1"),
+            reads("rust", "needs_revision", Some("an unchecked unwrap")),
+            fixes("v2"),
+            reads("rust", "approved", None),
+        ],
+        |_| {},
+        true,
+    );
+
+    let starts: Vec<(i32, i32, String)> = step_events(&went.ran)
+        .into_iter()
+        .filter(|event| event.0 == "start")
+        .map(|event| (event.1, event.2, event.3))
+        .collect();
+    assert_eq!(
+        starts,
+        [
+            (Step::Implementation as i32, 0, String::new()),
+            (Step::Review as i32, 1, "rust".to_owned()),
+            (Step::Revision as i32, 1, String::new()),
+            (Step::Review as i32, 2, "rust".to_owned()),
+        ]
+    );
+    let first_verdict = step_events(&went.ran)
+        .into_iter()
+        .find(|event| event.0 == "end" && event.1 == Step::Review as i32)
+        .expect("a review ended");
+    assert_eq!(first_verdict.4, "needs_revision");
+}
+
+#[test]
+fn each_try_of_a_reader_that_could_not_run_is_a_start_and_an_end_with_no_verdict_for_the_first() {
+    use contracts::v1alpha1::step_started::Kind as Step;
+    let went = go(
+        setup("events-retry"),
+        &[
+            implements("v1"),
+            "exit 1".to_owned(),
+            reads("rust", "approved", None),
+        ],
+        |value| {
+            value["prepushRounds"] = json!(1);
+        },
+        true,
+    );
+
+    let reviews: Vec<(&str, String)> = step_events(&went.ran)
+        .into_iter()
+        .filter(|event| event.1 == Step::Review as i32)
+        .map(|event| (event.0, event.4))
+        .collect();
+    assert_eq!(
+        reviews,
+        [
+            ("start", String::new()),
+            ("end", String::new()),
+            ("start", String::new()),
+            ("end", "approved".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn a_gate_that_is_handed_back_is_told_as_a_revision() {
+    use contracts::v1alpha1::step_started::Kind as Step;
+    let went = go(
+        setup("events-gate"),
+        &[
+            implements("broken"),
+            fixes("v2"),
+            reads("rust", "approved", None),
+        ],
+        |_| {},
+        true,
+    );
+
+    let kinds_started: Vec<i32> = step_events(&went.ran)
+        .into_iter()
+        .filter(|event| event.0 == "start")
+        .map(|event| event.1)
+        .collect();
+    assert_eq!(
+        kinds_started,
+        [
+            Step::Implementation as i32,
+            Step::Revision as i32,
+            Step::Review as i32
+        ]
+    );
+}
+
+#[test]
+fn a_run_that_reads_nothing_before_the_push_has_no_step_events() {
+    let went = go(
+        setup("events-none"),
+        &[implements("v1")],
+        |value| {
+            value["lenses"] = json!([]);
+            value["prepushRounds"] = json!(0);
+        },
+        true,
+    );
+
+    assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
+    assert_eq!(step_events(&went.ran).len(), 0);
+}
+
+#[test]
+fn the_kinds_of_a_step_event_mean_what_they_do_in_the_run_record() {
+    use contracts::v1alpha1::{step, step_started};
+    assert_eq!(
+        step::Kind::Implementation as i32,
+        step_started::Kind::Implementation as i32
+    );
+    assert_eq!(step::Kind::Review as i32, step_started::Kind::Review as i32);
+    assert_eq!(
+        step::Kind::Revision as i32,
+        step_started::Kind::Revision as i32
+    );
+    assert_eq!(
+        step::Kind::Unspecified as i32,
+        step_started::Kind::Unspecified as i32
+    );
+}

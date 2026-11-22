@@ -230,6 +230,8 @@ pub fn kinds(events: &[Event]) -> Vec<&'static str> {
             Kind::Cost(_) => "cost",
             Kind::Heartbeat(_) => "heartbeat",
             Kind::PullRequestOpened(_) => "pull_request_opened",
+            Kind::StepStarted(_) => "step_started",
+            Kind::StepFinished(_) => "step_finished",
             Kind::Finished(_) => "finished",
         })
         .collect()

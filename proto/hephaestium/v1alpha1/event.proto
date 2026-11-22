@@ -37,6 +37,8 @@ message Event {
     Heartbeat heartbeat = 19;
     PullRequestOpened pull_request_opened = 20;
     Finished finished = 21;
+    StepStarted step_started = 22;
+    StepFinished step_finished = 23;
   }
 }
 
@@ -109,6 +111,39 @@ message Cost {
   // For an amount of tokens, what the runtime said they were made up of. Unset when it did not
   // say. When set, the parts add up to the amount.
   TokenBreakdown breakdown = 4;
+}
+
+// The executor started an agent for one step of a run that reads its own change before it
+// pushes (ADR 0035): the implementation, a reading under one lens, or the implementing agent
+// again for what blocked. What the agent then says and does follows as its own events, so this is
+// what tells one agent's events from another's. A run that reads nothing before the push has
+// none. The values mean what they do in `Step` in the run record.
+message StepStarted {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The agent that made the change.
+    KIND_IMPLEMENTATION = 1;
+    // An agent that reads the change under one lens.
+    KIND_REVIEW = 2;
+    // The implementing agent again, told what blocked.
+    KIND_REVISION = 3;
+  }
+  Kind kind = 1;
+  // Which round of reading it belongs to. Zero is the first implementation.
+  int32 round = 2;
+  // For a review: the lens it reads under. Empty otherwise.
+  string lens = 3;
+}
+
+// The agent of a step ended. A step that is tried again (a reader that could not run) starts
+// and ends once for each try.
+message StepFinished {
+  StepStarted.Kind kind = 1;
+  int32 round = 2;
+  string lens = 3;
+  // For a review: what it ended in (approved, needs_revision or failed), and empty if it left no
+  // verdict that passed the review contract.
+  string verdict = 4;
 }
 
 // The executor is alive. It carries nothing; its arrival is the message.

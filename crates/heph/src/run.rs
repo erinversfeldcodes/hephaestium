@@ -355,6 +355,28 @@ fn first_line(text: &str, limit: usize) -> String {
 /// workload's own start and end are not shown here.
 #[must_use]
 pub fn render(event: &Value) -> Option<String> {
+    if let Some(step) = event.get("stepStarted") {
+        let round = step["round"].as_i64().unwrap_or(0);
+        let lens = step["lens"].as_str().unwrap_or_default();
+        return Some(match step["kind"].as_str() {
+            Some("KIND_REVIEW") => format!("reading under lens {lens}, round {round}"),
+            Some("KIND_REVISION") => format!("fixing what blocked, round {round}"),
+            _ => "implementing".to_owned(),
+        });
+    }
+    // What a reader found is worth a line. The end of the implementation or of a fix is not:
+    // what follows says what is next.
+    if let Some(step) = event.get("stepFinished") {
+        if step["kind"].as_str() != Some("KIND_REVIEW") {
+            return None;
+        }
+        let lens = step["lens"].as_str().unwrap_or_default();
+        let verdict = step["verdict"]
+            .as_str()
+            .filter(|verdict| !verdict.is_empty())
+            .unwrap_or("no verdict");
+        return Some(format!("lens {lens}: {verdict}"));
+    }
     if let Some(ready) = event.get("workspaceReady") {
         let commit = ready["commit"].as_str().unwrap_or_default();
         return Some(format!(

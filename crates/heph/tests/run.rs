@@ -879,3 +879,48 @@ fn a_checkout_that_cannot_be_deleted_is_a_warning_and_does_not_change_how_the_ru
         stderr(&output)
     );
 }
+
+#[test]
+fn progress_says_which_agent_is_running_and_what_a_reader_found() {
+    let started = |kind: &str, round: u32, lens: &str| {
+        let mut step = json!({ "kind": kind, "round": round });
+        if !lens.is_empty() {
+            step["lens"] = json!(lens);
+        }
+        json!({ "workloadId": "w", "sequence": "3", "time": "2026-11-22T07:00:00Z", "stepStarted": step })
+    };
+    let finished = |lens: &str, verdict: &str| {
+        let mut step = json!({ "kind": "KIND_REVIEW", "round": 1, "lens": lens });
+        if !verdict.is_empty() {
+            step["verdict"] = json!(verdict);
+        }
+        json!({ "workloadId": "w", "sequence": "9", "time": "2026-11-22T07:00:01Z", "stepFinished": step })
+    };
+
+    assert_eq!(
+        heph::run::render(&started("KIND_IMPLEMENTATION", 0, "")).as_deref(),
+        Some("implementing")
+    );
+    assert_eq!(
+        heph::run::render(&started("KIND_REVIEW", 1, "rust")).as_deref(),
+        Some("reading under lens rust, round 1")
+    );
+    assert_eq!(
+        heph::run::render(&started("KIND_REVISION", 2, "")).as_deref(),
+        Some("fixing what blocked, round 2")
+    );
+    assert_eq!(
+        heph::run::render(&finished("rust", "needs_revision")).as_deref(),
+        Some("lens rust: needs_revision")
+    );
+    assert_eq!(
+        heph::run::render(&finished("spec", "")).as_deref(),
+        Some("lens spec: no verdict")
+    );
+    // The end of the implementation or of a fix is not worth a line: what follows says what is next.
+    let end_of_implementation = json!({
+        "workloadId": "w", "sequence": "4", "time": "2026-11-22T07:00:02Z",
+        "stepFinished": { "kind": "KIND_IMPLEMENTATION" }
+    });
+    assert_eq!(heph::run::render(&end_of_implementation), None);
+}
