@@ -10,7 +10,7 @@ defmodule ControlPlane.Events do
 
   import Ecto.Query
 
-  alias ControlPlane.{Event, Repo, Workload}
+  alias ControlPlane.{Clean, Event, Repo, Workload}
 
   @outcomes %{
     "OUTCOME_COMPLETED" => "completed",
@@ -40,6 +40,10 @@ defmodule ControlPlane.Events do
   @doc "Keep the next event of a workload's stream, given as the contract's JSON mapping."
   @spec append(Ecto.UUID.t(), map()) :: {:ok, %Event{}} | {:error, refusal()}
   def append(workload_id, event) do
+    # What Postgres cannot keep is replaced, so an event is never raised on and never refused
+    # for it, which would leave a gap in the stream.
+    event = Clean.deep(event)
+
     with {:ok, parsed} <- parse(event),
          :ok <- belongs_to(parsed, workload_id) do
       Repo.transaction(fn -> keep(workload_id, event, parsed) end)

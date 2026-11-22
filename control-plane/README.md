@@ -15,6 +15,10 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   after `finished`, or belongs to another workload, with the rule it breaks. The
   state of the workload follows its events and ends with the outcome.
 - Events are append-only: the database refuses to change or delete one.
+- Postgres cannot keep a NUL byte in text or in jsonb, so each in an event, a run record or a
+  failure reason is replaced by U+FFFD (`ControlPlane.Clean`), and nothing raises. An event is not
+  refused for it, because that would leave a gap in the stream; the raw line stays in the run's
+  own `events.jsonl`.
 - `ControlPlane.Runner.enqueue/1` puts a workload on the queue, once, and an Oban job
   (`ControlPlane.Jobs.RunWorkload`) runs it: it starts the executor as a child
   process, keeps every line the executor writes as an event as it comes, and ends
