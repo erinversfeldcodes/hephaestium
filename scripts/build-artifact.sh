@@ -18,6 +18,20 @@ version=${HEPHAESTIUM_VERSION:?HEPHAESTIUM_VERSION must name the version being b
 cd "$(git rev-parse --show-toplevel)"
 
 rustup target add "$target"
+
+# A static Linux binary links musl, and ring (under the HTTP client's TLS) compiles C for the
+# target, which needs a musl C compiler. cc looks for `<arch>-linux-musl-gcc`, which Ubuntu
+# does not ship; `musl-gcc` from musl-tools is the compiler for the host's own architecture,
+# which is the target's here, so cc is told to use it for this target only.
+case "$target" in
+  *-linux-musl)
+    if ! command -v musl-gcc >/dev/null; then
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq musl-tools
+    fi
+    export "CC_${target//-/_}=musl-gcc"
+    ;;
+esac
 binaries=(heph executor)
 
 cargo build --release --locked --target "$target" -p heph -p executor
