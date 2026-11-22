@@ -13,8 +13,8 @@ use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::step::Kind as StepKind;
 use contracts::v1alpha1::{
-    BaseMoved, CostTotal, GateFinished, GateStarted, Lens, Revision, RunRecord, Started, Step,
-    StepFinished, StepStarted, TokenBreakdown, Workload, WorkspaceReady,
+    BaseMoved, CostTotal, GateFinished, GateStarted, Heartbeat, Lens, Revision, RunRecord, Started,
+    Step, StepFinished, StepStarted, TokenBreakdown, Workload, WorkspaceReady,
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
@@ -530,7 +530,14 @@ fn finish_first_run<W: Write>(
     if delivering && reads_before_push(workload) {
         return read_before_push(asking, workload, workspace, manifest, &since, stream);
     }
-    match run_gates(manifest, workspace, &since, secrets, stream)? {
+    match run_gates(
+        manifest,
+        workspace,
+        &since,
+        secrets,
+        options.heartbeat,
+        stream,
+    )? {
         Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
         Err(failed) => Ok((Outcome::Failed, failed.summary)),
     }
@@ -770,7 +777,14 @@ fn read_before_push<W: Write>(
     // as there are rounds.
     let mut fixes = 0;
     let mut deferred = loop {
-        match run_gates(manifest, workspace, since, secrets, stream)? {
+        match run_gates(
+            manifest,
+            workspace,
+            since,
+            secrets,
+            options.heartbeat,
+            stream,
+        )? {
             Ok(deferred) => break deferred,
             Err(failed) => {
                 if fixes >= workload.prepush_rounds || heph::process::cancelled() {
@@ -929,7 +943,14 @@ fn read_before_push<W: Write>(
                 spent_between(&marked, &now),
             );
             marked = now;
-            match run_gates(manifest, workspace, since, secrets, stream)? {
+            match run_gates(
+                manifest,
+                workspace,
+                since,
+                secrets,
+                options.heartbeat,
+                stream,
+            )? {
                 Ok(still_deferred) => deferred = still_deferred,
                 Err(failed) => return Ok((Outcome::Failed, failed.with_output())),
             }
@@ -1265,6 +1286,10 @@ fn gate_tail(tail: &heph::process::Tail) -> String {
 
 /// Run one gate. One the workspace could not run, or that timed out, that the repository says a
 /// check on the pull request runs too, is left to that check.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: which gate, where, what changed, what it may be given, where its output goes, and what to do while it runs"
+)]
 fn run_one_gate(
     manifest: &Manifest,
     name: &str,
@@ -1273,6 +1298,7 @@ fn run_one_gate(
     changed: &[String],
     secrets: &Secrets,
     printed: &heph::process::Tail,
+    tick: heph::process::Tick<'_>,
 ) -> Result<gate::GateResult, gate::NotRun> {
     // A gate's secret is the one the executor holds, or else the environment's.
     let lookup = |variable: &str| {
@@ -1290,6 +1316,7 @@ fn run_one_gate(
         lookup,
         say,
         Some(printed),
+        Some(tick),
     ) {
         Err(gate::NotRun::Missing(missing)) => gate::deferred(
             name,
@@ -1320,12 +1347,14 @@ fn run_one_gate(
 /// Every gate runs even if an earlier one failed, so a failure shows all that is
 /// wrong at once. The outer error is a failure to write an event. The inner
 /// result is the workload's: why it failed, if any gate did, and what each that
-/// failed printed last.
+/// failed printed last. A heartbeat is written every `heartbeat` while a gate runs, so a gate
+/// that takes minutes is not taken for a run that went silent.
 fn run_gates<W: Write>(
     manifest: &Manifest,
     workspace: &Path,
     since: &str,
     secrets: &Secrets,
+    heartbeat: Duration,
     stream: &mut Stream<'_, W>,
 ) -> Result<Result<Vec<deliver::Deferred>, GatesFailed>, Refused> {
     let changed = match changed_files(workspace, since) {
@@ -1349,9 +1378,30 @@ fn run_gates<W: Write>(
         // What the gate prints is shown as it was, and the last of it is kept in case the gate
         // fails.
         let printed = heph::process::Tail::new(GATE_TAIL_LINES);
+        let mut write_failed: Option<std::io::Error> = None;
+        let mut beat = || match stream.emit(Kind::Heartbeat(Heartbeat {})) {
+            Ok(()) => heph::process::Go::On,
+            Err(error) => {
+                write_failed = Some(error);
+                heph::process::Go::Stop
+            }
+        };
         let outcome = run_one_gate(
-            manifest, name, declared, workspace, &changed, secrets, &printed,
+            manifest,
+            name,
+            declared,
+            workspace,
+            &changed,
+            secrets,
+            &printed,
+            heph::process::Tick {
+                every: heartbeat,
+                call: &mut beat,
+            },
         );
+        if let Some(error) = write_failed {
+            return Err(error.into());
+        }
         match outcome {
             Ok(result) => {
                 if matches!(

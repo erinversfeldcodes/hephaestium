@@ -187,12 +187,22 @@ pub fn execute_with_env(
         environment,
         notify,
         None,
+        None,
     )
+}
+
+/// What a caller does every so often while it waits for a command that may take long, so that
+/// whoever watches it can tell it is still alive. `call` says whether to carry on: when it says
+/// to stop, the command is killed and the wait ends as cancelled.
+pub struct Tick<'a> {
+    pub every: Duration,
+    pub call: &'a mut dyn FnMut() -> Go,
 }
 
 /// [`execute_with_env`], keeping the last lines the command printed in `tail`. What it prints
 /// still goes to this process's standard error, a line at a time, as it would have; its
-/// standard output, when it is not the one captured, goes there too.
+/// standard output, when it is not the one captured, goes there too. `tick`, when there is one,
+/// is called every `tick.every` for as long as the command runs, and never after it ends.
 ///
 /// # Errors
 ///
@@ -201,6 +211,10 @@ pub fn execute_with_env(
 /// # Panics
 ///
 /// If `argv` is empty, as for [`execute`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: what to run, where, for how long, what to capture, with what, and the three things the caller does while it runs"
+)]
 pub fn execute_with_tail(
     argv: &[String],
     directory: &Path,
@@ -209,6 +223,7 @@ pub fn execute_with_tail(
     environment: &[(String, String)],
     notify: impl Fn(&str),
     tail: Option<&Tail>,
+    mut tick: Option<Tick<'_>>,
 ) -> Result<(Ended, Option<Vec<u8>>), std::io::Error> {
     let (program, arguments) = argv
         .split_first()
@@ -269,6 +284,7 @@ pub fn execute_with_tail(
     });
 
     let deadline = Instant::now() + timeout;
+    let mut next_tick = tick.as_ref().map(|tick| Instant::now() + tick.every);
     let ended = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ended::Exited(code_of(status)),
@@ -288,6 +304,16 @@ pub fn execute_with_tail(
             stop_everything_started_by(&child);
             let _ = child.wait();
             break Ended::TimedOut;
+        }
+        if let (Some(tick), Some(due)) = (tick.as_mut(), next_tick)
+            && Instant::now() >= due
+        {
+            next_tick = Some(Instant::now() + tick.every);
+            if (tick.call)() == Go::Stop {
+                stop_everything_started_by(&child);
+                let _ = child.wait();
+                break Ended::Cancelled;
+            }
         }
         std::thread::sleep(POLL);
     };

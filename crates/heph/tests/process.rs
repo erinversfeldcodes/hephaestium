@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::Scratch;
-use heph::process::{Ended, Tail, execute, execute_with_tail};
+use heph::process::{Ended, Go, Tail, Tick, execute, execute_with_tail};
 
 fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
@@ -115,6 +115,7 @@ fn tailed(
         &[],
         |_| {},
         Some(&tail),
+        None,
     )
     .expect("to run");
     (ended, captured, tail)
@@ -184,9 +185,64 @@ fn a_command_that_runs_past_its_deadline_is_stopped_and_its_tail_is_what_it_prin
         &[],
         |_| {},
         Some(&tail),
+        None,
     )
     .expect("to run");
 
     assert_eq!(ended, Ended::TimedOut);
     assert_eq!(tail.text(), "started");
+}
+
+#[test]
+fn a_tick_is_called_at_its_interval_while_a_command_runs_and_not_after_it_ends() {
+    let scratch = Scratch::new("process-tick");
+    let mut ticks = 0;
+    let mut count = || {
+        ticks += 1;
+        Go::On
+    };
+    let (ended, _) = execute_with_tail(
+        &words(&["sh", "-c", "sleep 1"]),
+        &scratch.0,
+        Duration::from_secs(30),
+        false,
+        &[],
+        |_| {},
+        None,
+        Some(Tick {
+            every: Duration::from_millis(200),
+            call: &mut count,
+        }),
+    )
+    .expect("to run");
+
+    assert_eq!(ended, Ended::Exited(0));
+    assert!(
+        (3..=5).contains(&ticks),
+        "ticks in a second at 200ms: {ticks}"
+    );
+}
+
+#[test]
+fn a_tick_that_says_stop_ends_the_command_as_cancelled() {
+    let scratch = Scratch::new("process-tick-stop");
+    let mut stop = || Go::Stop;
+    let started = Instant::now();
+    let (ended, _) = execute_with_tail(
+        &words(&["sh", "-c", "sleep 30"]),
+        &scratch.0,
+        Duration::from_secs(60),
+        false,
+        &[],
+        |_| {},
+        None,
+        Some(Tick {
+            every: Duration::from_millis(100),
+            call: &mut stop,
+        }),
+    )
+    .expect("to run");
+
+    assert_eq!(ended, Ended::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(10));
 }

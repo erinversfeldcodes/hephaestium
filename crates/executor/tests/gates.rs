@@ -263,3 +263,70 @@ fn a_workload_whose_agent_changed_nothing_skips_the_gates_that_name_paths_and_ru
     );
     assert_eq!(finished(&events).0, Outcome::Completed);
 }
+
+/// The heartbeats between a gate's start and its end, and whether the events stayed gapless.
+fn beats_during_the_first_gate(events: &[Event]) -> usize {
+    let kinds = kinds(events);
+    let started = kinds
+        .iter()
+        .position(|k| *k == "gate_started")
+        .expect("start");
+    let finished = kinds
+        .iter()
+        .position(|k| *k == "gate_finished")
+        .expect("end");
+    kinds[started..finished]
+        .iter()
+        .filter(|k| **k == "heartbeat")
+        .count()
+}
+
+#[test]
+fn heartbeats_are_written_while_a_gate_runs_and_the_sequence_stays_gapless() {
+    let scratch = Scratch::new("gate-heartbeat");
+    let text = manifest(&[]) + &gate("slow", "sleep 4", 30, "");
+    let (_, commit) = source(&scratch, &text);
+
+    let ran = run_with(
+        scratch,
+        &workload(&commit),
+        Some(&transcript()),
+        &["--heartbeat-seconds", "1"],
+    );
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    let events = ran.events();
+    let beats = beats_during_the_first_gate(&events);
+    assert!(
+        beats >= 2,
+        "heartbeats between gateStarted and gateFinished: {beats}"
+    );
+    assert_eq!(gate_results(&events)[0].1["outcome"], "passed");
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event.sequence, index as u64 + 1);
+    }
+}
+
+#[test]
+fn a_gate_that_hangs_is_still_ended_by_its_own_timeout_while_heartbeats_continue() {
+    let scratch = Scratch::new("gate-heartbeat-timeout");
+    let text = manifest(&[]) + &gate("hung", "sleep 60", 3, "");
+    let (_, commit) = source(&scratch, &text);
+
+    let started = Instant::now();
+    let ran = run_with(
+        scratch,
+        &workload(&commit),
+        Some(&transcript()),
+        &["--heartbeat-seconds", "1"],
+    );
+
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "the gate's timeout ended it"
+    );
+    let events = ran.events();
+    assert_eq!(gate_results(&events)[0].1["outcome"], "timed_out");
+    assert!(beats_during_the_first_gate(&events) >= 1);
+    assert_eq!(finished(&events).0, Outcome::Failed);
+}

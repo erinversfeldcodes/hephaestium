@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::manifest::{Gate, Manifest, Requirement, ResultKind};
-use crate::process::{Ended, Tail, execute_with_tail};
+use crate::process::{Ended, Tail, Tick, execute_with_tail};
 
 /// How a gate ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -343,15 +343,29 @@ pub fn run_with_env(
     environment: &[(String, String)],
     notify: impl Fn(&str),
 ) -> Result<GateResult, CouldNotRun> {
-    run_with_tail(name, gate, command, directory, environment, notify, None)
+    run_with_tail(
+        name,
+        gate,
+        command,
+        directory,
+        environment,
+        notify,
+        None,
+        None,
+    )
 }
 
 /// [`run_with_env`], keeping the last lines the gate printed in `tail`, which it still prints
-/// to this process's standard error as it would have.
+/// to this process's standard error as it would have. `tick` is called at its interval while
+/// the gate runs.
 ///
 /// # Errors
 ///
 /// As for [`run`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: which gate, how to run it, where, with what, and the three things the caller does while it runs"
+)]
 pub fn run_with_tail(
     name: &str,
     gate: &Gate,
@@ -360,6 +374,7 @@ pub fn run_with_tail(
     environment: &[(String, String)],
     notify: impl Fn(&str),
     tail: Option<&Tail>,
+    tick: Option<Tick<'_>>,
 ) -> Result<GateResult, CouldNotRun> {
     let wants_report = gate.result == Some(ResultKind::Json);
     let started = Instant::now();
@@ -371,6 +386,7 @@ pub fn run_with_tail(
         environment,
         notify,
         tail,
+        tick,
     )
     .map_err(CouldNotRun::Wait)?;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -471,14 +487,21 @@ pub fn run_named(
     lookup: impl Fn(&str) -> Option<String>,
     notify: impl Fn(&str),
 ) -> Result<GateResult, NotRun> {
-    run_named_with_tail(manifest, name, changed, directory, lookup, notify, None)
+    run_named_with_tail(
+        manifest, name, changed, directory, lookup, notify, None, None,
+    )
 }
 
-/// [`run_named`], keeping the last lines the gate printed in `tail`.
+/// [`run_named`], keeping the last lines the gate printed in `tail` and calling `tick` at its
+/// interval while the gate runs.
 ///
 /// # Errors
 ///
 /// As for [`run_named`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: which gate, where, what changed, how to look up a variable, and the three things the caller does while it runs"
+)]
 pub fn run_named_with_tail(
     manifest: &Manifest,
     name: &str,
@@ -487,6 +510,7 @@ pub fn run_named_with_tail(
     lookup: impl Fn(&str) -> Option<String>,
     notify: impl Fn(&str),
     tail: Option<&Tail>,
+    tick: Option<Tick<'_>>,
 ) -> Result<GateResult, NotRun> {
     let Some(gate) = manifest.gates.get(name) else {
         return Err(NotRun::NoSuchGate {
@@ -511,7 +535,8 @@ pub fn run_named_with_tail(
         .keys()
         .filter_map(|variable| lookup(variable).map(|value| (variable.clone(), value)))
         .collect();
-    run_with_tail(name, gate, command, directory, &needed, notify, tail).map_err(NotRun::Could)
+    run_with_tail(name, gate, command, directory, &needed, notify, tail, tick)
+        .map_err(NotRun::Could)
 }
 
 /// Read a gate's standard output as the JSON object it reports.
