@@ -74,6 +74,7 @@ if port = whole_number.("HEPH_API_PORT", 1..65535) do
     client_id: secret.("HEPH_API_GITHUB_CLIENT_ID"),
     client_secret: secret.("HEPH_API_GITHUB_CLIENT_SECRET"),
     base_url: System.get_env("HEPH_API_BASE_URL", ""),
+    static_dir: System.get_env("HEPH_API_STATIC_DIR", ""),
     allowed_logins:
       "HEPH_API_ALLOWED_LOGINS"
       |> System.get_env("")

@@ -214,6 +214,30 @@ jobs:
       - name: Tested
         run: mix test
 
+  # The dashboard is a single-page app the control plane serves. Its types are checked and its
+  # tests run, and it must build, which is what the image then includes.
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: dashboard/.node-version
+      - name: Dependencies, exactly as locked
+        run: npm ci
+      - name: Type-checked
+        run: npm run typecheck
+      - name: Tested
+        run: npm test
+      - name: Built
+        run: npm run build
+
   # The control plane is deployed as a container image, so the image is built here, and the
   # release inside it is started against a real Postgres the way the platform starts it: the
   # migrate command first, then the server. That the health check says 200 with the database
@@ -241,7 +265,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the image
-        run: docker build --tag control-plane:ci control-plane
+        run: docker build --file control-plane/Dockerfile --tag control-plane:ci .
       - name: The migrate command brings an empty database to the current schema
         run: |
           psql -h localhost -U postgres -c 'create database hephaestium_image'
@@ -267,6 +291,34 @@ jobs:
           echo "the health check never answered 200 (last answer: $code)" >&2
           docker logs control-plane >&2
           exit 1
+      # The image holds the built dashboard, and the API serves it. The key and client values
+      # are placeholders for this run only; nothing signs in.
+      - name: The image serves the dashboard on the API's listener, and the API keeps its paths
+        run: |
+          # The first container holds the default Erlang node name on the host's network, so
+          # this one is named apart.
+          docker run --detach --name control-plane-api --network host \
+            --env RELEASE_NODE=control_plane_api \
+            --env DATABASE_URL --env HEPH_HEALTH_PORT=8081 --env HEPH_API_PORT=8082 \
+            --env HEPH_API_SECRET_KEY_BASE=ci-only-key-ci-only-key-ci-only-key-0000 \
+            --env HEPH_API_GITHUB_CLIENT_ID=ci --env HEPH_API_GITHUB_CLIENT_SECRET=ci \
+            --env HEPH_API_BASE_URL=http://localhost:8082 control-plane:ci
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8082/ || true)
+            [ "$code" = 200 ] && break
+            sleep 2
+          done
+          if [ "$code" != 200 ]; then
+            echo "the dashboard was never served (last answer: $code)" >&2
+            docker logs control-plane-api >&2
+            exit 1
+          fi
+          curl -fsS http://localhost:8082/tickets/o/r/1 | grep -q '<div id="root">'
+          script=$(curl -fsS http://localhost:8082/ | grep -o '/assets/[^"]*\.js' | head -1)
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8082$script")" = 200 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8082/api/session)" = 401 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://localhost:8082/assets/../../etc/passwd)" != 200 ]
+          docker rm --force control-plane-api
       - name: The health check says 503 once the database is stopped
         run: |
           docker stop "$(docker ps --quiet --filter ancestor=postgres:16)"
@@ -281,7 +333,8 @@ jobs:
 
   ci:
     if: always()
-    needs: [docs, commits, rust, baseline, contracts, artifacts, control-plane, control-plane-image]
+    needs:
+      [docs, commits, rust, baseline, contracts, artifacts, control-plane, dashboard, control-plane-image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -26,8 +26,22 @@ defmodule ControlPlane.Api.Router do
 
   import Plug.Conn
 
-  alias ControlPlane.Api.{Auth, Csrf, DeviceTokens, Endpoints, Session, Settings, Worker}
+  alias ControlPlane.Api.{
+    Auth,
+    Csrf,
+    DeviceTokens,
+    Endpoints,
+    Session,
+    Settings,
+    Static,
+    Worker
+  }
+
   alias ControlPlane.ExecutorLink
+
+  # The first segments the API owns. Under them nothing is a file: a path with no route stays
+  # what it was (401 or 404), never the dashboard's page.
+  @reserved ~w(api auth worker)
 
   @routes [
     %{method: "GET", path: ~w(auth login), access: :public, handler: {Auth, :login}},
@@ -171,6 +185,11 @@ defmodule ControlPlane.Api.Router do
         conn
         |> put_resp_header("allow", allowed(conn.path_info))
         |> json(405, %{error: "this API only reads, except where a route says otherwise"})
+
+      nil
+      when method == "GET" and is_binary(settings.static_dir) and
+             (conn.path_info == [] or hd(conn.path_info) not in @reserved) ->
+        Static.serve(conn, settings.static_dir)
 
       %{access: :public, handler: handler} ->
         dispatch(conn, handler, route_params(method, conn.path_info), settings, nil)
