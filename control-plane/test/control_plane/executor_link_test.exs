@@ -134,6 +134,18 @@ defmodule ControlPlane.ExecutorLinkTest do
       refute lease(id).active, "the lease is let go when the record is kept"
     end
 
+    test "is connected for as long as it sends anything, not only when it claims", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+
+      long_ago = DateTime.add(DateTime.utc_now(), -3600, :second)
+      Repo.update_all(from(t in ControlPlane.DeviceToken), set: [last_seen_at: long_ago])
+      refute DeviceTokens.connected?(@person)
+
+      StandInWorker.heartbeat(ctx.port, ctx.mine, id)
+      assert DeviceTokens.connected?(@person)
+    end
+
     test "waits for a workload when there is none, then answers that there is none", ctx do
       assert %{status: 204, body: nil} = StandInWorker.claim(ctx.port, ctx.mine)
     end

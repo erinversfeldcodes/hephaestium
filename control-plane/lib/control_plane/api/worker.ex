@@ -62,6 +62,8 @@ defmodule ControlPlane.Api.Worker do
   end
 
   def events(conn, %{"id" => id}, _settings, token) do
+    DeviceTokens.seen(token)
+
     with {:ok, id} <- cast(id),
          {:ok, %{"events" => events}, conn} when is_list(events) <- body(conn) do
       case Leases.ingest(token, id, events) do
@@ -80,6 +82,8 @@ defmodule ControlPlane.Api.Worker do
   end
 
   def heartbeat(conn, %{"id" => id}, _settings, token) do
+    DeviceTokens.seen(token)
+
     with {:ok, id} <- cast(id),
          {:ok, expires_at} <- Leases.heartbeat(token, id) do
       json(conn, 200, %{leaseEndsAt: expires_at})
@@ -90,6 +94,8 @@ defmodule ControlPlane.Api.Worker do
   end
 
   def record(conn, %{"id" => id}, _settings, token) do
+    DeviceTokens.seen(token)
+
     with {:ok, id} <- cast(id),
          {:ok, %{} = record, conn} <- body(conn) do
       case Leases.finish(token, id, record) do
