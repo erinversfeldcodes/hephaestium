@@ -295,7 +295,10 @@ jobs:
       # are placeholders for this run only; nothing signs in.
       - name: The image serves the dashboard on the API's listener, and the API keeps its paths
         run: |
+          # The first container holds the default Erlang node name on the host's network, so
+          # this one is named apart.
           docker run --detach --name control-plane-api --network host \
+            --env RELEASE_NODE=control_plane_api \
             --env DATABASE_URL --env HEPH_HEALTH_PORT=8081 --env HEPH_API_PORT=8082 \
             --env HEPH_API_SECRET_KEY_BASE=ci-only-key-ci-only-key-ci-only-key-0000 \
             --env HEPH_API_GITHUB_CLIENT_ID=ci --env HEPH_API_GITHUB_CLIENT_SECRET=ci \
