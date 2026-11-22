@@ -18,7 +18,7 @@ use contracts::v1alpha1::{
 };
 use heph::gate;
 use heph::manifest::{self, BootstrapStep, Manifest};
-use heph::process::{Ended, execute};
+use heph::process::{Ended, Tick, execute, execute_with_tail};
 
 use crate::adapter::{Adapter, Stub};
 use crate::agent::{self, End};
@@ -98,7 +98,7 @@ pub fn run(
     let spent = Cell::new(0.0_f64);
     // Which agents the run started and what each spent, when it reads its own change.
     let steps = RefCell::new(Vec::<Step>::new());
-    let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
+    let (outcome, reason) = match prepare(options, &workload, &workspace, secrets, &mut stream) {
         Ok((manifest, since)) => {
             // A review or an evaluation is held to changing nothing, so what the
             // workspace is before the agent runs is kept to compare with what it is after.
@@ -340,13 +340,29 @@ fn prepare<W: Write>(
     options: &Options,
     workload: &Workload,
     workspace: &Path,
+    secrets: &Secrets,
     stream: &mut Stream<'_, W>,
 ) -> Result<(Manifest, String), String> {
-    clone(options, workload, workspace)?;
-    bring_in_base(workload, workspace)?;
-    let commit = git_output(&["rev-parse", "HEAD"], workspace)?
-        .trim()
-        .to_owned();
+    // The clone and the merge of the base can take minutes on a large repository, and the
+    // bootstrap steps longer, so each is waited for with a heartbeat written at the interval.
+    let commit = beating(options.heartbeat, stream, |tick| {
+        clone(options, workload, workspace, tick)?;
+        bring_in_base(workload, workspace, tick)?;
+        // A run that will push finds out now whether it can, before any agent is paid for.
+        if let (true, false, Some(token)) = (
+            options.deliver,
+            read_only(workload),
+            secrets.get(secrets::GITHUB_TOKEN),
+        ) {
+            deliver::check_push(workload, workspace, &options.gh, token, tick)?;
+        }
+        Ok::<_, String>(
+            git_output(&["rev-parse", "HEAD"], workspace)?
+                .trim()
+                .to_owned(),
+        )
+    })
+    .map_err(|e| format!("the event could not be written: {e}"))??;
     stream
         .emit(Kind::WorkspaceReady(WorkspaceReady {
             path: workspace.display().to_string(),
@@ -364,9 +380,13 @@ fn prepare<W: Write>(
     let manifest =
         manifest::parse(&text).map_err(|e| format!("the manifest is not valid: {e:?}"))?;
 
-    for (index, step) in manifest.bootstrap.iter().enumerate() {
-        bootstrap(&manifest, index + 1, step, workspace)?;
-    }
+    beating(options.heartbeat, stream, |tick| {
+        for (index, step) in manifest.bootstrap.iter().enumerate() {
+            bootstrap(&manifest, index + 1, step, workspace, tick)?;
+        }
+        Ok::<_, String>(())
+    })
+    .map_err(|e| format!("the event could not be written: {e}"))??;
     Ok((manifest, commit))
 }
 
@@ -376,7 +396,7 @@ fn prepare<W: Write>(
 /// delivers the revision is still a plain fast-forward of the branch.
 ///
 /// A conflict ends the run with the files named, and the branch is untouched.
-fn bring_in_base(workload: &Workload, workspace: &Path) -> Result<(), String> {
+fn bring_in_base(workload: &Workload, workspace: &Path, tick: &mut Tick<'_>) -> Result<(), String> {
     let Some(revision) = workload.revision.as_ref() else {
         return Ok(());
     };
@@ -387,20 +407,22 @@ fn bring_in_base(workload: &Workload, workspace: &Path) -> Result<(), String> {
         .base_branch;
     let tip = format!("origin/{base}");
     // The clone is fresh, so the base branch's tip is as it is now.
-    if git(
+    if git_ticking(
         &["merge-base", "--is-ancestor", &tip, "HEAD"],
         workspace,
         "could not compare the branch with the base branch",
+        Some(tick.reborrow()),
     )
     .is_ok()
     {
         return Ok(());
     }
     let message = format!("Merge branch '{base}' into {}", revision.branch);
-    if git(
+    if git_ticking(
         &["merge", "--no-ff", "--no-edit", "-m", &message, &tip],
         workspace,
         "could not merge the base branch",
+        Some(tick.reborrow()),
     )
     .is_ok()
     {
@@ -411,10 +433,11 @@ fn bring_in_base(workload: &Workload, workspace: &Path) -> Result<(), String> {
         .lines()
         .collect::<Vec<_>>()
         .join(", ");
-    let _ = git(
+    let _ = git_ticking(
         &["merge", "--abort"],
         workspace,
         "could not abort the merge",
+        Some(tick.reborrow()),
     );
     Err(format!(
         "the branch conflicts with the base branch '{base}' in {}",
@@ -439,7 +462,11 @@ fn deliver_if_asked<W: Write>(
     let (true, Some(token)) = (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) else {
         return Ok((Outcome::Completed, String::new()));
     };
-    match deliver::deliver(workload, workspace, &options.gh, token, deferred) {
+    // The push and the pull request's creation reach the network and can take minutes.
+    let delivered = beating(options.heartbeat, stream, |tick| {
+        deliver::deliver(workload, workspace, &options.gh, token, deferred, tick)
+    })?;
+    match delivered {
         Ok(pull_request) => {
             stream.emit(Kind::PullRequestOpened(pull_request))?;
             Ok((Outcome::Completed, String::new()))
@@ -512,7 +539,15 @@ fn finish_first_run<W: Write>(
         stream.ask(&question);
         return Ok((Outcome::Blocked, blocked_reason(workload)));
     }
-    let since = match carry_if(delivering, workload, workspace, since) {
+    let carried = carry_if(
+        delivering,
+        workload,
+        workspace,
+        since,
+        options.heartbeat,
+        stream,
+    )?;
+    let since = match carried {
         Ok(Carried::Onto(since)) => since,
         // The base changed what the agent changed: the agent resolves the difference and
         // reconfirms its change, in this run and within its budget, and what it leaves is
@@ -961,14 +996,18 @@ fn read_before_push<W: Write>(
         round += 1;
     }
 
-    match deliver::push_and_open(
-        workload,
-        workspace,
-        &options.gh,
-        token,
-        &deferred,
-        &committed,
-    ) {
+    let pushed = beating(options.heartbeat, stream, |tick| {
+        deliver::push_and_open(
+            workload,
+            workspace,
+            &options.gh,
+            token,
+            &deferred,
+            &committed,
+            tick,
+        )
+    })?;
+    match pushed {
         Ok(pull_request) => {
             stream.emit(Kind::PullRequestOpened(pull_request))?;
             Ok((Outcome::Completed, String::new()))
@@ -1005,16 +1044,22 @@ fn resolve_merge<W: Write>(
 
 /// Carry the work onto the base branch when it is about to be delivered, and leave it
 /// where it is otherwise: a run that opens no pull request has no ground to be on.
-fn carry_if(
+fn carry_if<W: Write>(
     delivering: bool,
     workload: &Workload,
     workspace: &Path,
     since: String,
-) -> Result<Carried, String> {
+    heartbeat: Duration,
+    stream: &mut Stream<'_, W>,
+) -> Result<Result<Carried, String>, Refused> {
     if delivering {
-        carry_onto_base(workload, workspace, &since)
+        // Fetching the base branch reaches the network and can take minutes.
+        beating(heartbeat, stream, |tick| {
+            carry_onto_base(workload, workspace, &since, tick)
+        })
+        .map_err(Refused::from)
     } else {
-        Ok(Carried::Onto(since))
+        Ok(Ok(Carried::Onto(since)))
     }
 }
 
@@ -1028,7 +1073,12 @@ fn carry_if(
 /// a file the base also touched is merged with it in the working tree, and what is left,
 /// conflict markers where both changed the same lines, goes to the agent to resolve.
 /// Returns where the work now stands.
-fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result<Carried, String> {
+fn carry_onto_base(
+    workload: &Workload,
+    workspace: &Path,
+    since: &str,
+    tick: &mut Tick<'_>,
+) -> Result<Carried, String> {
     if workload.revision.is_some() || workload.review.is_some() {
         return Ok(Carried::Onto(since.to_owned()));
     }
@@ -1037,10 +1087,11 @@ fn carry_onto_base(workload: &Workload, workspace: &Path, since: &str) -> Result
         .as_ref()
         .expect("checked when read")
         .base_branch;
-    git(
+    git_ticking(
         &["fetch", "--quiet", "origin", base],
         workspace,
         "could not fetch the base branch",
+        Some(tick.reborrow()),
     )?;
     let tip = git_output(&["rev-parse", "FETCH_HEAD"], workspace)?
         .trim()
@@ -1284,6 +1335,29 @@ fn gate_tail(tail: &heph::process::Tail) -> String {
     text[start..].to_owned()
 }
 
+/// Run `wait` with a tick that writes a heartbeat to the stream at `every`, so that a wait with
+/// a process to tick on is not taken for a run that went silent. A heartbeat that cannot be
+/// written stops the wait, which then ends as cancelled, and is the error returned.
+fn beating<W: Write, T>(
+    every: Duration,
+    stream: &mut Stream<'_, W>,
+    wait: impl FnOnce(&mut Tick<'_>) -> T,
+) -> Result<T, std::io::Error> {
+    let mut write_failed: Option<std::io::Error> = None;
+    let mut beat = || match stream.emit(Kind::Heartbeat(Heartbeat {})) {
+        Ok(()) => heph::process::Go::On,
+        Err(error) => {
+            write_failed = Some(error);
+            heph::process::Go::Stop
+        }
+    };
+    let result = wait(&mut Tick {
+        every,
+        call: &mut beat,
+    });
+    write_failed.map_or(Ok(result), Err)
+}
+
 /// Run one gate. One the workspace could not run, or that timed out, that the repository says a
 /// check on the pull request runs too, is left to that check.
 #[expect(
@@ -1378,30 +1452,18 @@ fn run_gates<W: Write>(
         // What the gate prints is shown as it was, and the last of it is kept in case the gate
         // fails.
         let printed = heph::process::Tail::new(GATE_TAIL_LINES);
-        let mut write_failed: Option<std::io::Error> = None;
-        let mut beat = || match stream.emit(Kind::Heartbeat(Heartbeat {})) {
-            Ok(()) => heph::process::Go::On,
-            Err(error) => {
-                write_failed = Some(error);
-                heph::process::Go::Stop
-            }
-        };
-        let outcome = run_one_gate(
-            manifest,
-            name,
-            declared,
-            workspace,
-            &changed,
-            secrets,
-            &printed,
-            heph::process::Tick {
-                every: heartbeat,
-                call: &mut beat,
-            },
-        );
-        if let Some(error) = write_failed {
-            return Err(error.into());
-        }
+        let outcome = beating(heartbeat, stream, |tick| {
+            run_one_gate(
+                manifest,
+                name,
+                declared,
+                workspace,
+                &changed,
+                secrets,
+                &printed,
+                tick.reborrow(),
+            )
+        })?;
         match outcome {
             Ok(result) => {
                 if matches!(
@@ -1478,7 +1540,12 @@ fn changed_files(workspace: &Path, base: &str) -> Result<Vec<String>, String> {
     Ok(changed)
 }
 
-fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(), String> {
+fn clone(
+    options: &Options,
+    workload: &Workload,
+    workspace: &Path,
+    tick: &mut Tick<'_>,
+) -> Result<(), String> {
     let repository = workload.repository.as_ref().expect("checked when read");
     let source = options.source.clone().unwrap_or_else(|| {
         format!(
@@ -1490,12 +1557,13 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     fs::create_dir_all(&options.work_dir)
         .map_err(|e| format!("could not create {}: {e}", options.work_dir.display()))?;
     let target = workspace.display().to_string();
-    git(
+    git_ticking(
         &["clone", "--no-checkout", "--", &source, &target],
         &options.work_dir,
         "could not clone",
+        Some(tick.reborrow()),
     )?;
-    git(
+    git_ticking(
         &[
             "-c",
             "advice.detachedHead=false",
@@ -1505,6 +1573,7 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
         ],
         workspace,
         "could not check out the base commit in the clone",
+        Some(tick.reborrow()),
     )?;
 
     // Where the agent leaves its commit message is never a change.
@@ -1555,13 +1624,33 @@ pub fn for_the_log(message: &str) -> String {
 }
 
 fn git(args: &[&str], directory: &Path, what: &str) -> Result<(), String> {
+    git_ticking(args, directory, what, None)
+}
+
+/// [`git`], calling `tick` at its interval for as long as the command runs, for one that can
+/// take long enough to be taken for a run that went silent.
+fn git_ticking(
+    args: &[&str],
+    directory: &Path,
+    what: &str,
+    tick: Option<Tick<'_>>,
+) -> Result<(), String> {
     let mut command = vec!["git".to_owned()];
     command.extend(args.iter().map(|a| (*a).to_owned()));
     let said = RefCell::new(String::new());
-    match execute(&command, directory, CLONE_TIMEOUT, false, |message| {
-        say(message);
-        message.clone_into(&mut said.borrow_mut());
-    }) {
+    match execute_with_tail(
+        &command,
+        directory,
+        CLONE_TIMEOUT,
+        false,
+        &[],
+        |message| {
+            say(message);
+            message.clone_into(&mut said.borrow_mut());
+        },
+        None,
+        tick,
+    ) {
         Ok((Ended::Exited(0), _)) => Ok(()),
         Ok((Ended::Exited(code), _)) => Err(format!("{what}: git exited with code {code}")),
         Ok((Ended::TimedOut, _)) => Err(format!("{what}: git timed out")),
@@ -1579,6 +1668,7 @@ fn bootstrap(
     number: usize,
     step: &BootstrapStep,
     workspace: &Path,
+    tick: &mut Tick<'_>,
 ) -> Result<(), String> {
     let directory: PathBuf = match &step.root {
         Some(root) => workspace.join(root),
@@ -1586,15 +1676,18 @@ fn bootstrap(
     };
     let described = format!("bootstrap step {number} (`{}`)", step.run.join(" "));
     let said = RefCell::new(String::new());
-    match execute(
+    match execute_with_tail(
         &gate::wrap(manifest, &step.run, environment),
         &directory,
         Duration::from_secs(step.timeout_seconds),
         false,
+        &[],
         |message| {
             say(message);
             message.clone_into(&mut said.borrow_mut());
         },
+        None,
+        Some(tick.reborrow()),
     ) {
         Ok((Ended::Exited(0), _)) => Ok(()),
         Ok((Ended::Exited(code), _)) => Err(format!("{described} exited with code {code}")),

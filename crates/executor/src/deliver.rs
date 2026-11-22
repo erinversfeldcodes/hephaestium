@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use contracts::v1alpha1::{PullRequestOpened, Workload};
-use heph::process::{Go, Streamed, stream};
+use heph::process::{Go, Streamed, Tail, Tick, stream_with_tail};
+
+use crate::redact::Redactor;
 
 use crate::run::say;
 
@@ -110,27 +112,83 @@ fn environment(token: &str) -> Vec<(String, String)> {
     environment
 }
 
-/// Run a command and return what it wrote to standard output, line by line.
+/// How many of a command's last lines of standard error are kept, before the useful ones are
+/// chosen.
+const STDERR_LINES: usize = 40;
+
+/// How many of those lines a failure reason holds, and how many characters of them.
+const SAID_LINES: usize = 6;
+const SAID_CHARS: usize = 800;
+
+/// What a host said when it refused a command, fit for a failure reason: the last lines that say
+/// something (git's `hint:` advice is left out), with every held secret replaced and the whole
+/// capped. The token is taken out here as well as by the executor's own redaction, because the
+/// reason is built before that runs.
+fn host_said(stderr: &str, token: &str) -> String {
+    let redactor = Redactor::new([("GITHUB_TOKEN", token)]);
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("hint:"))
+        .collect();
+    let kept = lines[lines.len().saturating_sub(SAID_LINES)..].join(" | ");
+    let text = crate::run::for_the_log(&redactor.text(&kept));
+    if text.chars().count() > SAID_CHARS {
+        let cut: String = text.chars().take(SAID_CHARS).collect();
+        format!("{cut}...")
+    } else {
+        text
+    }
+}
+
+/// Run a command and return what it wrote to standard output, line by line. For the local ones,
+/// which take no time worth a heartbeat.
 fn run(command: &[&str], directory: &Path, token: &str, what: &str) -> Result<Vec<String>, String> {
+    let mut nothing = || Go::On;
+    let mut idle = Tick {
+        every: TIMEOUT,
+        call: &mut nothing,
+    };
+    run_ticking(command, directory, token, what, &mut idle)
+}
+
+/// [`run`] for a command that reaches the network. `tick` is called at its interval while the
+/// command runs, and a tick that says to stop ends the command.
+fn run_ticking(
+    command: &[&str],
+    directory: &Path,
+    token: &str,
+    what: &str,
+    tick: &mut Tick<'_>,
+) -> Result<Vec<String>, String> {
     let command: Vec<String> = command.iter().map(|word| (*word).to_owned()).collect();
     let lines = RefCell::new(Vec::new());
-    let ended = stream(
+    let tail = Tail::new(STDERR_LINES);
+    let ended = stream_with_tail(
         &command,
         directory,
         &environment(token),
         TIMEOUT,
-        TIMEOUT,
+        tick.every,
         |line| {
             lines.borrow_mut().push(line.to_owned());
             Go::On
         },
-        || Go::On,
+        || (tick.call)(),
         say,
+        Some(&tail),
     )
     .map_err(|error| format!("{what}: {error}"))?;
     match ended {
         Streamed::Exited(0) => Ok(lines.into_inner()),
-        Streamed::Exited(code) => Err(format!("{what}: exited with code {code}")),
+        Streamed::Exited(code) => {
+            let said = host_said(&tail.text(), token);
+            if said.is_empty() {
+                Err(format!("{what}: exited with code {code}"))
+            } else {
+                Err(format!("{what}: exited with code {code}: {said}"))
+            }
+        }
         Streamed::TimedOut => Err(format!("{what}: timed out")),
         Streamed::Stopped => Err(format!("{what}: was stopped")),
         Streamed::Cancelled => Err(format!("{what}: cancelled")),
@@ -251,6 +309,66 @@ pub fn amend_locally(_workload: &Workload, workspace: &Path) -> Result<(), Strin
     Ok(())
 }
 
+/// The branch name a push is tried on before any work is done. It is the run's own, under the
+/// same `heph/` namespace as the branch the work will go on, and is never created: the push
+/// that uses it is a dry run.
+fn probe_branch(workload: &Workload) -> String {
+    format!("heph/push-check-{}", workload.id)
+}
+
+/// Whether the token can push to the repository, found out before an agent starts and
+/// anything is spent. It does a dry-run push of the base commit to a throwaway branch name,
+/// the way and with the credential the real push will use. A dry run makes the host
+/// authenticate the push and say what it would do, and sends no objects and updates no ref, so
+/// nothing is written to the repository.
+///
+/// # Errors
+///
+/// Returns what the host said, and what to check, when the push is refused.
+///
+/// # Panics
+///
+/// If the workload has no repository. Reading a workload refuses one without it.
+pub fn check_push(
+    workload: &Workload,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    tick: &mut Tick<'_>,
+) -> Result<(), String> {
+    let repository = workload.repository.as_ref().expect("checked when read");
+    let helper = format!("credential.helper=!{gh} auth git-credential");
+    let refspec = format!(
+        "{}:refs/heads/{}",
+        repository.base_commit,
+        probe_branch(workload)
+    );
+    run_ticking(
+        &[
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            &helper,
+            "push",
+            "--dry-run",
+            "origin",
+            &refspec,
+        ],
+        workspace,
+        token,
+        "the run cannot push to the repository, so it was not started",
+        tick,
+    )
+    .map(|_| ())
+    .map_err(|said| {
+        format!(
+            "{said}. Check that the token the run holds has write access to {}/{}.",
+            repository.owner, repository.name
+        )
+    })
+}
+
 /// Commit what the agent did, push it, and open the pull request.
 ///
 /// # Errors
@@ -268,9 +386,10 @@ pub fn deliver(
     gh: &str,
     token: &str,
     deferred: &[Deferred],
+    tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
     let committed = commit_locally(workload, workspace)?;
-    push_and_open(workload, workspace, gh, token, deferred, &committed)
+    push_and_open(workload, workspace, gh, token, deferred, &committed, tick)
 }
 
 /// Push a commit that was made locally, and open the pull request, or for a revision update
@@ -291,12 +410,13 @@ pub fn push_and_open(
     token: &str,
     deferred: &[Deferred],
     committed: &Committed,
+    tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
     let message = read_message(workspace)?;
     let branch = committed.branch.clone();
 
     let helper = format!("credential.helper=!{gh} auth git-credential");
-    run(
+    run_ticking(
         &[
             "git",
             "-c",
@@ -310,6 +430,7 @@ pub fn push_and_open(
         workspace,
         token,
         &format!("could not push {branch}"),
+        tick,
     )?;
 
     let resolution = read_resolution(workspace);
@@ -331,7 +452,7 @@ pub fn push_and_open(
     // done after the push, so a push that was refused leaves the description describing
     // the head the pull request still has.
     if let Some(revision) = workload.revision.as_ref() {
-        update_pull_request(workload, workspace, gh, token, revision, &description)?;
+        update_pull_request(workload, workspace, gh, token, revision, &description, tick)?;
         return Ok(PullRequestOpened {
             url: revision.pull_request_url.clone(),
             number: revision.pull_request_number,
@@ -339,7 +460,7 @@ pub fn push_and_open(
         });
     }
 
-    open_pull_request(workload, workspace, gh, token, &branch, &description)
+    open_pull_request(workload, workspace, gh, token, &branch, &description, tick)
 }
 
 /// Write the description of a pull request to a file beside the workspace, for `gh`.
@@ -363,12 +484,13 @@ fn update_pull_request(
     token: &str,
     revision: &contracts::v1alpha1::Revision,
     description: &Description<'_>,
+    tick: &mut Tick<'_>,
 ) -> Result<(), String> {
     let subject = description.message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
     let repository_name = format!("{}/{}", repository.owner, repository.name);
     let body_path = write_body(workload, workspace, description)?;
-    run(
+    run_ticking(
         &[
             gh,
             "pr",
@@ -384,6 +506,7 @@ fn update_pull_request(
         workspace,
         token,
         "the work was pushed, but could not update the pull request",
+        tick,
     )?;
     Ok(())
 }
@@ -396,12 +519,13 @@ fn open_pull_request(
     token: &str,
     branch: &str,
     description: &Description<'_>,
+    tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
     let subject = description.message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
     let body_path = write_body(workload, workspace, description)?;
     let repository_name = format!("{}/{}", repository.owner, repository.name);
-    let lines = run(
+    let lines = run_ticking(
         &[
             gh,
             "pr",
@@ -420,6 +544,7 @@ fn open_pull_request(
         workspace,
         token,
         "could not open the pull request",
+        tick,
     )?;
 
     let url = lines
@@ -610,4 +735,25 @@ fn rfc3339(seconds: i64) -> String {
         time % 3600 / 60,
         time % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_said;
+
+    #[test]
+    fn what_the_host_said_has_the_token_taken_out_and_is_capped() {
+        let token = "ghs_0123456789abcdef";
+        let stderr = format!(
+            "hint: some advice\nremote: Permission to a/b.git denied to c.\nfatal: unable to access 'https://x:{token}@github.com/a/b.git/': error: 403\n"
+        );
+        let said = host_said(&stderr, token);
+        assert!(!said.contains(token), "{said}");
+        assert!(said.contains("[redacted: GITHUB_TOKEN]"), "{said}");
+        assert!(said.contains("Permission to a/b.git denied"), "{said}");
+        assert!(!said.contains("hint:"), "{said}");
+
+        let long = "x".repeat(5000);
+        assert!(host_said(&long, token).chars().count() < 900);
+    }
 }

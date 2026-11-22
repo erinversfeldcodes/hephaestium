@@ -9,7 +9,10 @@ defmodule ControlPlane.HostedConfigTest do
 
   @runtime Path.expand("../../config/runtime.exs", __DIR__)
   @names ~w(DATABASE_URL HEPH_PG_SOCKET_DIR HEPH_DB_SSL HEPH_DB_POOL_SIZE HEPH_OBAN_NOTIFIER
-            HEPH_HEALTH_PORT HEPH_REVIEW_APP_ID HEPH_REVIEW_APP_KEY HEPH_REVIEW_APP_KEY_FILE)
+            HEPH_HEALTH_PORT HEPH_REVIEW_APP_ID HEPH_REVIEW_APP_KEY HEPH_REVIEW_APP_KEY_FILE
+            HEPH_API_PORT HEPH_API_SECRET_KEY_BASE HEPH_API_SECRET_KEY_BASE_FILE
+            HEPH_API_GITHUB_CLIENT_ID HEPH_API_GITHUB_CLIENT_SECRET
+            HEPH_API_GITHUB_CLIENT_SECRET_FILE HEPH_API_ALLOWED_LOGINS HEPH_API_BASE_URL)
 
   defp read(environment, env \\ :test) do
     previous = for name <- @names, do: {name, System.get_env(name)}
@@ -40,6 +43,49 @@ defmodule ControlPlane.HostedConfigTest do
         error = assert_raise RuntimeError, fn -> read([{"HEPH_HEALTH_PORT", bad}]) end
         assert error.message =~ "HEPH_HEALTH_PORT"
       end
+    end
+  end
+
+  describe "the API" do
+    @api [
+      {"HEPH_API_PORT", "4000"},
+      {"HEPH_API_SECRET_KEY_BASE", String.duplicate("k", 64)},
+      {"HEPH_API_GITHUB_CLIENT_ID", "the-id"},
+      {"HEPH_API_GITHUB_CLIENT_SECRET", "the-secret"},
+      {"HEPH_API_ALLOWED_LOGINS", "octocat, Hubot"},
+      {"HEPH_API_BASE_URL", "https://heph.example"}
+    ]
+
+    test "is off unless a port is named" do
+      refute Keyword.has_key?(read([]), :api)
+      refute Keyword.has_key?(read(List.keydelete(@api, "HEPH_API_PORT", 0)), :api)
+    end
+
+    test "reads its settings, the allowlist as a list of logins" do
+      api = read(@api)[:api]
+      assert api[:port] == 4000
+      assert api[:allowed_logins] == ["octocat", "Hubot"]
+      assert api[:base_url] == "https://heph.example"
+      assert api[:client_secret] == "the-secret"
+    end
+
+    test "reads a secret from the file a _FILE variable names" do
+      path = Path.join(System.tmp_dir!(), "heph-api-secret-#{System.unique_integer([:positive])}")
+      File.write!(path, "from-a-file\n")
+      on_exit(fn -> File.rm(path) end)
+
+      environment =
+        List.keydelete(@api, "HEPH_API_GITHUB_CLIENT_SECRET", 0) ++
+          [{"HEPH_API_GITHUB_CLIENT_SECRET_FILE", path}]
+
+      assert read(environment)[:api][:client_secret] == "from-a-file"
+    end
+
+    test "does not start without its key, and the message does not carry a secret" do
+      environment = List.keydelete(@api, "HEPH_API_SECRET_KEY_BASE", 0)
+      error = assert_raise RuntimeError, fn -> read(environment) end
+      assert error.message =~ "HEPH_API_SECRET_KEY_BASE"
+      refute error.message =~ "the-secret"
     end
   end
 
