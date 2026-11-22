@@ -16,6 +16,7 @@ defmodule ControlPlane.Application do
 
     children = children ++ health_listener(Application.get_env(:control_plane, :health))
     children = children ++ ControlPlane.Api.children(Application.get_env(:control_plane, :api))
+    children = children ++ executor_link()
 
     with {:ok, supervisor} <-
            Supervisor.start_link(children, strategy: :one_for_one, name: ControlPlane.Supervisor) do
@@ -29,6 +30,11 @@ defmodule ControlPlane.Application do
 
       {:ok, supervisor}
     end
+  end
+
+  # The sweep for lapsed leases, only when executors on developers' machines run the work.
+  defp executor_link do
+    if ControlPlane.ExecutorLink.enabled?(), do: [ControlPlane.ExecutorLink.Reaper], else: []
   end
 
   # The listener the platform's health check calls. Not started unless a port is set, so a

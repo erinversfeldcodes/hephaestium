@@ -27,6 +27,16 @@ defmodule ControlPlane.Jobs.RunWorkload do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"workload_id" => id}, attempt: attempt, max_attempts: max}) do
+    if ControlPlane.ExecutorLink.enabled?() do
+      # A job left from before the link was turned on: the workload stays queued, for an
+      # executor to claim, and is not started here as well.
+      {:discard, "executors on developers' machines run workloads, not this process"}
+    else
+      run(id, attempt, max)
+    end
+  end
+
+  defp run(id, attempt, max) do
     case Disk.room() do
       :ok ->
         claim(id, attempt >= max)

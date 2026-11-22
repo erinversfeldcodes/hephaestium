@@ -6,10 +6,21 @@ defmodule ControlPlane.Runner do
 
   alias ControlPlane.Jobs.RunWorkload
 
-  @doc "Put a workload on the queue. However often it is asked, it is queued once."
-  @spec enqueue(Ecto.UUID.t()) :: {:ok, Oban.Job.t()} | {:error, term()}
-  def enqueue(workload_id),
-    do: %{"workload_id" => workload_id} |> RunWorkload.new() |> Oban.insert()
+  @doc """
+  Put a workload on the queue. However often it is asked, it is queued once.
+
+  With the executor link on there is no job: the workload is already queued, and waits there
+  for the executor of the person who approved it to claim it, so nothing here can start it on
+  this machine.
+  """
+  @spec enqueue(Ecto.UUID.t()) :: {:ok, Oban.Job.t() | :waiting_for_executor} | {:error, term()}
+  def enqueue(workload_id) do
+    if ControlPlane.ExecutorLink.enabled?() do
+      {:ok, :waiting_for_executor}
+    else
+      %{"workload_id" => workload_id} |> RunWorkload.new() |> Oban.insert()
+    end
+  end
 
   @doc """
   Tell a running workload's executor to stop. The executor stops what it started

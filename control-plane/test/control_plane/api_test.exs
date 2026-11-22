@@ -290,6 +290,67 @@ defmodule ControlPlane.ApiTest do
     end
   end
 
+  describe "the methods that change something, with the executor link on" do
+    # Every route that is not a read, and the only ones. A route added to the table that
+    # writes fails the first test until it is named here, on purpose: a write is decided by a
+    # person reading this list, not by whoever added the route.
+    @allowed_writes [
+      {"POST", ["api", "device-tokens"]},
+      {"POST", ["api", "device-tokens", ":id", "revoke"]},
+      {"POST", ["worker", "claim"]},
+      {"POST", ["worker", "workloads", ":id", "events"]},
+      {"POST", ["worker", "workloads", ":id", "heartbeat"]},
+      {"POST", ["worker", "workloads", ":id", "record"]}
+    ]
+
+    setup do
+      Application.put_env(:control_plane, :executor_link, enabled: true)
+      on_exit(fn -> Application.delete_env(:control_plane, :executor_link) end)
+    end
+
+    defp concrete(path) do
+      "/" <> Enum.map_join(path, "/", &if(String.starts_with?(&1, ":"), do: "1", else: &1))
+    end
+
+    test "are exactly the routes named here" do
+      assert Router.write_routes() |> Enum.map(&{&1.method, &1.path}) |> Enum.sort() ==
+               Enum.sort(@allowed_writes)
+
+      assert Router.routes()
+             |> Enum.reject(&(&1.method == "GET"))
+             |> Enum.all?(&(&1.access in [:session_write, :worker]))
+    end
+
+    test "every other method on every route, and on one that does not exist, is still 405" do
+      allowed = MapSet.new(@allowed_writes)
+
+      paths =
+        [["api", "nothing-here"], ["worker", "nothing-here"]] ++
+          Enum.map(Router.routes(), & &1.path)
+
+      for method <- ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+          path <- paths,
+          not MapSet.member?(allowed, {method, path}),
+          cookie <- [nil, cookie_for("octocat")] do
+        conn =
+          request(method |> String.downcase() |> String.to_atom(), concrete(path), cookie: cookie)
+
+        assert conn.status == 405, "#{method} #{concrete(path)} gave #{conn.status}"
+        assert [allow] = get_resp_header(conn, "allow")
+        refute allow =~ method, "#{method} #{concrete(path)} says it allows #{allow}"
+      end
+    end
+
+    test "a write route is 405 for every method but its own, and says which is its own" do
+      conn = request(:put, "/api/device-tokens", cookie: cookie_for("octocat"))
+      assert conn.status == 405
+      assert get_resp_header(conn, "allow") == ["GET, HEAD, POST"]
+
+      assert request(:get, "/worker/claim", cookie: cookie_for("octocat")).status == 404
+      assert request(:get, "/worker/claim").status == 401
+    end
+  end
+
   describe "the routes" do
     @public [
       {"GET", ["auth", "login"]},
@@ -299,13 +360,21 @@ defmodule ControlPlane.ApiTest do
 
     test "each is a login route or is behind the session" do
       for route <- Router.routes() do
-        assert route.method == "GET"
+        case route.access do
+          :public ->
+            assert {route.method, route.path} in @public,
+                   "#{inspect(route.path)} is reachable without a session"
 
-        if route.access == :public do
-          assert {route.method, route.path} in @public,
-                 "#{inspect(route.path)} is reachable without a session"
-        else
-          assert route.access == :session
+          :session ->
+            assert route.method == "GET"
+
+          # Writes: named in the list of the ones allowed, and each is a person with a CSRF
+          # token or an executor with a device token, never a bare cookie.
+          access when access in [:session_write, :worker] ->
+            assert {route.method, route.path} in @allowed_writes
+
+          other ->
+            flunk("#{inspect(route.path)} has the access #{inspect(other)}")
         end
       end
     end

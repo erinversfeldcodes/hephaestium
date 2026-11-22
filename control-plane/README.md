@@ -302,6 +302,9 @@ the app, the Neon project and the secrets is done by hand once, and is not part 
 | `HEPH_API_SECRET_KEY_BASE` | The key sessions are signed with, at least 32 bytes (`openssl rand -base64 48`). `HEPH_API_SECRET_KEY_BASE_FILE` names a file that holds it. Changing it signs everyone out. |
 | `HEPH_API_GITHUB_CLIENT_ID`, `HEPH_API_GITHUB_CLIENT_SECRET` | The GitHub App's client id and a client secret, for its user authorization. `HEPH_API_GITHUB_CLIENT_SECRET_FILE` (and `_ID_FILE`) name files that hold them. |
 | `HEPH_API_ALLOWED_LOGINS` | The GitHub logins that may sign in, comma-separated, compared without regard to case. Empty lets no one in. |
+| `HEPH_EXECUTOR_LINK` | `workers` lets executors on developers' machines run the workloads over the API (see below); `local` or unset keeps the control plane starting an executor itself. `workers` needs `HEPH_API_PORT`. |
+| `HEPH_LEASE_SECONDS` | With the link on: how long a claimed workload stays held after the last event or heartbeat (120). |
+| `HEPH_CLAIM_WAIT_SECONDS` | With the link on: how long a claim waits for a workload before answering that there is none (25; keep it under the idle time of any proxy in front). |
 | `HEPH_API_BASE_URL` | The address the API is served at, such as `https://heph.example`. The callback is `<base>/auth/callback`. Cookies are marked secure unless this is `http://`. |
 
 `GET /health` answers `200` with `{"status":"ok"}` when the database answers a query, and `503`
@@ -314,7 +317,8 @@ so the container is given neither.
 With `HEPH_API_PORT` set, a listener of its own serves a login and read-only endpoints. Everything
 except the three login routes is behind a session, and any other request is `401`, a path that
 does not exist included. Only `GET` and `HEAD` are answered: every other method is `405`, because
-nothing here writes.
+nothing here writes, except the six `POST` routes of the executor link below, which exist only
+while the link is on.
 
 | Route | What it gives |
 | --- | --- |
@@ -339,6 +343,37 @@ OAuth scopes and reads only the login, so the App needs no user permissions for 
 "Expire user authorization tokens" only if you want it, since the token is dropped as soon as the
 login is read; check that a login that is on the list reaches `GET /api/session` and one that is
 not gets `403`.
+
+### The executor link
+
+With `HEPH_EXECUTOR_LINK=workers` the control plane no longer starts an executor: a workload is
+left `queued` until the executor of the person who approved its ticket asks for it. Off, none of
+these routes exists and the API is as it was. The executor opens every connection (a long poll
+and plain `POST`s, so nothing listens on the developer's machine and any proxy carries it). It
+holds a device token and nothing else.
+
+| Route | Who | What it does |
+| --- | --- | --- |
+| `GET /api/csrf` | session | The CSRF token the two writes below need. |
+| `GET /api/device-tokens` | session | The person's own tokens: name, when made, last seen, revoked. |
+| `POST /api/device-tokens` | session + CSRF | `{"name": "laptop"}`: makes a token. It is in the answer once and is kept only as a hash. |
+| `POST /api/device-tokens/:id/revoke` | session + CSRF | Revokes one of the person's tokens; what it held lapses at once. |
+| `POST /worker/claim` | bearer token | Waits for a workload the token's login approved. `200` with `workload`, `lease.seconds` and `nextSequence`, or `204`. |
+| `POST /worker/workloads/:id/events` | bearer token | `{"events": [...]}`, kept in order by the stream's rules; each moves the lease on. A rule broken is `422` and the workload is failed. A batch sent again is accepted without being kept twice. |
+| `POST /worker/workloads/:id/heartbeat` | bearer token | Moves the lease on. |
+| `POST /worker/workloads/:id/record` | bearer token | The run record, at the end. Kept as the local runner keeps it, and the lease is let go. |
+
+The two kinds of write never stand in for each other: a worker route ignores a session cookie
+and a browser route ignores a bearer token. A request about a workload the token does not hold
+(it lapsed, was let go, or is another person's) is `409`.
+
+A claim is a lease that ends `HEPH_LEASE_SECONDS` after the last event or heartbeat, checked by
+the clock on every request. A workload whose lease lapses is put back on the queue only if the
+stream has no `deliveryBegan` event (nothing could have been pushed) and it has been put back
+fewer than twice; otherwise it is failed, as a lost run is locally. The events the lost run said
+stay kept (events are append-only) and the next claim says where the numbering goes on
+(`nextSequence`). A workload whose approver's executor is not connected waits, for as long as it
+takes.
 
 ### Oban's notifier and Neon's pooler
 
