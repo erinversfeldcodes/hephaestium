@@ -5,9 +5,18 @@ defmodule ControlPlane.Jobs.AnswerReplies do
 
   @impl Oban.Worker
   def perform(_job) do
-    ControlPlane.Gaps.replies()
+    # What no event exists for stays on this pass whatever the webhooks do, so it is not a miss.
+    replies = ControlPlane.Gaps.replies()
     ControlPlane.Gaps.unquestioned()
-    ControlPlane.Gaps.reopened()
+    reopened = ControlPlane.Gaps.reopened()
+
+    ControlPlane.Webhooks.missed(:comment_added, Enum.count(replies, &match?({:started, _}, &1)))
+
+    ControlPlane.Webhooks.missed(
+      :ticket_reopened,
+      Enum.count(reopened, &match?({:started, _}, &1))
+    )
+
     :ok
   end
 end

@@ -300,12 +300,18 @@ defmodule ControlPlane.ApiTest do
       {"POST", ["worker", "claim"]},
       {"POST", ["worker", "workloads", ":id", "events"]},
       {"POST", ["worker", "workloads", ":id", "heartbeat"]},
-      {"POST", ["worker", "workloads", ":id", "record"]}
+      {"POST", ["worker", "workloads", ":id", "record"]},
+      {"POST", ["webhooks", ":source"]}
     ]
 
     setup do
       Application.put_env(:control_plane, :executor_link, enabled: true)
-      on_exit(fn -> Application.delete_env(:control_plane, :executor_link) end)
+      Application.put_env(:control_plane, :webhooks, secret_file: "/nonexistent")
+
+      on_exit(fn ->
+        Application.delete_env(:control_plane, :executor_link)
+        Application.delete_env(:control_plane, :webhooks)
+      end)
     end
 
     defp concrete(path) do
@@ -318,7 +324,7 @@ defmodule ControlPlane.ApiTest do
 
       assert Router.routes()
              |> Enum.reject(&(&1.method == "GET"))
-             |> Enum.all?(&(&1.access in [:session_write, :worker]))
+             |> Enum.all?(&(&1.access in [:session_write, :worker, :webhook]))
     end
 
     test "every other method on every route, and on one that does not exist, is still 405" do
@@ -370,7 +376,7 @@ defmodule ControlPlane.ApiTest do
 
           # Writes: named in the list of the ones allowed, and each is a person with a CSRF
           # token or an executor with a device token, never a bare cookie.
-          access when access in [:session_write, :worker] ->
+          access when access in [:session_write, :worker, :webhook] ->
             assert {route.method, route.path} in @allowed_writes
 
           other ->

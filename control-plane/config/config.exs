@@ -9,19 +9,9 @@ config :control_plane, ControlPlane.Repo,
 config :control_plane, Oban,
   repo: ControlPlane.Repo,
   queues: [workloads: 5, intake: 1],
-  plugins: [
-    {Oban.Plugins.Cron,
-     crontab: [
-       {"* * * * *", ControlPlane.Jobs.Intake},
-       {"* * * * *", ControlPlane.Jobs.SettleTickets},
-       {"7 * * * *", ControlPlane.Jobs.RecheckOwed},
-       {"17 * * * *", ControlPlane.Jobs.SweepWorkspaces},
-       {"*/10 * * * *", ControlPlane.Jobs.EvaluateMerged},
-       {"*/10 * * * *", ControlPlane.Jobs.RollUpEpics},
-       {"*/10 * * * *", ControlPlane.Jobs.KeepCurrent},
-       {"*/5 * * * *", ControlPlane.Jobs.AnswerReplies}
-     ]}
-  ]
+  # The cron plugin is given its schedule when the application starts, because the schedule
+  # depends on whether webhooks are on (ControlPlane.Schedule).
+  plugins: [Oban.Plugins.Cron]
 
 # The repositories whose tickets are taken in, and the programs intake reads
 # GitHub and builds workloads with: `gh` and `heph` on the path unless this says.

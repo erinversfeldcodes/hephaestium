@@ -19,7 +19,13 @@ defmodule ControlPlane.Api.Router do
       cookie, so a browser can never be made to act as an executor and a token is no way to
       act as a person.
 
-  A route that changes state must say which of the two it is, and has no third way in.
+  A route that changes state must say which of the two it is, or be the webhook route:
+
+    * `:webhook`: a code host's delivery. It needs no session and no token, because the
+      signature over the body is its authentication, checked before anything is read from it.
+      It exists only while webhooks are on.
+
+  There is no other way in for a write.
   """
 
   @behaviour Plug
@@ -34,14 +40,15 @@ defmodule ControlPlane.Api.Router do
     Session,
     Settings,
     Static,
+    Webhook,
     Worker
   }
 
-  alias ControlPlane.ExecutorLink
+  alias ControlPlane.{ExecutorLink, Webhooks}
 
   # The first segments the API owns. Under them nothing is a file: a path with no route stays
   # what it was (401 or 404), never the dashboard's page.
-  @reserved ~w(api auth worker)
+  @reserved ~w(api auth worker webhooks)
 
   @routes [
     %{method: "GET", path: ~w(auth login), access: :public, handler: {Auth, :login}},
@@ -161,6 +168,15 @@ defmodule ControlPlane.Api.Router do
       access: :worker,
       link: true,
       handler: {Worker, :record}
+    },
+
+    # A code host's webhooks. Present only while they are on.
+    %{
+      method: "POST",
+      path: ~w(webhooks :source),
+      access: :webhook,
+      webhooks: true,
+      handler: {Webhook, :receive}
     }
   ]
 
@@ -193,6 +209,10 @@ defmodule ControlPlane.Api.Router do
 
       %{access: :public, handler: handler} ->
         dispatch(conn, handler, route_params(method, conn.path_info), settings, nil)
+
+      %{access: :webhook} = route ->
+        # The signature, checked by the receiver, and nothing else: no cookie or token is looked at.
+        dispatch(conn, route.handler, route_params(method, conn.path_info), settings, nil)
 
       %{access: :worker} = route ->
         # A device token and nothing else: the cookie is never looked at.
@@ -257,9 +277,12 @@ defmodule ControlPlane.Api.Router do
   defp find(method, segments),
     do: Enum.find(available(), &(&1.method == method and matches?(&1.path, segments)))
 
-  # The link's routes are there only while the link is on; off, the API is as it was without it.
+  # The link's routes are there only while the link is on, and the webhook's only while webhooks
+  # are; off, the API is as it was without them.
   defp available do
-    if ExecutorLink.enabled?(), do: @routes, else: Enum.reject(@routes, & &1[:link])
+    @routes
+    |> then(&if(ExecutorLink.enabled?(), do: &1, else: Enum.reject(&1, fn r -> r[:link] end)))
+    |> then(&if(Webhooks.enabled?(), do: &1, else: Enum.reject(&1, fn r -> r[:webhooks] end)))
   end
 
   defp matches?(pattern, segments) when length(pattern) == length(segments),

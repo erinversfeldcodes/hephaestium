@@ -23,6 +23,7 @@ defmodule ControlPlane.Tracker do
   @callback capabilities() :: MapSet.t(capability())
   @callback approved_tickets(project, label :: String.t()) :: {:ok, [Ticket.t()]} | error
   @callback ticket(project, key) :: {:ok, Ticket.t()} | error
+  @callback parent(project, key) :: {:ok, Ticket.t() | nil} | error
   @callback ticket_history(project, key, keyword()) :: {:ok, [TicketEvent.t()]} | error
   @callback ticket_edits(project, key) :: {:ok, [TicketEdit.t()]} | error
   @callback open_epics(project) :: {:ok, [Ticket.t()]} | error
@@ -46,6 +47,9 @@ defmodule ControlPlane.Tracker do
 
   def approved_tickets(repository, label), do: call(repository, :approved_tickets, [label])
   def ticket(repository, key), do: call(repository, :ticket, [key])
+
+  @doc "The ticket this one is a sub-ticket of, or `{:ok, nil}` when it has none."
+  def parent(repository, key), do: call(repository, :parent, [key])
 
   def ticket_history(repository, key, opts \\ []),
     do: call(repository, :ticket_history, [key, opts])

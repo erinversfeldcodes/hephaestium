@@ -208,6 +208,31 @@ defmodule ControlPlane.Workloads do
     )
   end
 
+  @doc """
+  The workloads whose pull request is this change: the latest of each ticket, among those still
+  awaiting settlement and those settled in the last fortnight. A webhook names a change, and this
+  is how it finds the workload without asking the code host.
+  """
+  @spec for_change(String.t(), integer() | String.t()) :: [%Workload{}]
+  def for_change(repository, number) do
+    since = DateTime.add(DateTime.utc_now(), -14 * 86_400, :second)
+    wanted = to_string(number)
+
+    Repo.all(
+      from w in Workload,
+        where:
+          w.repository == ^repository and w.state == "completed" and
+            (is_nil(w.settled_at) or w.updated_at >= ^since) and
+            fragment("?->'review' IS NULL", w.workload) and
+            fragment("?->'completeness' IS NULL", w.workload) and
+            fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
+        order_by: w.inserted_at
+    )
+    |> Enum.filter(&(pull_request_number(&1) == {:ok, wanted}))
+    |> Enum.group_by(& &1.ticket_number)
+    |> Enum.map(fn {_ticket, workloads} -> List.last(workloads) end)
+  end
+
   @doc "A workload, or nil."
   @spec get(Ecto.UUID.t()) :: %Workload{} | nil
   def get(id), do: Repo.get(Workload, id)

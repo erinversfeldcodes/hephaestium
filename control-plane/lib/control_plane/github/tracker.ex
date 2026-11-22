@@ -46,6 +46,19 @@ defmodule ControlPlane.GitHub.Tracker do
   end
 
   @impl true
+  def parent(project, key) do
+    case GitHub.get("repos/#{project}/issues/#{key}/parent") do
+      {:ok, %{"number" => _} = issue} -> {:ok, ticket_of(issue)}
+      {:ok, _} -> {:ok, nil}
+      {:error, message} -> if not_found?(message), do: {:ok, nil}, else: {:error, message}
+    end
+  end
+
+  # A ticket that is nobody's sub-ticket has no parent: GitHub answers that as not found.
+  defp not_found?(message),
+    do: message =~ "Not Found" or message =~ ~s("status":"404") or message =~ "HTTP 404"
+
+  @impl true
   def ticket_history(project, key, options \\ []) do
     result =
       case options[:pages] do

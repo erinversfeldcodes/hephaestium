@@ -136,9 +136,18 @@ defmodule ControlPlane.Gaps do
   closes, and which have had no step since that verdict.
   """
   @spec reopened() :: [result()]
-  def reopened do
-    (Application.get_env(:control_plane, :settle)[:closures] || [])
-    |> Workloads.evaluations()
+  def reopened, do: reopened_among(Workloads.evaluations(setting(:closures)))
+
+  @doc "`reopened/0` for one ticket: what a reopening's webhook calls."
+  @spec reopened(String.t(), term()) :: [result()]
+  def reopened(repository, number) do
+    if repository in setting(:closures),
+      do: [repository] |> Workloads.evaluations() |> only(number) |> reopened_among(),
+      else: []
+  end
+
+  defp reopened_among(evaluations) do
+    evaluations
     |> Enum.group_by(&{&1.repository, &1.ticket_number})
     |> Enum.flat_map(fn {{repository, number}, evaluations} ->
       latest = List.last(evaluations)
@@ -200,9 +209,18 @@ defmodule ControlPlane.Gaps do
   Hephaestium's own was made after it ended.
   """
   @spec replies() :: [result()]
-  def replies do
-    (Application.get_env(:control_plane, :settle)[:completeness] || [])
-    |> Workloads.steps()
+  def replies, do: replies_among(Workloads.steps(setting(:completeness)))
+
+  @doc "`replies/0` for one ticket: what a comment's webhook calls."
+  @spec replies(String.t(), term()) :: [result()]
+  def replies(repository, number) do
+    if repository in setting(:completeness),
+      do: [repository] |> Workloads.steps() |> only(number) |> replies_among(),
+      else: []
+  end
+
+  defp replies_among(steps) do
+    steps
     |> Enum.group_by(&{&1.repository, &1.ticket_number})
     |> Enum.flat_map(fn {{repository, number}, steps} ->
       latest = List.last(steps)
@@ -210,6 +228,10 @@ defmodule ControlPlane.Gaps do
       if waiting?(latest), do: answered(repository, number, latest), else: []
     end)
   end
+
+  defp only(workloads, number), do: Enum.filter(workloads, &(&1.ticket_number == number))
+
+  defp setting(key), do: Application.get_env(:control_plane, :settle)[key] || []
 
   defp waiting?(%Workload{state: state}) when state in ["failed", "timed_out"], do: true
 

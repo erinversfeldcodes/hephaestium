@@ -20,12 +20,13 @@ defmodule ControlPlane.Intake do
     Prepush,
     Programs,
     Runner,
+    TicketLabels,
     Tickets,
     Tracker,
     Workloads
   }
 
-  @label "heph:ready"
+  @label TicketLabels.ready()
   @writers [:admin, :maintain, :write]
 
   @type result :: :started | :resumed | {:evaluating, String.t()} | {:skipped, term()}
@@ -41,6 +42,20 @@ defmodule ControlPlane.Intake do
 
       {:error, message} ->
         {:error, message}
+    end
+  end
+
+  @doc """
+  Check one approved ticket, and start a workload for it if the approval stands: what `run/1`
+  does for each ticket of a repository, for the one a webhook named. The ticket's state is
+  read here, never taken from the event, so a ticket closed since is left alone.
+  """
+  @spec ticket(String.t(), term()) :: result() | {:error, String.t()}
+  def ticket(repo, key) do
+    case Tracker.ticket(repo, key) do
+      {:ok, %{state: :open} = ticket} -> consider(repo, ticket)
+      {:ok, _closed} -> {:skipped, :ticket_closed}
+      {:error, message} -> {:error, message}
     end
   end
 

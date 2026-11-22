@@ -8,10 +8,18 @@ defmodule ControlPlane.Application do
     # What was in flight before this moment belonged to a control plane that stopped.
     started_at = DateTime.utc_now()
 
+    if ControlPlane.Webhooks.enabled?(), do: ControlPlane.Webhooks.check!()
+
+    oban =
+      ControlPlane.Schedule.oban(
+        Application.fetch_env!(:control_plane, Oban),
+        ControlPlane.Webhooks.enabled?()
+      )
+
     children = [
       ControlPlane.Repo,
       {Registry, keys: :unique, name: ControlPlane.RunnerRegistry},
-      {Oban, Application.fetch_env!(:control_plane, Oban)}
+      {Oban, oban}
     ]
 
     children = children ++ health_listener(Application.get_env(:control_plane, :health))
@@ -26,6 +34,9 @@ defmodule ControlPlane.Application do
           ControlPlane.Recovery.end_stale_jobs(started_at)
           ControlPlane.Ledger.backfill()
         end)
+
+        # A restart is when deliveries are lost: look at everything once.
+        ControlPlane.Webhooks.start_pass()
       end
 
       {:ok, supervisor}
