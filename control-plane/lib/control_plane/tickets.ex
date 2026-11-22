@@ -14,11 +14,13 @@ defmodule ControlPlane.Tickets do
 
   alias ControlPlane.{
     Account,
+    Amounts,
     CompletenessComment,
     Evaluations,
     Gaps,
     GitHub,
     PullRequestComments,
+    Spend,
     Workload
   }
 
@@ -26,6 +28,9 @@ defmodule ControlPlane.Tickets do
   @running "heph:running"
   @failed "heph:failed"
   @blocked "heph:blocked"
+
+  # The units a cost is in, in the order a person reads them: dollars, tokens, credits.
+  @units ["COST_UNIT_USD", "COST_UNIT_TOKENS", "COST_UNIT_CREDITS"]
 
   @doc """
   The workload has started: add the running label and then remove the ready one,
@@ -389,7 +394,8 @@ defmodule ControlPlane.Tickets do
       question(workload.state, record),
       account(workload),
       pull_request(record),
-      cost_section(record)
+      cost_section(record),
+      spend_section(workload)
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
@@ -440,6 +446,53 @@ defmodule ControlPlane.Tickets do
   defp pull_request(_), do: nil
 
   @doc """
+  What the ticket has spent, as the status comment says it: over all its workloads and by kind
+  of step, and for a ticket under an epic, what the epic has spent over its tickets. It reads
+  the ledger, which has the run that just ended, since a record is kept before the ticket is
+  told. Units are never added to each other. Nothing when nothing was spent.
+  """
+  @spec spend_section(%Workload{}) :: String.t() | nil
+  def spend_section(%Workload{repository: repository, ticket_number: number} = workload) do
+    ticket = Spend.ticket(repository, number)
+
+    if ticket.totals == %{} do
+      nil
+    else
+      [
+        "Spent on this ticket so far: #{Amounts.describe(ticket.totals)} across #{count(ticket.workloads, "workload")}.",
+        kinds(ticket.by_kind),
+        epic_spend(repository, workload)
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+    end
+  end
+
+  defp kinds(by_kind) do
+    parts =
+      for {kind, label} <- Spend.kinds(),
+          totals = by_kind[kind],
+          totals not in [nil, %{}],
+          do: "#{label} #{Amounts.describe(totals, " and ")}"
+
+    if parts == [], do: nil, else: "By kind of step: " <> Enum.join(parts, ", ")
+  end
+
+  defp epic_spend(repository, %Workload{workload: %{"ticket" => %{"parent" => parent}}}) do
+    with {epic, ""} when epic > 0 <- Integer.parse(to_string(parent)),
+         %{totals: totals} = rollup when totals != %{} <- Spend.epic(repository, epic) do
+      "Its epic ##{epic} has spent #{Amounts.describe(totals)} across #{count(length(rollup.tickets), "ticket")} so far."
+    else
+      _ -> nil
+    end
+  end
+
+  defp epic_spend(_repository, _workload), do: nil
+
+  defp count(1, noun), do: "1 #{noun}"
+  defp count(number, noun), do: "#{number} #{noun}s"
+
+  @doc """
   What a run spent, as the status comment says it: the total, and for a run that read its own
   change under lenses, what each kind of agent it started spent, so that what went on reading
   can be told apart from what went on the work. Units are never added to each other.
@@ -452,8 +505,6 @@ defmodule ControlPlane.Tickets do
       {total, parts} -> total <> "\n" <> parts
     end
   end
-
-  @units ["COST_UNIT_USD", "COST_UNIT_TOKENS", "COST_UNIT_CREDITS"]
 
   @step_kinds [
     {"KIND_IMPLEMENTATION", "the implementation"},
@@ -494,14 +545,8 @@ defmodule ControlPlane.Tickets do
     if parts == [], do: nil, else: "Cost, as the runtime reported it: #{Enum.join(parts, ", ")}"
   end
 
-  defp cost_part(%{"unit" => "COST_UNIT_USD", "amount" => amount}) when is_number(amount),
-    do: "$" <> :erlang.float_to_binary(amount * 1.0, decimals: 3)
-
-  defp cost_part(%{"unit" => "COST_UNIT_TOKENS", "amount" => amount}) when is_number(amount),
-    do: "#{trunc(amount)} tokens"
-
-  defp cost_part(%{"unit" => "COST_UNIT_CREDITS", "amount" => amount}) when is_number(amount),
-    do: "#{amount} credits"
+  defp cost_part(%{"unit" => "COST_UNIT_" <> unit, "amount" => amount}) when is_number(amount),
+    do: Amounts.format(String.downcase(unit), amount)
 
   defp cost_part(_), do: nil
 end
