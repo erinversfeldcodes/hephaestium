@@ -88,14 +88,19 @@ defmodule ControlPlane.StandIn do
   @doc """
   Whether the stand-in's process is still running. The process has to be the stand-in:
   a number that is another program's by now, and a process that has ended and not yet been
-  collected, are not it.
+  collected, are not it. A stand-in that was stopped before it wrote its pid, which a loaded
+  machine can do, was never running.
   """
   def running?(dir) do
-    pid = dir |> Path.join("pid.txt") |> File.read!() |> String.trim()
+    case dir |> Path.join("pid.txt") |> File.read() do
+      {:ok, pid} ->
+        case System.cmd("ps", ["-o", "command=", "-p", String.trim(pid)], stderr_to_stdout: true) do
+          {command, 0} -> String.contains?(command, Path.join(dir, "executor"))
+          _ -> false
+        end
 
-    case System.cmd("ps", ["-o", "command=", "-p", pid], stderr_to_stdout: true) do
-      {command, 0} -> String.contains?(command, Path.join(dir, "executor"))
-      _ -> false
+      {:error, :enoent} ->
+        false
     end
   end
 end
