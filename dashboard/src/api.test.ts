@@ -53,6 +53,116 @@ describe("the API client", () => {
     expect(init?.credentials).toBe("same-origin");
   });
 
+  describe("a question", () => {
+    const row = {
+      workload: "w-3",
+      repository: "o/r",
+      ticket: 12,
+      title: "T",
+      question: "Which database?",
+      asked_at: "2026-11-20T11:00:00Z",
+    };
+
+    it("is the one waiting for this ticket, read from the list of questions", async () => {
+      const fetcher = respond(200, { questions: [{ ...row, ticket: 7 }, row] });
+
+      expect(await createClient(fetcher).question("o/r", 12)).toEqual({
+        workload: "w-3",
+        repository: "o/r",
+        ticket: 12,
+        title: "T",
+        question: "Which database?",
+        askedAt: "2026-11-20T11:00:00Z",
+      });
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/questions");
+    });
+
+    it("is null when none waits for the ticket, and not mixed up with another repository's", async () => {
+      const fetcher = respond(200, { questions: [{ ...row, repository: "o/other" }] });
+
+      expect(await createClient(fetcher).question("o/r", 12)).toBeNull();
+    });
+
+    it("raises on a row that is not the shape promised", async () => {
+      await expect(
+        createClient(respond(200, { questions: [{ ...row, question: 3 }] })).question("o/r", 12),
+      ).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
+  describe("a reply", () => {
+    function exchange(post: Response): typeof fetch {
+      return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input) === "/api/csrf" && (init?.method ?? "GET") === "GET"
+          ? new Response(JSON.stringify({ csrfToken: "the-csrf-token" }), { status: 200 })
+          : post,
+      );
+    }
+
+    it("asks for a CSRF token and then posts the reply with it, to the ticket's own address and nowhere else", async () => {
+      const fetcher = exchange(new Response(JSON.stringify({ commented: true, approved: true }), { status: 200 }));
+
+      const result = await createClient(fetcher).reply("o/r", 12, "Use Postgres.");
+
+      expect(result).toEqual({ commented: true, approved: true, error: null });
+      const calls = vi.mocked(fetcher).mock.calls;
+      expect(calls.map(([url, init]) => `${init?.method ?? "GET"} ${String(url)}`)).toEqual([
+        "GET /api/csrf",
+        "POST /api/tickets/o/r/12/reply",
+      ]);
+      const [, init] = calls[1] ?? [];
+      expect(init?.credentials).toBe("same-origin");
+      expect(new Headers(init?.headers).get("x-csrf-token")).toBe("the-csrf-token");
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(JSON.parse(String(init?.body))).toEqual({ body: "Use Postgres." });
+    });
+
+    it("says what was done when the API refuses part of it, in the API's own words", async () => {
+      const refused = new Response(
+        JSON.stringify({ error: "GitHub refused the approval", commented: true, approved: false }),
+        { status: 403 },
+      );
+
+      expect(await createClient(exchange(refused)).reply("o/r", 12, "x")).toEqual({
+        commented: true,
+        approved: false,
+        error: "GitHub refused the approval",
+      });
+    });
+
+    it("says nothing was sent when the answer is not one it understands", async () => {
+      const result = await createClient(exchange(new Response("<html>", { status: 502 }))).reply("o/r", 12, "x");
+
+      expect(result).toEqual({
+        commented: false,
+        approved: false,
+        error: "The reply could not be sent, and nothing was changed.",
+      });
+    });
+
+    it("sends nothing when no CSRF token could be had", async () => {
+      const fetcher = vi.fn(async () => new Response("{}", { status: 401 }));
+
+      const result = await createClient(fetcher).reply("o/r", 12, "x");
+
+      expect(result).toMatchObject({ commented: false, approved: false });
+      expect(result.error).toContain("sign in");
+      expect(vi.mocked(fetcher)).toHaveBeenCalledTimes(1);
+    });
+
+    it("makes no other write: every call but that one POST is a GET", async () => {
+      const fetcher = exchange(new Response(JSON.stringify({ commented: true, approved: true }), { status: 200 }));
+      const client = createClient(fetcher);
+
+      await client.reply("o/r", 12, "x");
+      await client.question("o/r", 12).catch(() => null);
+      await client.tickets().catch(() => null);
+
+      const methods = vi.mocked(fetcher).mock.calls.map(([, init]) => init?.method ?? "GET");
+      expect(methods.filter((method) => method !== "GET")).toEqual(["POST"]);
+    });
+  });
+
   describe("tickets", () => {
     const row = {
       repository: "o/r",

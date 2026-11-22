@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { ApiError } from "./api";
-import { days, detail, fakeClient, summary } from "./fixtures";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import { ApiError, type ReplyResult } from "./api";
+import { days, detail, fakeClient, question, replied, summary } from "./fixtures";
 import { SpendPage } from "./views/SpendPage";
 import { TicketDetailPage } from "./views/TicketDetailPage";
 import { TicketListPage } from "./views/TicketListPage";
@@ -138,5 +139,116 @@ describe("spend", () => {
     render(<SpendPage client={fakeClient({ spendDays: async () => [] })} repository="o/r" />);
 
     expect(await screen.findByText("Nothing was spent in the last 14 days.")).toBeInTheDocument();
+  });
+});
+
+describe("a question waiting for a person", () => {
+  it("shows the question on the ticket page as text, and not as markup", async () => {
+    const asked = { ...question, question: "Use <b>Postgres</b>?\nOr SQLite?" };
+    render(<TicketDetailPage client={fakeClient({ question: async () => asked })} repository="o/r" number={12} />);
+
+    const panel = await screen.findByRole("region", { name: "Question" });
+    expect(panel).toHaveTextContent("Use <b>Postgres</b>?");
+    expect(panel.querySelector("b")).toBeNull();
+  });
+
+  it("shows no question, and no reply box, when none waits", async () => {
+    render(<TicketDetailPage client={fakeClient()} repository="o/r" number={12} />);
+
+    await screen.findByRole("region", { name: "Runs" });
+    expect(screen.queryByRole("region", { name: "Question" })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("does not send an empty reply", async () => {
+    render(<TicketDetailPage client={fakeClient({ question: async () => question })} repository="o/r" number={12} />);
+
+    expect(await screen.findByRole("button", { name: "Send answer" })).toBeDisabled();
+  });
+
+  it("sends the reply and says it was commented and approved as them", async () => {
+    const reply = vi.fn(async () => replied);
+    const user = userEvent.setup();
+    render(
+      <TicketDetailPage client={fakeClient({ question: async () => question, reply })} repository="o/r" number={12} />,
+    );
+
+    await user.type(await screen.findByRole("textbox", { name: "Your answer" }), "Use Postgres.");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+
+    expect(reply).toHaveBeenCalledExactlyOnceWith("erinversfeldcodes/gazebolang", 12, "Use Postgres.");
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Your answer was posted on the ticket, and you approved it again as yourself.",
+    );
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("sends once however many times the button is pressed while it is sending", async () => {
+    let finish: (result: ReplyResult) => void = () => undefined;
+    const reply = vi.fn(() => new Promise<ReplyResult>((resolve) => (finish = resolve)));
+    const user = userEvent.setup();
+    render(
+      <TicketDetailPage client={fakeClient({ question: async () => question, reply })} repository="o/r" number={12} />,
+    );
+
+    await user.type(await screen.findByRole("textbox", { name: "Your answer" }), "Yes");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    await user.click(screen.getByRole("button", { name: "Sending" }));
+
+    expect(reply).toHaveBeenCalledTimes(1);
+    finish(replied);
+    await screen.findByRole("status");
+  });
+
+  it("says nothing was sent when the person may not write, and keeps what they typed", async () => {
+    const refused: ReplyResult = {
+      commented: false,
+      approved: false,
+      error: "you need write access to this repository to answer; nothing was sent",
+    };
+    const user = userEvent.setup();
+    render(
+      <TicketDetailPage
+        client={fakeClient({ question: async () => question, reply: async () => refused })}
+        repository="o/r"
+        number={12}
+      />,
+    );
+
+    await user.type(await screen.findByRole("textbox", { name: "Your answer" }), "Use Postgres.");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("you need write access");
+    expect(screen.getByRole("textbox", { name: "Your answer" })).toHaveValue("Use Postgres.");
+  });
+
+  it("says that the comment was made and the approval was not, when only that half went", async () => {
+    const half: ReplyResult = { commented: true, approved: false, error: "GitHub refused the approval" };
+    const user = userEvent.setup();
+    render(
+      <TicketDetailPage
+        client={fakeClient({ question: async () => question, reply: async () => half })}
+        repository="o/r"
+        number={12}
+      />,
+    );
+
+    await user.type(await screen.findByRole("textbox", { name: "Your answer" }), "x");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your comment was posted but the ticket is not approved");
+  });
+
+  it("is quiet when the question cannot be read: the rest of the page still shows", async () => {
+    render(
+      <TicketDetailPage
+        client={fakeClient({ question: async () => Promise.reject(new ApiError(500, "x")) })}
+        repository="o/r"
+        number={12}
+      />,
+    );
+
+    expect(await screen.findByRole("region", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
   });
 });
