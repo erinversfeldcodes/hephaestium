@@ -20,7 +20,6 @@ defmodule ControlPlane.WebhookHandlersTest do
 
   @repo W.repository()
   @approved_at "2026-11-18T07:00:00Z"
-  @pr_url "https://github.com/#{@repo}/pull/52"
   @now ~U[2026-11-22 09:00:00Z]
 
   setup do
@@ -86,7 +85,7 @@ defmodule ControlPlane.WebhookHandlersTest do
     Workloads.get(id)
   end
 
-  defp settled(number \\ 52) do
+  defp settled(number) do
     w = awaiting(number)
     Workloads.settle(w.id)
     Workloads.get(w.id)
@@ -553,7 +552,8 @@ defmodule ControlPlane.WebhookHandlersTest do
              kind: :labeled,
              label: "heph:ready",
              actor: "maint",
-             at: ~U[2026-11-18 07:00:00Z]
+             at: ~U[2026-11-18 07:00:00Z],
+             at_text: @approved_at
            }
          ]}
       )

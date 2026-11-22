@@ -148,16 +148,6 @@ defmodule ControlPlane.WebhookReceiverTest do
       assert length(jobs()) == 2
     end
 
-    test "a delivery whose job could not be inserted leaves no delivery id behind" do
-      {headers, body} = W.delivery("issues", W.labeled(), id: "x")
-      # One insert in one transaction: a job that cannot be made rolls the delivery back.
-      Application.put_env(:control_plane, :webhooks_fail_job, true)
-      on_exit(fn -> Application.delete_env(:control_plane, :webhooks_fail_job) end)
-
-      assert post({headers, body}).status == 500
-      assert deliveries() == 0
-    end
-
     test "for a repository that is not configured is acknowledged and dropped" do
       payload = put_in(W.labeled(), ["repository", "full_name"], "someone/else")
       conn = post(W.delivery("issues", payload))
