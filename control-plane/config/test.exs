@@ -3,7 +3,9 @@ import Config
 # A database of its own, so that a test run never touches anything else on the
 # machine's Postgres. CI gives the connection through DATABASE_URL.
 config :control_plane, ControlPlane.Repo,
-  database: "hephaestium_test",
+  # MIX_TEST_PARTITION gives a run a database of its own, so that tests run at the same time (two
+  # agents, two worktrees) do not delete each other's rows.
+  database: "hephaestium_test#{System.get_env("MIX_TEST_PARTITION")}",
   hostname: "localhost",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10
