@@ -57,6 +57,8 @@ defmodule ControlPlane.StandInTracker do
   @impl true
   def block_ticket(p, k, b), do: S.ask(:tracker, :block_ticket, [p, k, b])
   @impl true
+  def ensure_labels(p, l), do: S.ask(:tracker, :ensure_labels, [p, l])
+  @impl true
   def add_label(p, k, l), do: S.ask(:tracker, :add_label, [p, k, l])
   @impl true
   def remove_label(p, k, l), do: S.ask(:tracker, :remove_label, [p, k, l])

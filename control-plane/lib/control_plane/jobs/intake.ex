@@ -8,7 +8,7 @@ defmodule ControlPlane.Jobs.Intake do
 
   require Logger
 
-  alias ControlPlane.Intake
+  alias ControlPlane.{Intake, TicketLabels}
 
   @impl Oban.Worker
   def perform(_job) do
@@ -16,6 +16,8 @@ defmodule ControlPlane.Jobs.Intake do
       Application.get_env(:control_plane, :intake, []) |> Keyword.get(:repositories, [])
 
     for repository <- repositories do
+      TicketLabels.ensure_once(repository)
+
       case Intake.run(repository) do
         {:error, message} ->
           Logger.warning("intake of #{repository}: #{message}")
