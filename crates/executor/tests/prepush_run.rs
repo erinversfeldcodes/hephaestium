@@ -185,6 +185,20 @@ fn a_change_every_lens_approves_is_pushed_once_with_a_step_for_each_agent() {
     assert_eq!(finished(&went.ran.events()).0, Outcome::Completed);
     assert_eq!(went.starts, 2, "the implementing agent and one reader");
     assert_eq!(pushed(&went), [BRANCH]);
+    let names = kinds(&went.ran.events());
+    assert_eq!(
+        &names[names.len() - 3..],
+        ["delivery_began", "pull_request_opened", "finished"],
+        "said once, after the reading and before the push: {names:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| **name == "delivery_began")
+            .count(),
+        1,
+        "{names:?}"
+    );
     assert_eq!(
         git(
             &went.source,
@@ -292,6 +306,10 @@ fn rounds_used_up_with_a_lens_still_blocking_pushes_nothing_and_says_what_was_fo
         "the workspace is kept to be looked at"
     );
     assert!(!kinds(&went.ran.events()).contains(&"pull_request_opened"));
+    assert!(
+        !kinds(&went.ran.events()).contains(&"delivery_began"),
+        "a run that pushes nothing never says delivery began"
+    );
 }
 
 #[test]

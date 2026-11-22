@@ -163,6 +163,18 @@ if the workload completed and 1 if it ended any other way. Interrupting it (Ctrl
 termination signal) stops the agent and everything it started, and the run ends
 `cancelled`, with its record written.
 
+`heph worker --control-plane URL` is the same run for a control plane that is hosted
+somewhere else (the control plane's README says how to turn that on). The worker opens every
+connection and listens on none: it asks for a workload approved by you, runs the executor on it
+exactly as `heph run` does, sends the executor's events and then its record back, and asks
+again. Your model keys, your GitHub token and the repository's scripts stay on this machine; the
+executor takes secrets out of every event it writes, and the worker sends only what the
+executor wrote. The device token you copy from the control plane is `HEPH_WORKER_TOKEN`, or
+`HEPH_WORKER_TOKEN_FILE`, or `~/.config/hephaestium/worker-token` (mode 600), never an argument.
+If the connection drops it tries again with growing waits; a workload the control plane takes
+back is stopped at once; Ctrl-C or a termination signal stops the executor, sends how it ended
+and exits. Plain `http` is accepted only to this machine.
+
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of

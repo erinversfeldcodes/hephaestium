@@ -255,6 +255,128 @@ fn a_push_that_is_rejected_fails_the_workload_and_no_pull_request_is_opened() {
 }
 
 #[test]
+fn delivery_is_announced_once_right_before_the_push() {
+    let (ran, _, _) = run(
+        rig("deliver-began", &manifest(&[])),
+        &agent_script("printf 'complete\\n' > .heph-resolution;"),
+        true,
+        0,
+        &IDENTITY,
+    );
+
+    let names = kinds(&ran.events());
+    assert_eq!(
+        &names[names.len() - 3..],
+        ["delivery_began", "pull_request_opened", "finished"],
+        "{names:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| **name == "delivery_began")
+            .count(),
+        1,
+        "{names:?}"
+    );
+}
+
+#[test]
+fn delivery_has_been_announced_by_the_time_the_push_arrives() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::process::Stdio;
+
+    let rig = rig("deliver-began-before-push", &manifest(&[]));
+    let live = rig.scratch.path("events-live.jsonl");
+    let at_push = rig.scratch.path("events-at-push.jsonl");
+    // The receiving repository keeps a copy of what the executor had said when the push arrived.
+    let hook = rig.source.join(".git/hooks/pre-receive");
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\ncp {} {}\n", live.display(), at_push.display()),
+    )
+    .expect("a hook");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let gh = common::stand_in_gh(&rig.scratch, 0);
+    let agent = agent_script("printf 'complete\\n' > .heph-resolution;");
+    let mut command = common::command_for(
+        &rig.scratch,
+        &common::workload(&rig.commit),
+        None,
+        &[
+            "--agent-command",
+            &json!(["sh", "-c", agent]).to_string(),
+            "--gh",
+            &gh.display().to_string(),
+            "--deliver",
+        ],
+        &IDENTITY,
+    );
+    let status = command
+        .stdout(Stdio::from(std::fs::File::create(&live).expect("a file")))
+        .stderr(Stdio::null())
+        .status()
+        .expect("the executor to run");
+    assert!(status.success());
+
+    let said = std::fs::read_to_string(&at_push).expect("the push reached the repository");
+    assert!(
+        said.contains("deliveryBegan"),
+        "the push arrived before delivery was announced: {said}"
+    );
+}
+
+#[test]
+fn delivery_is_announced_even_when_the_push_is_then_rejected() {
+    // The push may have reached the host before it failed, so what was said before it stands.
+    let rig = rig("deliver-began-rejected", &manifest(&[]));
+    git(&rig.source, &["switch", "-q", "-c", BRANCH]);
+    std::fs::write(rig.source.join("other.txt"), "someone else's\n").expect("a file");
+    git(&rig.source, &["add", "."]);
+    git(&rig.source, &["commit", "-q", "-m", "other"]);
+    git(&rig.source, &["switch", "-q", "main"]);
+
+    let (ran, _, _) = run(rig, &agent_script(""), true, 0, &IDENTITY);
+
+    let names = kinds(&ran.events());
+    assert_eq!(
+        &names[names.len() - 2..],
+        ["delivery_began", "finished"],
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_run_that_does_not_deliver_never_announces_delivery() {
+    let (ran, _, _) = run(
+        rig("deliver-began-off", &manifest(&[])),
+        &agent_script(""),
+        false,
+        0,
+        &IDENTITY,
+    );
+
+    let names = kinds(&ran.events());
+    assert!(!names.contains(&"delivery_began"), "{names:?}");
+}
+
+#[test]
+fn a_run_that_fails_before_the_push_never_announces_delivery() {
+    let text = manifest(&[])
+        + "\n[gates.fails]\nrun = [\"sh\", \"-c\", \"exit 1\"]\ntimeout_seconds = 30\n";
+    let (ran, _, _) = run(
+        rig("deliver-began-gate", &text),
+        &agent_script(""),
+        true,
+        0,
+        &IDENTITY,
+    );
+
+    let names = kinds(&ran.events());
+    assert!(!names.contains(&"delivery_began"), "{names:?}");
+}
+
+#[test]
 fn a_pull_request_that_cannot_be_opened_fails_the_workload() {
     let (ran, source, _) = run(
         rig("deliver-gh-fails", &manifest(&[])),
