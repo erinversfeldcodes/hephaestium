@@ -153,6 +153,27 @@ describe("the API client", () => {
     });
   });
 
+  describe("what an agent said in a run", () => {
+    it("reads the account and the question from the run's own route", async () => {
+      const fetcher = respond(200, { workload: "w-1", account: "It is in a.ex.", question: "Which one?" });
+      const client = createClient(fetcher);
+
+      expect(await client.agentText("w-1")).toEqual({ account: "It is in a.ex.", question: "Which one?" });
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/workloads/w-1/account");
+    });
+
+    it("has neither when the run said nothing and asked nothing", async () => {
+      const client = createClient(respond(200, { workload: "w-1", account: null, question: null }));
+
+      expect(await client.agentText("w-1")).toEqual({ account: null, question: null });
+    });
+
+    it("raises on 401 and on a shape not promised", async () => {
+      await expect(createClient(respond(401, {})).agentText("w-1")).rejects.toMatchObject({ status: 401 });
+      await expect(createClient(respond(200, { account: 7 })).agentText("w-1")).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
   describe("spend by day", () => {
     it("reads the days for a repository, with the repository and the days in the request", async () => {
       const fetcher = respond(200, { days: [{ day: "2026-11-20", totals: { usd: 1, tokens: 5 } }] });

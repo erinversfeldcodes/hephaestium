@@ -4,7 +4,8 @@
 //
 // What the API answers is checked as it is read: a body that is not the shape promised is an
 // error, never a half-built value for a page to trip over. A workload's `reason` is not read
-// at all, since it can carry what an agent said, which the dashboard does not show yet.
+// at all, since it can carry what an agent said. What an agent said is read from its own route,
+// and only when a person asks for it.
 
 export class ApiError extends Error {
   readonly status: number;
@@ -65,6 +66,12 @@ export interface SpendDay {
   readonly totals: Totals;
 }
 
+/** What an agent wrote in one run: its last message, and the question it stopped to ask. */
+export interface AgentText {
+  readonly account: string | null;
+  readonly question: string | null;
+}
+
 export interface Client {
   /** Who is signed in, or null when nobody is. Any other failure raises. */
   session(): Promise<Session | null>;
@@ -74,6 +81,8 @@ export interface Client {
   ticket(repository: string, number: number): Promise<TicketDetail | null>;
   /** What a repository spent on each of the last days, newest first. */
   spendDays(repository: string, days: number): Promise<readonly SpendDay[]>;
+  /** What the agent said in one run. It is asked for only when a person asks to read it. */
+  agentText(workloadId: string): Promise<AgentText>;
 }
 
 type Fetcher = typeof fetch;
@@ -108,6 +117,9 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
 
     spendDays: (repository, days) =>
       read(`/api/spend/days?repository=${encodeURIComponent(repository)}&days=${days}`, parseDays),
+
+    agentText: (workloadId) =>
+      read(`/api/workloads/${encodeURIComponent(workloadId)}/account`, parseAgentText),
   };
 }
 
@@ -200,6 +212,11 @@ function parseTicket(body: unknown): TicketDetail {
       workloads: count(spend["workloads"]),
     },
   };
+}
+
+function parseAgentText(body: unknown): AgentText {
+  const text_ = fields(body);
+  return { account: maybeText(text_["account"]), question: maybeText(text_["question"]) };
 }
 
 function parseDays(body: unknown): readonly SpendDay[] {

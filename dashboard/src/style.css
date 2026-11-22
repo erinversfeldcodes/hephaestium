@@ -42,3 +42,8 @@ td {
 .state[data-state="blocked"] {
   color: #b42318;
 }
+
+.agent-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

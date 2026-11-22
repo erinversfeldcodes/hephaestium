@@ -53,6 +53,7 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     tickets: async () => [summary],
     ticket: async () => detail,
     spendDays: async () => days,
+    agentText: async () => ({ account: null, question: null }),
     ...overrides,
   };
 }
