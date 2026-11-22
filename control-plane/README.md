@@ -112,6 +112,14 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   truncate. A ledger that could not be written does not fail keeping the record; when the control
   plane starts, every workload that has a record and no rows is written (that is also how the
   history before the ledger comes in).
+- Reading the ledger
+  ([ADR 0036](../docs/adr/0036-spend-is-kept-as-an-append-only-ledger-by-step-ticket-epic-and-branch.md)).
+  `ControlPlane.Spend` rolls it up by ticket (its totals, and what each kind of step spent), by
+  epic (its tickets, most spent first), by branch and by UTC day, each unit on its own and never
+  added to another. `mix spend --ticket N`, `--epic N`, `--branch NAME` or `--days N` prints them
+  (`--repo owner/name`, or the one repository configured). A ticket's status comment says what the
+  ticket has spent so far over all its workloads and by kind of step, including the run it reports,
+  and for a ticket under an epic, what the epic has spent over its tickets.
 - Reading a change before it is pushed
   ([ADR 0035](../docs/adr/0035-a-change-is-reviewed-locally-under-every-lens-and-pushed-only-when-each-has-approved-it.md)).
   For a repository whose reviews are asked for (below), a first run's workload and every
