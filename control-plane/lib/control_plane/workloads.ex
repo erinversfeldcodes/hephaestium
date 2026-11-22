@@ -99,6 +99,37 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc """
+  The branch the executor recorded when it opened the workload's pull request, or `nil` when
+  the record holds none (a pull request opened before the branch was recorded).
+  """
+  @spec recorded_branch(%Workload{}) :: String.t() | nil
+  def recorded_branch(%Workload{} = workload) do
+    case get_in(workload.record || %{}, ["pullRequest", "headBranch"]) do
+      branch when is_binary(branch) and branch != "" -> branch
+      _ -> nil
+    end
+  end
+
+  @legacy_prefix "heph/"
+
+  @doc """
+  Whether a change whose head is `head_ref` is the one this workload opened. The runtime's
+  own change is the one whose head is the branch the executor recorded, whatever the branch
+  is called: a person's change under a similar name is not it. A workload whose record holds
+  no branch (opened before one was recorded) falls back on the name the runtime always gave
+  then, which began `heph/`.
+  """
+  @spec runtime_branch?(%Workload{}, String.t() | nil) :: boolean()
+  def runtime_branch?(%Workload{} = workload, head_ref) do
+    head_ref = head_ref || ""
+
+    case recorded_branch(workload) do
+      nil -> String.starts_with?(head_ref, @legacy_prefix)
+      recorded -> head_ref == recorded
+    end
+  end
+
+  @doc """
   The settled workloads, in any repository, that opened a pull request, settled since the
   given time, the latest for each ticket.
   """

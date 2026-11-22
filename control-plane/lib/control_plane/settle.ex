@@ -298,8 +298,10 @@ defmodule ControlPlane.Settle do
       pull.mergeability == :unknown ->
         {:waiting, "GitHub has not worked out whether the pull request can be merged"}
 
-      not String.starts_with?(ref, "heph/") ->
-        not_merged("it is not a pull request the runtime made (heph/...)")
+      not Workloads.runtime_branch?(workload, ref) ->
+        not_merged(
+          "it is not a pull request the runtime made (its branch is not the one recorded)"
+        )
 
       pull.head_repository != workload.repository ->
         not_merged("its branch is in another repository")
@@ -680,8 +682,8 @@ defmodule ControlPlane.Settle do
       used(workload) >= revisions() ->
         :exhausted
 
-      not String.starts_with?(ref, "heph/") ->
-        {:no, "its branch #{inspect(ref)} is not one the runtime made (heph/...)"}
+      not Workloads.runtime_branch?(workload, ref) ->
+        {:no, "its branch #{inspect(ref)} is not the one the runtime recorded for it"}
 
       pull.head_repository != workload.repository ->
         {:no, "its branch is in another repository"}

@@ -161,6 +161,13 @@ defmodule ControlPlane.ResumeTest do
 
   defp writes(gh), do: StandInGitHub.writes(gh)
 
+  defp record_branch(workload, branch) do
+    Workloads.keep_record(
+      workload.id,
+      Map.put(workload.record, "pullRequest", %{"url" => @pr_url, "headBranch" => branch})
+    )
+  end
+
   defp settled?(id), do: Workloads.get(id).settled_at != nil
 
   defp count_workloads, do: Repo.aggregate(ControlPlane.Workload, :count)
@@ -339,6 +346,31 @@ defmodule ControlPlane.ResumeTest do
     })
 
     assert [%{result: {:skipped, :not_a_runtime_pull_request}}] = Run.run(@repo)
+  end
+
+  test "a pull request whose head is the recorded branch is resumed, whatever the branch is called",
+       %{gh: gh, original: original} do
+    record_branch(original, "feature/PROJ-12-a-ticket")
+
+    pull(gh, %{
+      "head" => %{
+        "sha" => @sha,
+        "ref" => "feature/PROJ-12-a-ticket",
+        "repo" => %{"full_name" => @repo}
+      }
+    })
+
+    assert [%{result: :resumed}] = Run.run(@repo)
+  end
+
+  test "a pull request with the old prefix but another recorded branch is not resumed", %{
+    gh: gh,
+    original: original
+  } do
+    record_branch(original, "feature/PROJ-12-a-ticket")
+
+    assert [%{result: {:skipped, :not_a_runtime_pull_request}}] = Run.run(@repo)
+    assert writes(gh) == []
   end
 
   test "a pull request from another repository is not resumed", %{gh: gh} do

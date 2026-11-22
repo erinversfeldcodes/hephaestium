@@ -74,7 +74,7 @@ defmodule ControlPlane.Intake do
       workload ->
         with {:ok, pull_number} <- pull_request_number(workload),
              {:ok, pull} <- fetch(CodeHost.change(repo, pull_number)) do
-          case resumable(repo, pull) do
+          case resumable(repo, workload, pull) do
             :ok -> {:ok, {:resume, workload, pull}}
             :evaluate -> {:ok, {:evaluate, workload}}
             {:skip, _} = skip -> skip
@@ -93,18 +93,18 @@ defmodule ControlPlane.Intake do
   # A pull request that merged leaves nothing to resume. For a repository that judges its
   # merged tickets, a re-approval asks for that judgement instead: whether the ticket the
   # pull request was for is finished, or what is still owed.
-  defp resumable(repo, %{merged: true}),
+  defp resumable(repo, _workload, %{merged: true}),
     do: if(Evaluations.enabled?(repo), do: :evaluate, else: {:skip, :pull_request_merged})
 
-  defp resumable(_repo, %{state: :closed}), do: {:skip, :pull_request_closed}
+  defp resumable(_repo, _workload, %{state: :closed}), do: {:skip, :pull_request_closed}
 
-  defp resumable(repo, %{state: :open} = change) do
-    if String.starts_with?(change.head_ref || "", "heph/") and change.head_repository == repo,
+  defp resumable(repo, workload, %{state: :open} = change) do
+    if Workloads.runtime_branch?(workload, change.head_ref) and change.head_repository == repo,
       do: :ok,
       else: {:skip, :not_a_runtime_pull_request}
   end
 
-  defp resumable(_repo, _pull), do: {:skip, :not_a_runtime_pull_request}
+  defp resumable(_repo, _workload, _pull), do: {:skip, :not_a_runtime_pull_request}
 
   defp act(:build, repo, ticket, approval) do
     number = ticket.key
