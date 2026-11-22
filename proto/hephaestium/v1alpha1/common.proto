@@ -15,3 +15,18 @@ enum CostUnit {
   // Credits, as a Snowflake account is charged.
   COST_UNIT_CREDITS = 3;
 }
+
+// How a count of tokens is made up, for a runtime that says. The total of a token cost stays
+// the total, and this is beside it and never instead of it: what a run cost is not the same as
+// how it was spent, because a cache read and an output token are billed very differently. A
+// runtime that reports no parts reports none, and an amount that is not tokens has none.
+message TokenBreakdown {
+  // Tokens the model read as the prompt, not served from a cache.
+  double input = 1;
+  // Tokens the model wrote.
+  double output = 2;
+  // Tokens written into a cache for later reads.
+  double cache_creation = 3;
+  // Tokens read back from a cache.
+  double cache_read = 4;
+}

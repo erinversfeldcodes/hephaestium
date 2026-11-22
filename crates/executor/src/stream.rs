@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::{
-    CostTotal, Event, Finished, GateRun, PullRequestOpened, RunRecord, SkillLoaded, Workload,
+    CostTotal, Event, Finished, GateRun, PullRequestOpened, RunRecord, SkillLoaded, TokenBreakdown,
+    Workload,
 };
 use pbjson_types::Timestamp;
 
@@ -31,6 +32,28 @@ pub fn kind_name(kind: &Kind) -> &'static str {
     }
 }
 
+/// What has been spent in one unit from one source: the amount, and for tokens the parts of it
+/// that were given. When only some of the events gave parts, the parts are theirs alone and do
+/// not add up to the amount, and they are never made up for the ones that did not.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Spent {
+    pub amount: f64,
+    pub breakdown: Option<TokenBreakdown>,
+}
+
+impl Spent {
+    fn add(&mut self, cost: &contracts::v1alpha1::Cost) {
+        self.amount += cost.amount;
+        if let Some(parts) = &cost.breakdown {
+            let total = self.breakdown.get_or_insert_with(TokenBreakdown::default);
+            total.input += parts.input;
+            total.output += parts.output;
+            total.cache_creation += parts.cache_creation;
+            total.cache_read += parts.cache_read;
+        }
+    }
+}
+
 /// Writes a workload's events, one JSON object to a line, and keeps what the
 /// run record needs.
 ///
@@ -45,7 +68,7 @@ pub struct Stream<'a, W: Write> {
     // Totalled for each unit and source and never across them: dollars, tokens
     // and credits are different things, and so are what a runtime reported and
     // what was estimated.
-    costs: BTreeMap<(i32, i32), f64>,
+    costs: BTreeMap<(i32, i32), Spent>,
     skills: Vec<SkillLoaded>,
     gates: Vec<GateRun>,
     pull_request: Option<PullRequestOpened>,
@@ -69,7 +92,7 @@ impl<'a, W: Write> Stream<'a, W> {
     /// What has been spent so far, for each unit and source, so that what a step spent is
     /// the difference between two looks.
     #[must_use]
-    pub fn costs(&self) -> &BTreeMap<(i32, i32), f64> {
+    pub fn costs(&self) -> &BTreeMap<(i32, i32), Spent> {
         &self.costs
     }
 
@@ -82,7 +105,10 @@ impl<'a, W: Write> Stream<'a, W> {
         let time = self.now();
         match &kind {
             Kind::Cost(cost) => {
-                *self.costs.entry((cost.unit, cost.source)).or_insert(0.0) += cost.amount;
+                self.costs
+                    .entry((cost.unit, cost.source))
+                    .or_default()
+                    .add(cost);
             }
             Kind::SkillLoaded(skill) => self.skills.push(skill.clone()),
             Kind::PullRequestOpened(pr) => self.pull_request = Some(pr.clone()),
@@ -155,10 +181,11 @@ impl<'a, W: Write> Stream<'a, W> {
             costs: self
                 .costs
                 .into_iter()
-                .map(|((unit, source), amount)| CostTotal {
+                .map(|((unit, source), spent)| CostTotal {
                     unit,
-                    amount,
+                    amount: spent.amount,
                     source,
+                    breakdown: spent.breakdown,
                 })
                 .collect(),
             skills: self.skills,

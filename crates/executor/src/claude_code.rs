@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::{
-    AgentMessage, Cost, CostUnit, LaunchPlan, ToolCall, ToolResult, Workload, cost,
+    AgentMessage, Cost, CostUnit, LaunchPlan, TokenBreakdown, ToolCall, ToolResult, Workload, cost,
 };
 use serde_json::{Value, json};
 
@@ -332,7 +332,7 @@ fn text_of(content: &Value) -> String {
 fn result(value: &Value) -> Vec<Kind> {
     let mut costs = Vec::new();
     if let Some(dollars) = value["total_cost_usd"].as_f64() {
-        costs.push(cost_of(CostUnit::Usd, dollars));
+        costs.push(cost_of(CostUnit::Usd, dollars, None));
     }
     let usage = &value["usage"];
     let counts = [
@@ -342,19 +342,25 @@ fn result(value: &Value) -> Vec<Kind> {
         "output_tokens",
     ];
     if counts.iter().any(|name| usage[*name].is_number()) {
-        let tokens: f64 = counts
-            .iter()
-            .map(|name| usage[*name].as_f64().unwrap_or(0.0))
-            .sum();
-        costs.push(cost_of(CostUnit::Tokens, tokens));
+        let count = |name: &str| usage[name].as_f64().unwrap_or(0.0);
+        let parts = TokenBreakdown {
+            input: count("input_tokens"),
+            output: count("output_tokens"),
+            cache_creation: count("cache_creation_input_tokens"),
+            cache_read: count("cache_read_input_tokens"),
+        };
+        // The total is what it always was, and the parts the runtime gave are beside it.
+        let tokens = parts.input + parts.output + parts.cache_creation + parts.cache_read;
+        costs.push(cost_of(CostUnit::Tokens, tokens, Some(parts)));
     }
     costs
 }
 
-fn cost_of(unit: CostUnit, amount: f64) -> Kind {
+fn cost_of(unit: CostUnit, amount: f64, breakdown: Option<TokenBreakdown>) -> Kind {
     Kind::Cost(Cost {
         unit: unit as i32,
         amount,
         source: cost::Source::ReportedByRuntime as i32,
+        breakdown,
     })
 }

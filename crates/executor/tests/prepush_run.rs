@@ -685,3 +685,108 @@ fn a_gate_that_fails_is_not_given_to_the_agent_when_the_run_reads_nothing_before
     assert_eq!(outcome, Outcome::Failed, "{reason}");
     assert_eq!(went.starts, 1, "the run ended, as it did before");
 }
+
+fn token_cost(amount: f64, parts: Option<[f64; 4]>) -> String {
+    let mut cost = json!({"unit": "COST_UNIT_TOKENS", "amount": amount, "source": "SOURCE_REPORTED_BY_RUNTIME"});
+    if let Some([input, output, creation, read]) = parts {
+        cost["breakdown"] =
+            json!({"input": input, "output": output, "cacheCreation": creation, "cacheRead": read});
+    }
+    format!("echo '{}'", json!({ "cost": cost }))
+}
+
+#[test]
+fn the_parts_of_a_token_cost_are_summed_in_the_record_and_each_step_carries_only_its_own() {
+    let went = go(
+        setup("parts-summed"),
+        &[
+            format!(
+                "{}; {}; {}",
+                token_cost(100.0, Some([10.0, 20.0, 30.0, 40.0])),
+                token_cost(50.0, Some([5.0, 5.0, 10.0, 30.0])),
+                implements("v1")
+            ),
+            format!(
+                "{}; {}",
+                token_cost(200.0, Some([20.0, 40.0, 60.0, 80.0])),
+                reads("rust", "approved", None)
+            ),
+        ],
+        |value| {
+            // Tokens are the unit of this run's budget, so nothing here is dollars.
+            value["limits"]["budget"]["unit"] = json!("COST_UNIT_TOKENS");
+            value["limits"]["budget"]["amount"] = json!(1_000_000.0);
+        },
+        true,
+    );
+
+    assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
+    let record = went.ran.record();
+
+    let total = record
+        .costs
+        .iter()
+        .find(|c| c.unit == contracts::v1alpha1::CostUnit::Tokens as i32)
+        .expect("a token total");
+    assert!((total.amount - 350.0).abs() < 1e-9, "{}", total.amount);
+    let parts = total.breakdown.as_ref().expect("the parts, summed");
+    assert!((parts.input - 35.0).abs() < 1e-9, "{parts:?}");
+    assert!((parts.output - 65.0).abs() < 1e-9, "{parts:?}");
+    assert!((parts.cache_creation - 100.0).abs() < 1e-9, "{parts:?}");
+    assert!((parts.cache_read - 150.0).abs() < 1e-9, "{parts:?}");
+    let sum = parts.input + parts.output + parts.cache_creation + parts.cache_read;
+    assert!(
+        (sum - total.amount).abs() < 1e-9,
+        "the parts add up to the total"
+    );
+
+    // The implementation's step holds its two events' parts; the reader's holds its own.
+    let implementation = record.steps[0].costs[0]
+        .breakdown
+        .as_ref()
+        .expect("its parts");
+    assert!(
+        (implementation.cache_read - 70.0).abs() < 1e-9,
+        "{implementation:?}"
+    );
+    let reading = record.steps[1].costs[0]
+        .breakdown
+        .as_ref()
+        .expect("its parts");
+    assert!((reading.cache_read - 80.0).abs() < 1e-9, "{reading:?}");
+    assert!((reading.input - 20.0).abs() < 1e-9, "{reading:?}");
+}
+
+#[test]
+fn a_run_whose_runtime_gave_no_parts_has_none_and_one_that_gave_some_of_them_does_not_claim_all() {
+    let went = go(
+        setup("parts-missing"),
+        &[
+            format!("{}; {}", token_cost(100.0, None), implements("v1")),
+            format!(
+                "{}; {}",
+                token_cost(50.0, Some([5.0, 5.0, 10.0, 30.0])),
+                reads("rust", "approved", None)
+            ),
+        ],
+        |value| {
+            value["limits"]["budget"]["unit"] = json!("COST_UNIT_TOKENS");
+            value["limits"]["budget"]["amount"] = json!(1_000_000.0);
+        },
+        true,
+    );
+
+    let record = went.ran.record();
+    assert!(
+        record.steps[0].costs[0].breakdown.is_none(),
+        "a step whose runtime gave no parts has none"
+    );
+    let total = &record.costs[0];
+    assert!((total.amount - 150.0).abs() < 1e-9, "{}", total.amount);
+    let parts = total.breakdown.as_ref().expect("the parts there were");
+    let sum = parts.input + parts.output + parts.cache_creation + parts.cache_read;
+    assert!(
+        (sum - 50.0).abs() < 1e-9,
+        "only what was given, and no more: {sum}"
+    );
+}

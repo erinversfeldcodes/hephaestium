@@ -123,4 +123,8 @@ message CostTotal {
   CostUnit unit = 1;
   double amount = 2;
   Cost.Source source = 3;
+  // For tokens: the parts summed over the events that gave them. Unset when none did. When
+  // only some of the events gave parts, the parts are theirs alone and do not add up to the
+  // amount.
+  TokenBreakdown breakdown = 4;
 }

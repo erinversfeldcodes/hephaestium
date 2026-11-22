@@ -1,0 +1,1 @@
+{ "workloadId": "0d7a1c3e-6f2b-4b8a-9a31-2f6c9e1d4b55", "sequence": "9", "time": "2026-11-17T12:09:02Z", "cost": { "unit": "COST_UNIT_TOKENS", "amount": 412880, "source": "SOURCE_REPORTED_BY_RUNTIME", "breakdown": { "input": 1200, "output": 5680, "cacheCreation": 40000, "cacheRead": 366000 } } }

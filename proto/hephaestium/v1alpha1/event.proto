@@ -106,6 +106,9 @@ message Cost {
   CostUnit unit = 1;
   double amount = 2;
   Source source = 3;
+  // For an amount of tokens, what the runtime said they were made up of. Unset when it did not
+  // say. When set, the parts add up to the amount.
+  TokenBreakdown breakdown = 4;
 }
 
 // The executor is alive. It carries nothing; its arrival is the message.
