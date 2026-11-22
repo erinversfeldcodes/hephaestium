@@ -176,11 +176,13 @@ defmodule ControlPlane.RevisionAccountTest do
     refute body =~ "The agent's account"
   end
 
-  test "a workload that is not a revision gets no account", %{gh: gh, id: id} do
+  # A first run that failed does show its account (see first_run_account_test.exs); one that
+  # completed has its account on its pull request, so the ticket's comment has none.
+  test "a first run that completed gets no account on the ticket", %{gh: gh, id: id} do
     {:ok, _} = Events.append(id, event(id, 1, started()))
     {:ok, _} = Events.append(id, event(id, 2, agent_message("I did the work.")))
-    {:ok, _} = Events.append(id, event(id, 3, finished("OUTCOME_FAILED", "gate test failed")))
-    Workloads.keep_record(id, %{"outcome" => "OUTCOME_FAILED"})
+    {:ok, _} = Events.append(id, event(id, 3, finished("OUTCOME_COMPLETED", "")))
+    Workloads.keep_record(id, %{"outcome" => "OUTCOME_COMPLETED"})
 
     assert :ok = Tickets.ended(Workloads.get(id))
 
