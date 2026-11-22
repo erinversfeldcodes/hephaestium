@@ -38,6 +38,10 @@ defmodule ControlPlane.Settle do
 
   @good ["success", "skipped", "neutral"]
 
+  def one(_workload), do: raise("not built")
+  def stale(_repository), do: raise("not built")
+  def keep_current(_workload), do: raise("not built")
+
   @doc "Look at every workload awaiting settlement. Returns what became of each."
   @spec run() :: [%{workload_id: String.t(), result: term()}]
   def run do

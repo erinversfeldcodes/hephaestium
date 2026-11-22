@@ -151,6 +151,9 @@ defmodule ControlPlane.Evaluations do
     |> Enum.flat_map(&look_for_merge/1)
   end
 
+  def merged_workload(_workload), do: raise("not built")
+  def roll_up_parent(_repository, _parent), do: raise("not built")
+
   defp look_for_merge(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload) do
       case CodeHost.change(workload.repository, number) do

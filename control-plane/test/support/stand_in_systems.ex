@@ -41,6 +41,8 @@ defmodule ControlPlane.StandInTracker do
   @impl true
   def ticket(p, k), do: S.ask(:tracker, :ticket, [p, k])
   @impl true
+  def parent(p, k), do: S.ask(:tracker, :parent, [p, k])
+  @impl true
   def ticket_history(p, k, o), do: S.ask(:tracker, :ticket_history, [p, k, o])
   @impl true
   def ticket_edits(p, k), do: S.ask(:tracker, :ticket_edits, [p, k])

@@ -46,6 +46,9 @@ defmodule ControlPlane.GitHub.Tracker do
   end
 
   @impl true
+  def parent(_project, _key), do: raise("not built")
+
+  @impl true
   def ticket_history(project, key, options \\ []) do
     result =
       case options[:pages] do

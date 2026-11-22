@@ -44,6 +44,8 @@ defmodule ControlPlane.Intake do
     end
   end
 
+  def ticket(_repo, _key), do: raise("not built")
+
   defp consider(repo, ticket) do
     number = ticket.key
 

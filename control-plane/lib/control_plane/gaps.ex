@@ -211,6 +211,9 @@ defmodule ControlPlane.Gaps do
     end)
   end
 
+  def replies(_repository, _number), do: raise("not built")
+  def reopened(_repository, _number), do: raise("not built")
+
   defp waiting?(%Workload{state: state}) when state in ["failed", "timed_out"], do: true
 
   defp waiting?(%Workload{state: "completed", record: %{"gap" => %{"step" => "question"}}}),

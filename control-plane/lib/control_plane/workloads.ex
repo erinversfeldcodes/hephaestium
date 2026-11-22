@@ -208,6 +208,8 @@ defmodule ControlPlane.Workloads do
     )
   end
 
+  def for_change(_repository, _number), do: raise("not built")
+
   @doc "A workload, or nil."
   @spec get(Ecto.UUID.t()) :: %Workload{} | nil
   def get(id), do: Repo.get(Workload, id)
