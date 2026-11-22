@@ -15,7 +15,7 @@ defmodule ControlPlane.Prepush do
   its own and never is, so that nothing a first round produced reaches it.
   """
 
-  alias ControlPlane.{GitHub, Reviews}
+  alias ControlPlane.{CodeHost, Reviews}
 
   @athenaeum "erinversfeldcodes/athenaeum"
   @default_rounds 2
@@ -77,9 +77,7 @@ defmodule ControlPlane.Prepush do
     with {:ok, packs} <- Reviews.pack_names(ref) do
       results =
         for pack <- packs do
-          endpoint = "repos/#{@athenaeum}/contents/packs/#{pack}/review.md?ref=#{ref}"
-
-          case GitHub.raw(endpoint) do
+          case CodeHost.file(@athenaeum, "packs/#{pack}/review.md", ref) do
             {:ok, text} -> {:ok, %{"pack" => pack, "document" => text}}
             {:error, message} -> if message =~ "404", do: :none, else: {:error, pack, message}
           end

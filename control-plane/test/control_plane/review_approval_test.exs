@@ -88,7 +88,7 @@ defmodule ControlPlane.ReviewApprovalTest do
     )
 
     StandInGitHub.respond(gh, @reviews, [])
-    {:ok, _} = Reviews.request(Workloads.get(id), pull_map(), "52")
+    {:ok, _} = Reviews.request(Workloads.get(id), pull_map()["head"]["sha"], "52")
     %{gh: gh, id: id}
   end
 
@@ -380,7 +380,10 @@ defmodule ControlPlane.ReviewApprovalTest do
       )
 
       Repo.delete_all(from(w in Workload, where: w.parent_id == ^id))
-      assert {:ok, %{missing: ["typescript"]}} = Reviews.request(Workloads.get(id), pull(), "52")
+
+      assert {:ok, %{missing: ["typescript"]}} =
+               Reviews.request(Workloads.get(id), pull()["head"]["sha"], "52")
+
       approve(id, Enum.take(@packs, 4))
 
       assert {:failed, ["typescript"], _} = result(id)
@@ -424,7 +427,7 @@ defmodule ControlPlane.ReviewApprovalTest do
           do: lens(gh, pack, "---\nname: #{pack}\nblocking: false\n---\nthe lens")
 
       Repo.delete_all(from(w in Workload, where: w.parent_id == ^id))
-      {:ok, _} = Reviews.request(Workloads.get(id), pull(), "52")
+      {:ok, _} = Reviews.request(Workloads.get(id), pull()["head"]["sha"], "52")
       ended(id, "typescript", "completed", said("typescript", "needs_revision", [finding(true)]))
 
       assert {:revising, 1} = result(id)
@@ -436,7 +439,7 @@ defmodule ControlPlane.ReviewApprovalTest do
     test "does not stop the approval whatever it said", %{gh: gh, id: id} do
       lens(gh, "sql", "---\nname: sql\nblocking: false\n---\nthe lens")
       Repo.delete_all(from(w in Workload, where: w.parent_id == ^id))
-      {:ok, _} = Reviews.request(Workloads.get(id), pull(), "52")
+      {:ok, _} = Reviews.request(Workloads.get(id), pull()["head"]["sha"], "52")
 
       approve(id, Enum.reject(@packs, &(&1 == "sql")))
       ended(id, "sql", "completed", said("sql", "needs_revision", [finding(true)]))

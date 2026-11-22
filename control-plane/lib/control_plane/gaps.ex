@@ -12,7 +12,7 @@ defmodule ControlPlane.Gaps do
   work.
   """
 
-  alias ControlPlane.{Evaluations, GitHub, Intake, Runner, Workload, Workloads}
+  alias ControlPlane.{Evaluations, Intake, Runner, Tracker, Workload, Workloads}
 
   @skill "close-the-gap"
   @active ["queued", "preparing", "running", "gating"]
@@ -172,8 +172,8 @@ defmodule ControlPlane.Gaps do
   end
 
   defp reopened_since(repository, number, %Workload{finished_at: ended}) do
-    case GitHub.get("repos/#{repository}/issues/#{number}/events?per_page=100") do
-      {:ok, events} when is_list(events) ->
+    case Tracker.ticket_history(repository, number) do
+      {:ok, events} ->
         if Enum.any?(events, &reopened_after?(&1, ended)),
           do: [
             start(
@@ -184,20 +184,13 @@ defmodule ControlPlane.Gaps do
           ],
           else: []
 
-      {:ok, _} ->
-        []
-
       {:error, message} ->
         [{:skipped, {:github_error, message}}]
     end
   end
 
-  defp reopened_after?(%{"event" => "reopened", "created_at" => at}, ended) when is_binary(at) do
-    case DateTime.from_iso8601(at) do
-      {:ok, at, _} -> DateTime.compare(at, ended) == :gt
-      _ -> false
-    end
-  end
+  defp reopened_after?(%{kind: :reopened, at: %DateTime{} = at}, ended),
+    do: DateTime.compare(at, ended) == :gt
 
   defp reopened_after?(_event, _ended), do: false
 
@@ -226,14 +219,11 @@ defmodule ControlPlane.Gaps do
   defp waiting?(_), do: false
 
   defp answered(repository, number, %Workload{finished_at: %DateTime{} = ended}) do
-    case GitHub.get("repos/#{repository}/issues/#{number}/comments?per_page=100") do
-      {:ok, comments} when is_list(comments) ->
+    case Tracker.comments(repository, number) do
+      {:ok, comments} ->
         if Enum.any?(comments, &replied_after?(&1, ended)),
           do: [start(repository, number, "a person replied")],
           else: []
-
-      {:ok, _} ->
-        []
 
       {:error, message} ->
         [{:skipped, {:github_error, message}}]
@@ -244,13 +234,8 @@ defmodule ControlPlane.Gaps do
 
   # A person's comment is any that Hephaestium did not write: it comments under the
   # person's own login, so its comments are told apart by how they begin.
-  defp replied_after?(%{"created_at" => at, "body" => body}, ended) when is_binary(body) do
-    with {:ok, at, _} <- DateTime.from_iso8601(at) do
-      DateTime.compare(at, ended) == :gt and not String.starts_with?(body, @own)
-    else
-      _ -> false
-    end
-  end
+  defp replied_after?(%{at: %DateTime{} = at, body: body}, ended) when is_binary(body),
+    do: DateTime.compare(at, ended) == :gt and not String.starts_with?(body, @own)
 
   defp replied_after?(_comment, _ended), do: false
 
@@ -263,53 +248,43 @@ defmodule ControlPlane.Gaps do
   def create(tickets, repository) do
     made =
       Enum.map(tickets, fn ticket ->
-        {ticket,
-         GitHub.write("POST", "repos/#{repository}/issues", [
-           "title=" <> ticket["title"],
-           "body=" <> ticket["body"]
-         ])}
+        {ticket, Tracker.create_ticket(repository, ticket["title"], ticket["body"])}
       end)
 
     by_title =
-      for {ticket, {:ok, %{"number" => number, "id" => id}}} <- made,
+      for {ticket, {:ok, made_ticket}} <- made,
           into: %{},
-          do: {ticket["title"], {number, id}}
+          do: {ticket["title"], made_ticket}
 
     problems =
-      for {ticket, result} <- made, not match?({:ok, %{"number" => _, "id" => _}}, result) do
+      for {ticket, result} <- made, not match?({:ok, _}, result) do
         "#{ticket["title"]} could not be created"
       end
 
     relations =
-      for {ticket, _} <- made, {number, id} <- [by_title[ticket["title"]]], number != nil do
-        link(repository, ticket, number, id, by_title)
+      for {ticket, _} <- made, made_ticket <- [by_title[ticket["title"]]], made_ticket != nil do
+        link(repository, ticket, made_ticket, by_title)
       end
 
-    {Enum.map(by_title, fn {title, {number, _}} -> {title, number} end)
+    {Enum.map(by_title, fn {title, made_ticket} -> {title, made_ticket.key} end)
      |> Enum.sort_by(fn {_, number} -> number end), problems ++ List.flatten(relations)}
   end
 
-  defp link(repository, ticket, number, id, by_title) do
+  defp link(repository, ticket, made_ticket, by_title) do
     parent = ticket["parent"] |> to_string() |> String.to_integer()
 
     under =
-      case GitHub.write("POST", "repos/#{repository}/issues/#{parent}/sub_issues", [
-             {:typed, "sub_issue_id=#{id}"}
-           ]) do
-        {:ok, _} -> []
+      case Tracker.link_sub_ticket(repository, parent, made_ticket) do
+        :ok -> []
         {:error, message} -> ["#{ticket["title"]} could not be made a sub-issue: #{message}"]
       end
 
     waits =
-      for title <- ticket["dependsOn"] || [], {_, dependency_id} <- [by_title[title]] do
-        case GitHub.write(
-               "POST",
-               "repos/#{repository}/issues/#{number}/dependencies/blocked_by",
-               [
-                 {:typed, "issue_id=#{dependency_id}"}
-               ]
-             ) do
-          {:ok, _} -> []
+      for title <- ticket["dependsOn"] || [],
+          dependency <- [by_title[title]],
+          dependency != nil do
+        case Tracker.block_ticket(repository, made_ticket.key, dependency) do
+          :ok -> []
           {:error, message} -> ["#{ticket["title"]} could not be made to wait: #{message}"]
         end
       end
@@ -327,8 +302,8 @@ defmodule ControlPlane.Gaps do
     do: if(Evaluations.enabled?(repository), do: :ok, else: {:skip, :not_enabled})
 
   defp open(repository, number) do
-    case GitHub.get("repos/#{repository}/issues/#{number}") do
-      {:ok, %{"state" => "open"}} -> :ok
+    case Tracker.ticket(repository, number) do
+      {:ok, %{state: :open}} -> :ok
       {:ok, _} -> {:skip, :ticket_closed}
       {:error, message} -> {:github_error, message}
     end

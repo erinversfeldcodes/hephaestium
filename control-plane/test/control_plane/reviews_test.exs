@@ -110,7 +110,7 @@ defmodule ControlPlane.ReviewsTest do
 
   defp request(id) do
     workload = Workloads.get(id)
-    Reviews.request(workload, pull(), "52")
+    Reviews.request(workload, pull()["head"]["sha"], "52")
   end
 
   test "each lens the change needs gets a review workload at the head commit", %{id: id} do
@@ -226,7 +226,7 @@ defmodule ControlPlane.ReviewsTest do
     )
 
     assert {:ok, %{requested: ["elixir", "rust"]}} =
-             Reviews.request(Workloads.get(id), pull(other), "52")
+             Reviews.request(Workloads.get(id), pull(other)["head"]["sha"], "52")
 
     reviews = reviews_of(id)
     assert length(reviews) == 4

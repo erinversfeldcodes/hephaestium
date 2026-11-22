@@ -66,7 +66,7 @@ defmodule ControlPlane.ResumeTest do
 
   # The ticket as the list of ready tickets shows it.
   defp listed(gh, labels) do
-    StandInGitHub.respond(gh, Run.ready_endpoint(@repo), [
+    StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.ready_endpoint(@repo, "heph:ready"), [
       %{
         "number" => 12,
         "state" => "open",
@@ -86,12 +86,12 @@ defmodule ControlPlane.ResumeTest do
             "label" => %{"name" => "heph:ready"}
           }
 
-    StandInGitHub.respond(gh, Run.events_endpoint(@repo, 12), events)
+    StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.events_endpoint(@repo, 12), events)
   end
 
   defp permission(gh, login, level),
     do:
-      StandInGitHub.respond(gh, Run.permission_endpoint(@repo, login), %{
+      StandInGitHub.respond(gh, ControlPlane.GitHub.CodeHost.permission_endpoint(@repo, login), %{
         "permission" => level,
         "role_name" => level
       })

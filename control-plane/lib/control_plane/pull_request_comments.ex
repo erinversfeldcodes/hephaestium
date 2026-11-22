@@ -20,7 +20,7 @@ defmodule ControlPlane.PullRequestComments do
 
   require Logger
 
-  alias ControlPlane.{Account, Finding, GitHub, Workload, Workloads}
+  alias ControlPlane.{Account, CodeHost, Finding, Workload, Workloads}
 
   @verdicts ["approved", "needs_revision", "failed"]
 
@@ -48,10 +48,8 @@ defmodule ControlPlane.PullRequestComments do
   defp post(workload, number, body) do
     with {:ok, number} <- pull_request_number(number),
          :ok <- claim(workload) do
-      case GitHub.write("POST", "repos/#{workload.repository}/issues/#{number}/comments", [
-             "body=" <> body.()
-           ]) do
-        {:ok, _} ->
+      case CodeHost.comment_on_change(workload.repository, number, body.()) do
+        :ok ->
           :ok
 
         {:error, message} ->

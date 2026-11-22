@@ -52,7 +52,9 @@ defmodule ControlPlane.IntakeTest do
         extra
       )
 
-    StandInGitHub.respond(gh, Run.ready_endpoint(@repo), [listed])
+    StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.ready_endpoint(@repo, "heph:ready"), [
+      listed
+    ])
   end
 
   defp labelled(gh, number, labellings) do
@@ -65,7 +67,7 @@ defmodule ControlPlane.IntakeTest do
             "label" => %{"name" => "heph:ready"}
           }
 
-    StandInGitHub.respond(gh, Run.events_endpoint(@repo, number), events)
+    StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.events_endpoint(@repo, number), events)
   end
 
   defp more_events(gh, number, labellings, extra) do
@@ -78,12 +80,16 @@ defmodule ControlPlane.IntakeTest do
             "label" => %{"name" => "heph:ready"}
           }
 
-    StandInGitHub.respond(gh, Run.events_endpoint(@repo, number), events ++ extra)
+    StandInGitHub.respond(
+      gh,
+      ControlPlane.GitHub.Tracker.events_endpoint(@repo, number),
+      events ++ extra
+    )
   end
 
   defp permission(gh, login, level),
     do:
-      StandInGitHub.respond(gh, Run.permission_endpoint(@repo, login), %{
+      StandInGitHub.respond(gh, ControlPlane.GitHub.CodeHost.permission_endpoint(@repo, login), %{
         "permission" => level,
         "role_name" => level
       })
@@ -134,7 +140,7 @@ defmodule ControlPlane.IntakeTest do
     end
 
     test "because there is no event that says who applied the label", %{gh: gh} do
-      StandInGitHub.respond(gh, Run.events_endpoint(@repo, 12), [])
+      StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.events_endpoint(@repo, 12), [])
 
       assert [%{ticket: 12, result: {:skipped, :no_approval_event}}] = results()
       assert Repo.all(ControlPlane.Workload) == []
@@ -143,7 +149,7 @@ defmodule ControlPlane.IntakeTest do
     test "because GitHub says the person is not a user at all", %{gh: gh} do
       StandInGitHub.fail(
         gh,
-        Run.permission_endpoint(@repo, "maint"),
+        ControlPlane.GitHub.CodeHost.permission_endpoint(@repo, "maint"),
         ~s({"message":"maint is not a user","status":"404"})
       )
 
@@ -249,24 +255,34 @@ defmodule ControlPlane.IntakeTest do
 
   describe "something GitHub or heph cannot say" do
     test "is not an approval, and says why", %{gh: gh} do
-      StandInGitHub.fail(gh, Run.events_endpoint(@repo, 12), "gh: HTTP 502 Bad Gateway")
+      StandInGitHub.fail(
+        gh,
+        ControlPlane.GitHub.Tracker.events_endpoint(@repo, 12),
+        "gh: HTTP 502 Bad Gateway"
+      )
+
       assert [%{result: {:skipped, {:github_error, message}}}] = results()
       assert message =~ "502"
 
       File.rm(
         Path.join(
           gh.dir,
-          "data/#{String.replace(Run.events_endpoint(@repo, 12), ~r{[/?=&:]}, "_")}.err"
+          "data/#{String.replace(ControlPlane.GitHub.Tracker.events_endpoint(@repo, 12), ~r{[/?=&:]}, "_")}.err"
         )
       )
 
-      StandInGitHub.fail(gh, Run.permission_endpoint(@repo, "maint"), "gh: HTTP 500")
+      StandInGitHub.fail(
+        gh,
+        ControlPlane.GitHub.CodeHost.permission_endpoint(@repo, "maint"),
+        "gh: HTTP 500"
+      )
+
       assert [%{result: {:skipped, {:github_error, _}}}] = results()
 
       File.rm(
         Path.join(
           gh.dir,
-          "data/#{String.replace(Run.permission_endpoint(@repo, "maint"), ~r{[/?=&:]}, "_")}.err"
+          "data/#{String.replace(ControlPlane.GitHub.CodeHost.permission_endpoint(@repo, "maint"), ~r{[/?=&:]}, "_")}.err"
         )
       )
 

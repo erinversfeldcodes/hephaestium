@@ -1,6 +1,6 @@
 defmodule ControlPlane.Programs do
   @moduledoc """
-  A guard on the programs the control plane runs on a person's machine: `gh`,
+  A guard on the programs the control plane runs on a person's machine: the GitHub client,
   `heph` and the executor act on real repositories with the person's own
   credentials.
 

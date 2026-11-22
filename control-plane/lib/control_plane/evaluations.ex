@@ -14,7 +14,7 @@ defmodule ControlPlane.Evaluations do
   when the ticket was approved.
   """
 
-  alias ControlPlane.{GitHub, Intake, Runner, Workload, Workloads}
+  alias ControlPlane.{CodeHost, Intake, Runner, Tracker, Workload, Workloads}
 
   @athenaeum "erinversfeldcodes/athenaeum"
   @skill "ticket-completeness"
@@ -153,8 +153,8 @@ defmodule ControlPlane.Evaluations do
 
   defp look_for_merge(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload) do
-      case GitHub.get("repos/#{workload.repository}/pulls/#{number}") do
-        {:ok, %{"merged" => true}} -> [after_merge(workload)]
+      case CodeHost.change(workload.repository, number) do
+        {:ok, %{merged: true}} -> [after_merge(workload)]
         {:ok, _} -> []
         {:error, message} -> [{:skipped, {:github_error, message}}]
       end
@@ -174,37 +174,30 @@ defmodule ControlPlane.Evaluations do
   def epics, do: Enum.flat_map(settings()[:completeness] || [], &epics_of/1)
 
   defp epics_of(repository) do
-    case GitHub.get("repos/#{repository}/issues?state=open&per_page=100") do
-      {:ok, issues} when is_list(issues) ->
-        issues
+    case Tracker.open_epics(repository) do
+      {:ok, tickets} ->
+        tickets
         |> Enum.filter(&finished_epic?/1)
-        |> Enum.flat_map(&roll_up(repository, &1["number"]))
-
-      {:ok, _} ->
-        []
+        |> Enum.flat_map(&roll_up(repository, &1.key))
 
       {:error, message} ->
         [{:skipped, {:github_error, message}}]
     end
   end
 
-  # A pull request is an issue to the API, and has no sub-issues of its own.
-  defp finished_epic?(%{"pull_request" => _}), do: false
-
-  defp finished_epic?(%{"sub_issues_summary" => %{"total" => total, "completed" => done}})
+  defp finished_epic?(%{progress: %{total: total, completed: done}})
        when is_integer(total) and total > 0,
        do: done == total
 
   defp finished_epic?(_), do: false
 
   defp roll_up(repository, number) do
-    with {:ok, children} when is_list(children) <-
-           GitHub.get("repos/#{repository}/issues/#{number}/sub_issues"),
+    with {:ok, children} <-
+           Tracker.sub_tickets(repository, number),
          {:ok, approval} <- child_approval(repository, children),
          :ok <- not_judged_since_last_closed(repository, number, children) do
       [start(%Workload{repository: repository, ticket_number: number}, approval, "")]
     else
-      {:ok, _} -> []
       {:error, message} -> [{:skipped, {:github_error, message}}]
       {:skip, :judged} -> []
       {:skip, reason} -> [{:skipped, reason}]
@@ -213,7 +206,7 @@ defmodule ControlPlane.Evaluations do
 
   defp child_approval(repository, children) do
     children
-    |> Enum.flat_map(&Workloads.for_ticket(repository, &1["number"]))
+    |> Enum.flat_map(&Workloads.for_ticket(repository, &1.key))
     |> Enum.filter(&match?(%{"approval" => %{"approvedBy" => _}}, &1.workload))
     |> List.last()
     |> case do
@@ -229,13 +222,8 @@ defmodule ControlPlane.Evaluations do
   defp not_judged_since_last_closed(repository, number, children) do
     closed =
       children
-      |> Enum.map(& &1["closed_at"])
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&DateTime.from_iso8601/1)
-      |> Enum.flat_map(fn
-        {:ok, at, _} -> [at]
-        _ -> []
-      end)
+      |> Enum.map(& &1.closed_at)
+      |> Enum.filter(&match?(%DateTime{}, &1))
       |> Enum.max(DateTime, fn -> nil end)
 
     judged =
@@ -329,8 +317,8 @@ defmodule ControlPlane.Evaluations do
     do: if(enabled?(repository), do: :ok, else: {:skip, :not_enabled})
 
   defp open(repository, number) do
-    case GitHub.get("repos/#{repository}/issues/#{number}") do
-      {:ok, %{"state" => "open"}} -> :ok
+    case Tracker.ticket(repository, number) do
+      {:ok, %{state: :open}} -> :ok
       {:ok, _} -> {:skip, :ticket_closed}
       {:error, message} -> {:github_error, message}
     end
@@ -382,7 +370,7 @@ defmodule ControlPlane.Evaluations do
   def skill(name) do
     with {:ok, ref} <- athenaeum_ref(),
          {:ok, text} <-
-           GitHub.raw("repos/#{@athenaeum}/contents/skills/#{name}/SKILL.md?ref=#{ref}") do
+           CodeHost.file(@athenaeum, "skills/#{name}/SKILL.md", ref) do
       {:ok, text}
     else
       {:error, message} -> {:no_skill, message}
