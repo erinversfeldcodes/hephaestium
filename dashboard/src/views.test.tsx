@@ -98,13 +98,78 @@ describe("a ticket", () => {
     expect(asked).toEqual([["o/r", 9]]);
   });
 
-  it("shows nothing of what the agent asked or answered", async () => {
-    render(<TicketDetailPage client={fakeClient()} repository="erinversfeldcodes/gazebolang" number={12} />);
+  it("reads nothing of what the agent said until a person asks for a run's words", async () => {
+    const agentText = vi.fn(async () => ({ account: "It is in a.ex.", question: null }));
+    render(
+      <TicketDetailPage
+        client={fakeClient({ agentText })}
+        repository="erinversfeldcodes/gazebolang"
+        number={12}
+      />,
+    );
 
     await screen.findByRole("heading", { level: 2 });
-    expect(screen.queryByText(/question/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/account/i)).not.toBeInTheDocument();
+    expect(agentText).not.toHaveBeenCalled();
+    expect(screen.queryByText("It is in a.ex.")).not.toBeInTheDocument();
+
+    const run = screen.getByRole("group", { name: /implementation/ });
+    expect(run).toHaveAttribute("id", "run-w-1");
+    await userEvent.click(within(run).getByRole("button", { name: "Read what the agent said" }));
+
+    expect(await within(run).findByText("It is in a.ex.")).toBeInTheDocument();
+    expect(agentText).toHaveBeenCalledExactlyOnceWith("w-1");
   });
+
+  it("shows a run's question as well as its account, as text and not as markup", async () => {
+    const client = fakeClient({
+      agentText: async () => ({ account: "<b>bold</b> account", question: "Which database?" }),
+    });
+    render(<TicketDetailPage client={client} repository="erinversfeldcodes/gazebolang" number={12} />);
+
+    const run = await screen.findByRole("group", { name: /implementation/ });
+    await userEvent.click(within(run).getByRole("button", { name: "Read what the agent said" }));
+
+    expect(await within(run).findByText("<b>bold</b> account")).toBeInTheDocument();
+    expect(within(run).getByText("Which database?")).toBeInTheDocument();
+    expect(within(run).getByText("The agent's account")).toBeInTheDocument();
+    expect(within(run).getByText("The agent's question")).toBeInTheDocument();
+  });
+
+  it("says when a run said nothing and asked nothing", async () => {
+    render(
+      <TicketDetailPage
+        client={fakeClient({ agentText: async () => ({ account: null, question: null }) })}
+        repository="erinversfeldcodes/gazebolang"
+        number={12}
+      />,
+    );
+
+    const run = await screen.findByRole("group", { name: /implementation/ });
+    await userEvent.click(within(run).getByRole("button", { name: "Read what the agent said" }));
+
+    expect(await within(run).findByText("The agent said nothing in this run.")).toBeInTheDocument();
+  });
+
+  it("says when the words could not be read, without hiding the rest of the page", async () => {
+    render(
+      <TicketDetailPage
+        client={fakeClient({
+          agentText: async () => {
+            throw new ApiError(500, "boom");
+          },
+        })}
+        repository="erinversfeldcodes/gazebolang"
+        number={12}
+      />,
+    );
+
+    const run = await screen.findByRole("group", { name: /implementation/ });
+    await userEvent.click(within(run).getByRole("button", { name: "Read what the agent said" }));
+
+    expect(await within(run).findByRole("alert")).toHaveTextContent("could not be read");
+    expect(screen.getByRole("region", { name: "Spend" })).toBeInTheDocument();
+  });
+
 });
 
 describe("spend", () => {
