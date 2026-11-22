@@ -1,5 +1,6 @@
-# The control plane on Fly. Deploy from this directory, to a single machine:
-#   fly deploy --ha=false
+# The control plane on Fly. Deploy from the repository's root, which the image's build needs
+# (it holds the dashboard), to a single machine:
+#   fly deploy --config control-plane/fly.toml --ha=false
 #
 # Secrets are set with `fly secrets set`, never written here:
 #   DATABASE_URL                  Neon's pooled connection string
@@ -11,7 +12,7 @@ app = "hephaestium-control-plane"
 primary_region = "fra"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "Dockerfile"  # relative to this file; the build context is the root
 
 [env]
   HEPH_HEALTH_PORT = "8080"

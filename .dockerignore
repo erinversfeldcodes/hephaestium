@@ -1,0 +1,17 @@
+# Nothing from the machine the image is built on goes into it: not its builds, its
+# dependencies, its databases, its keys or its tests.
+.git
+**/.env
+**/.env.*
+**/*.pem
+target
+**/_build
+**/deps
+**/node_modules
+dashboard/dist
+control-plane/test
+control-plane/tmp
+control-plane/Dockerfile
+control-plane/fly.toml
+**/erl_crash.dump
+**/*.ez
