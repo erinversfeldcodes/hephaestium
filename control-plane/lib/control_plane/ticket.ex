@@ -75,7 +75,7 @@ defmodule ControlPlane.Change do
   ]
 
   @type t :: %__MODULE__{
-          number: integer() | nil,
+          number: term(),
           url: String.t() | nil,
           state: :open | :closed | :other,
           merged: boolean(),
