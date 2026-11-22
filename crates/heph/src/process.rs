@@ -199,6 +199,17 @@ pub struct Tick<'a> {
     pub call: &'a mut dyn FnMut() -> Go,
 }
 
+impl Tick<'_> {
+    /// A tick that calls the same thing at the same interval, to hand to one wait while this one
+    /// is kept for the next.
+    pub fn reborrow(&mut self) -> Tick<'_> {
+        Tick {
+            every: self.every,
+            call: &mut *self.call,
+        }
+    }
+}
+
 /// [`execute_with_env`], keeping the last lines the command printed in `tail`. What it prints
 /// still goes to this process's standard error, a line at a time, as it would have; its
 /// standard output, when it is not the one captured, goes there too. `tick`, when there is one,
