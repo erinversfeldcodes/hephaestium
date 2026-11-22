@@ -108,6 +108,7 @@ defmodule ControlPlane.ApiTest do
             "/api/workloads/#{id}/events",
             "/api/workloads/#{id}/events/stream",
             "/api/workloads/#{id}/steps",
+            "/api/workloads/#{id}/account",
             "/api/spend/tickets/erinversfeldcodes/gazebolang/12",
             "/api/spend/epics/erinversfeldcodes/gazebolang/12",
             "/api/spend/branch?repository=#{@repository}&branch=x",
@@ -511,6 +512,39 @@ defmodule ControlPlane.ApiTest do
 
       assert get_as("/api/spend/branch").status == 400
       assert get_as("/api/spend/days?repository=#{@repository}&days=x").status == 400
+    end
+
+    test "a run's account and question are read behind the login, cleaned, and as the executor redacted them" do
+      marker = "[redacted: CLAUDE_CODE_OAUTH_TOKEN]"
+
+      id =
+        seed(30, [
+          Fixtures.started(),
+          Fixtures.agent_message("looking"),
+          Fixtures.agent_message("\e[31mThe cause is in lib/a.ex.\e[0m TOKEN=#{marker}"),
+          Fixtures.finished("OUTCOME_BLOCKED", "needs an answer")
+        ])
+
+      :ok =
+        Workloads.keep_record(id, %{"outcome" => "OUTCOME_BLOCKED", "question" => "Which one?"})
+
+      body = get_as("/api/workloads/#{id}/account") |> json()
+
+      assert body == %{
+               "workload" => id,
+               "account" => "The cause is in lib/a.ex. TOKEN=#{marker}",
+               "question" => "Which one?"
+             }
+    end
+
+    test "a run that said nothing and asked nothing has neither, and an unknown run is 404" do
+      id = seed(31)
+
+      assert get_as("/api/workloads/#{id}/account") |> json() ==
+               %{"workload" => id, "account" => nil, "question" => nil}
+
+      assert get_as("/api/workloads/#{Ecto.UUID.generate()}/account").status == 404
+      assert get_as("/api/workloads/not-a-uuid/account").status == 404
     end
 
     test "the questions waiting for a person, and not one that a later workload answered" do

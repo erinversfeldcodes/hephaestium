@@ -58,6 +58,13 @@ defmodule ControlPlane.Api.Endpoints do
     end
   end
 
+  def account(conn, %{"id" => id}, _settings, _login) do
+    case find(id) do
+      nil -> not_found(conn)
+      workload -> json(conn, 200, Read.agent_text(workload))
+    end
+  end
+
   def spend_ticket(conn, params, _settings, _login) do
     with {:ok, repository, number} <- ticket_params(params) do
       json(conn, 200, Spend.ticket(repository, number))

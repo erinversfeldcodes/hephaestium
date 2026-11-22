@@ -38,8 +38,9 @@ defmodule ControlPlane.Account do
     end
   end
 
-  # The last thing the agent said, cleaned, or nil if it said nothing in words.
-  defp last_message(workload_id) do
+  @doc "The last thing the agent said, cleaned of escapes but whole, or nil if it said nothing in words."
+  @spec last_message(Ecto.UUID.t()) :: String.t() | nil
+  def last_message(workload_id) do
     event =
       Repo.one(
         from e in Event,
