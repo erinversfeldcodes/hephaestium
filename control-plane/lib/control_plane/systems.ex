@@ -14,6 +14,13 @@ defmodule ControlPlane.Systems do
   @github_tracker ControlPlane.GitHub.Tracker
   @github_code_host ControlPlane.GitHub.CodeHost
 
+  @github_webhook ControlPlane.GitHub.Webhook
+
+  @doc "The receiver of the webhooks a named source sends, or `:error` for a source not known."
+  @spec webhook_source(String.t()) :: {:ok, module()} | :error
+  def webhook_source("github"), do: {:ok, @github_webhook}
+  def webhook_source(_), do: :error
+
   @doc "The tracker for a repository, and the project the repository's tickets are in."
   @spec tracker(String.t()) :: {module(), String.t()}
   def tracker(repository), do: side(repository, :tracker, @github_tracker)
