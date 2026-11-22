@@ -3,6 +3,8 @@ defmodule ControlPlane.Workloads do
 
   import Ecto.Query
 
+  require Logger
+
   alias ControlPlane.{Repo, Workload}
 
   @doc """
@@ -248,7 +250,18 @@ defmodule ControlPlane.Workloads do
       set: [record: record, updated_at: DateTime.utc_now()]
     )
 
+    write_ledger(id)
     :ok
+  end
+
+  # What the run spent goes in the ledger once its record is kept. The record is the source of
+  # truth, so a ledger that could not be written does not fail keeping it: the backfill
+  # repairs it.
+  defp write_ledger(id) do
+    ControlPlane.Ledger.record(get(id))
+  rescue
+    error ->
+      Logger.error("could not write the ledger for workload #{id}: #{Exception.message(error)}")
   end
 
   @doc """
