@@ -83,7 +83,7 @@ defmodule ControlPlane.UniversalLensesTest do
       "base" => %{"ref" => "main"}
     }
 
-  defp request(id), do: Reviews.request(Workloads.get(id), pull(), "52")
+  defp request(id), do: Reviews.request(Workloads.get(id), pull()["head"]["sha"], "52")
 
   defp reviews_of(id) do
     Repo.all(

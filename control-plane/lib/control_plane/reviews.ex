@@ -18,7 +18,7 @@ defmodule ControlPlane.Reviews do
 
   import Ecto.Query
 
-  alias ControlPlane.{GitHub, Programs, Repo, Workload, Workloads}
+  alias ControlPlane.{CodeHost, Programs, Repo, Workload, Workloads}
 
   @athenaeum "erinversfeldcodes/athenaeum"
 
@@ -43,9 +43,9 @@ defmodule ControlPlane.Reviews do
   Ask for the reviews the pull request needs at its head commit, as far as they
   have not been asked for.
   """
-  @spec request(%Workload{}, map(), String.t()) :: {:ok, result()} | {:error, String.t()}
-  def request(%Workload{} = workload, pull, number) do
-    sha = get_in(pull, ["head", "sha"])
+  @spec request(%Workload{}, String.t(), String.t()) ::
+          {:ok, result()} | {:error, String.t()}
+  def request(%Workload{} = workload, sha, number) do
     repository = workload.repository
 
     with {:ok, ref} <- athenaeum_ref(),
@@ -54,7 +54,7 @@ defmodule ControlPlane.Reviews do
          {:ok, plan} <- lenses(manifest, changed),
          {:ok, plan} <- with_universal(plan, changed, ref),
          {:ok, texts, missing} <- lens_texts(plan["lenses"], ref) do
-      asked(workload, pull, number, texts, missing, plan)
+      asked(workload, sha, number, texts, missing, plan)
     end
   end
 
@@ -219,14 +219,14 @@ defmodule ControlPlane.Reviews do
   end
 
   defp changed_files(repository, number) do
-    case GitHub.get_all("repos/#{repository}/pulls/#{number}/files") do
-      {:ok, files} -> {:ok, for(%{"filename" => name} <- files, do: name)}
+    case CodeHost.change_files(repository, number, pages: :all) do
+      {:ok, files} -> {:ok, files}
       {:error, message} -> {:error, "could not read the pull request's files: #{message}"}
     end
   end
 
   defp manifest(repository, sha) do
-    case GitHub.raw("repos/#{repository}/contents/.athenaeum/manifest.toml?ref=#{sha}") do
+    case CodeHost.file(repository, ".athenaeum/manifest.toml", sha) do
       {:ok, text} -> {:ok, text}
       {:error, message} -> {:error, "could not read the manifest at #{sha}: #{message}"}
     end
@@ -270,9 +270,7 @@ defmodule ControlPlane.Reviews do
     with {:ok, packs} <- pack_names(ref) do
       results =
         for pack <- packs, pack not in chosen do
-          endpoint = "repos/#{@athenaeum}/contents/packs/#{pack}/review.md?ref=#{ref}"
-
-          case GitHub.raw(endpoint) do
+          case CodeHost.file(@athenaeum, "packs/#{pack}/review.md", ref) do
             {:ok, text} -> if applies_always?(text), do: {:ok, pack}, else: :no
             {:error, message} -> if message =~ "404", do: :no, else: {:error, pack, message}
           end
@@ -291,16 +289,16 @@ defmodule ControlPlane.Reviews do
 
   @doc false
   def pack_names(ref) do
-    case GitHub.get("repos/#{@athenaeum}/contents/packs?ref=#{ref}") do
-      {:ok, entries} when is_list(entries) ->
+    case CodeHost.directory(@athenaeum, "packs", ref) do
+      {:ok, entries} ->
         {:ok,
          for(
-           %{"type" => "dir", "name" => name} <- entries,
+           %{type: "dir", name: name} <- entries,
            is_binary(name) and Regex.match?(~r/\A[a-z0-9][a-z0-9-]{0,40}\z/, name),
            do: name
          )}
 
-      {:ok, _} ->
+      {:error, :not_a_list} ->
         {:error, "could not list the lenses of #{@athenaeum} at #{ref}: not a list of packs"}
 
       {:error, message} ->
@@ -355,9 +353,7 @@ defmodule ControlPlane.Reviews do
   defp lens_texts(lenses, ref) do
     results =
       for %{"pack" => pack} <- lenses do
-        endpoint = "repos/#{@athenaeum}/contents/packs/#{pack}/review.md?ref=#{ref}"
-
-        case GitHub.raw(endpoint) do
+        case CodeHost.file(@athenaeum, "packs/#{pack}/review.md", ref) do
           {:ok, text} ->
             {:ok, pack, text}
 
@@ -376,15 +372,13 @@ defmodule ControlPlane.Reviews do
     end
   end
 
-  defp asked(workload, pull, number, texts, missing, plan) do
-    sha = pull["head"]["sha"]
-
+  defp asked(workload, sha, number, texts, missing, plan) do
     {existing, wanted} =
       Enum.split_with(texts, fn {pack, _} -> exists?(workload.repository, number, sha, pack) end)
 
     results =
       for {pack, text} <- wanted do
-        {pack, Workloads.start_review(workload, review(workload, pull, number, pack, text))}
+        {pack, Workloads.start_review(workload, review(workload, sha, number, pack, text))}
       end
 
     case Enum.find(results, &match?({_, {:error, _}}, &1)) do
@@ -403,13 +397,13 @@ defmodule ControlPlane.Reviews do
     end
   end
 
-  defp review(workload, pull, number, pack, text) do
+  defp review(workload, sha, number, pack, text) do
     workload.workload
     |> Map.put("id", Ecto.UUID.generate())
     # A review is a read of its own: it neither revises nor reads under lenses, and nothing
     # of how the change was read before it was pushed is given to it.
     |> Map.drop(["revision", "lenses", "prepushRounds"])
-    |> put_in(["repository", "baseCommit"], pull["head"]["sha"])
+    |> put_in(["repository", "baseCommit"], sha)
     |> Map.put("review", %{
       "pullRequestNumber" => to_string(number),
       "pullRequestUrl" => "https://github.com/#{workload.repository}/pull/#{number}",
