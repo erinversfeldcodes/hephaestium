@@ -214,9 +214,74 @@ jobs:
       - name: Tested
         run: mix test
 
+  # The control plane is deployed as a container image, so the image is built here, and the
+  # release inside it is started against a real Postgres the way the platform starts it: the
+  # migrate command first, then the server. That the health check says 200 with the database
+  # up and 503 with it stopped is checked on the running image, not only in the unit tests.
+  control-plane-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: postgres
+      DATABASE_URL: ecto://postgres:postgres@localhost/hephaestium_image
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build --tag control-plane:ci control-plane
+      - name: The migrate command brings an empty database to the current schema
+        run: |
+          psql -h localhost -U postgres -c 'create database hephaestium_image'
+          docker run --rm --network host --env DATABASE_URL control-plane:ci /app/bin/migrate
+          tables=$(psql -h localhost -U postgres -d hephaestium_image -tAc \
+            "select string_agg(tablename, ' ' order by tablename) from pg_tables where schemaname = 'public'")
+          echo "tables: $tables"
+          for table in events oban_jobs workloads; do
+            case " $tables " in
+              *" $table "*) ;;
+              *) echo "the migrated database has no $table table" >&2; exit 1 ;;
+            esac
+          done
+      - name: The image starts, and is healthy with the database up
+        run: |
+          docker run --detach --name control-plane --network host \
+            --env DATABASE_URL --env HEPH_HEALTH_PORT=8080 control-plane:ci
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/health || true)
+            [ "$code" = 200 ] && exit 0
+            sleep 2
+          done
+          echo "the health check never answered 200 (last answer: $code)" >&2
+          docker logs control-plane >&2
+          exit 1
+      - name: The health check says 503 once the database is stopped
+        run: |
+          docker stop "$(docker ps --quiet --filter ancestor=postgres:16)"
+          for attempt in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/health || true)
+            [ "$code" = 503 ] && exit 0
+            sleep 2
+          done
+          echo "the health check never answered 503 (last answer: $code)" >&2
+          docker logs control-plane >&2
+          exit 1
+
   ci:
     if: always()
-    needs: [docs, commits, rust, baseline, contracts, artifacts, control-plane]
+    needs: [docs, commits, rust, baseline, contracts, artifacts, control-plane, control-plane-image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

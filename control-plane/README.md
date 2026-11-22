@@ -252,3 +252,76 @@ script on the same machine stops every process that holds a TCP connection to Po
 port 5432 (thestacks' `scripts/test-elixir.sh` does, and stopped the control plane six
 times in a day): a socket connection is not one. Postgres shows it by a connection with no
 client address in `pg_stat_activity`.
+
+## Running it hosted
+
+The control plane is also built as a release in a container, for Fly with Neon as the
+database. On a laptop nothing changes: it is still started with `mix run --no-halt`, and every
+setting below is off unless its variable is set.
+
+### Build and run the image
+
+The image holds the compiled release and nothing else: no settings, no keys, no credentials,
+and no model key or repository code. Everything is read from environment variables when it
+starts.
+
+```
+cd control-plane
+docker build -t hephaestium-control-plane .
+
+# bring the database to the current schema, as the platform does before a deploy
+docker run --rm -e DATABASE_URL=ecto://user:password@host/database \
+  hephaestium-control-plane /app/bin/migrate
+
+# run it, with the health listener on 8080
+docker run -e DATABASE_URL=ecto://user:password@host/database -e HEPH_HEALTH_PORT=8080 \
+  -p 8080:8080 hephaestium-control-plane
+curl -i localhost:8080/health
+```
+
+`fly.toml` is the Fly configuration: `release_command` runs `/app/bin/migrate` on a temporary
+machine made from the new image before the running machines are replaced, and a non-zero exit
+stops the deploy. Deploy to one machine (`fly deploy --ha=false`) from this directory. Creating
+the app, the Neon project and the secrets is done by hand once, and is not part of the image.
+
+### Settings
+
+| Variable | Effect |
+| --- | --- |
+| `DATABASE_URL` | The database. A release will not start without it. |
+| `HEPH_MIGRATION_DATABASE_URL` | The database as the migrate command connects to it, if it is not `DATABASE_URL`: Neon's direct connection, because a migration holds an advisory lock for its whole run and the pooler does not keep a session. |
+| `HEPH_DB_SSL` | `true` connects over TLS, verifying the server's certificate against the system's roots and its hostname. Neon requires TLS. |
+| `HEPH_DB_POOL_SIZE` | The size of the connection pool (10 if not set). |
+| `HEPH_OBAN_NOTIFIER` | `pg` or `postgres` (the default); see below. |
+| `HEPH_HEALTH_PORT` | Starts the health listener on this port. Off if not set. |
+| `HEPH_REVIEW_APP_ID`, `HEPH_REVIEW_APP_KEY` | The review App, with its private key held in the variable itself, for a platform whose secrets are variables. `HEPH_REVIEW_APP_KEY_FILE` (a path) still works and is what the laptop uses; if both are set the variable is used. |
+
+`GET /health` answers `200` with `{"status":"ok"}` when the database answers a query, and `503`
+with the reason when it does not or does not answer within two seconds. Nothing else is served.
+The Claude and GitHub tokens are used only by the executor, which does not run in the container,
+so the container is given neither.
+
+### Oban's notifier and Neon's pooler
+
+Neon's pooled connection is pgbouncer in transaction mode: a server connection is lent for one
+transaction and then taken back, so a session never keeps a `LISTEN`. Oban's default notifier
+is `LISTEN`/`NOTIFY`, so through the pooler it would connect, appear to work and never be told
+anything.
+
+The hosted configuration sets `HEPH_OBAN_NOTIFIER=pg`, which is `Oban.Notifiers.PG`: the
+notifier uses Erlang's process groups and sends nothing through the database. It was chosen over
+a direct connection for the notifier because Oban's Postgres notifier listens on the connection
+settings of the Repo, so a second, direct URL for it alone is not possible without every query
+also using the direct connection, which gives up the pooler (Neon's direct connections are
+limited in number, and the pooler is what lets a small compute serve many clients). Anything the
+notifier carries is a hint that makes Oban act sooner; without it queues still poll, so a lost
+notification costs latency, not a job.
+
+The reason it is correct here and the condition on it: `pg` only reaches the nodes of one Erlang
+cluster. The control plane runs as one machine, where that is every node. A second machine that
+is not clustered would not be told what the first did, and would only poll. If the control plane
+ever runs on more than one machine, either cluster them or use `HEPH_OBAN_NOTIFIER=postgres`
+with `DATABASE_URL` set to the direct connection.
+
+Not shown: this has not been run against a pooled Neon connection, because none was available.
+What is shown is that the setting selects the notifier (`hosted_config_test.exs`).

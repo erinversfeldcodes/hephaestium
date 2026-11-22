@@ -5,6 +5,60 @@ if url = System.get_env("DATABASE_URL") do
   config :control_plane, ControlPlane.Repo, url: url
 end
 
+# A release has no development default to fall back on, so it does not start without a database.
+if config_env() == :prod and System.get_env("DATABASE_URL", "") == "" do
+  raise "DATABASE_URL is not set: a release cannot start without a database"
+end
+
+# A setting that is a whole number in a range, or nothing when the variable is not set.
+whole_number = fn name, range ->
+  case System.get_env(name) do
+    value when value in [nil, ""] ->
+      nil
+
+    value ->
+      case Integer.parse(value) do
+        {number, ""} ->
+          if number in range,
+            do: number,
+            else: raise("#{name} must be a whole number from #{range.first} to #{range.last}")
+
+        _ ->
+          raise "#{name} must be a whole number from #{range.first} to #{range.last}, not #{inspect(value)}"
+      end
+  end
+end
+
+# Over TLS, checking the server's certificate against the system's roots and its name against the
+# host connected to. A hosted database requires it, and a connection that does not check would
+# accept anyone's certificate.
+if System.get_env("HEPH_DB_SSL") == "true" do
+  config :control_plane, ControlPlane.Repo,
+    ssl: [
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+    ]
+end
+
+if pool_size = whole_number.("HEPH_DB_POOL_SIZE", 1..1000) do
+  config :control_plane, ControlPlane.Repo, pool_size: pool_size
+end
+
+# The listener the platform's health check calls. Off unless a port is named.
+if port = whole_number.("HEPH_HEALTH_PORT", 1..65535) do
+  config :control_plane, :health, port: port
+end
+
+# How Oban's nodes tell each other that work arrived. By default the database does, with
+# LISTEN/NOTIFY, which a pooled connection in transaction mode cannot carry; `pg` uses Erlang's
+# process groups instead and sends nothing through the database.
+case System.get_env("HEPH_OBAN_NOTIFIER") do
+  value when value in [nil, "", "postgres"] -> :ok
+  "pg" -> config :control_plane, Oban, notifier: Oban.Notifiers.PG
+  value -> raise "HEPH_OBAN_NOTIFIER must be pg or postgres, not #{inspect(value)}"
+end
+
 # Connect through Postgres's Unix socket in this directory instead of TCP (#140). Another
 # project's script on the same machine stops every BEAM that holds a TCP connection to port
 # 5432, whichever project it belongs to; a socket connection is not one.
@@ -84,14 +138,25 @@ integer = fn name ->
   end
 end
 
-# The review App that approves a pull request on GitHub: its id and the file that holds
-# its private key. Both are needed; with either missing nothing is approved. The key is
-# never read here, only where it is.
+# The review App that approves a pull request on GitHub: its id and its private key, which is
+# in a file (the laptop's way) or in a variable (a platform's secret store). With the id or the
+# key missing nothing is approved. A key file is never read here, only where it is.
 review_app =
-  for {name, key} <- [{"HEPH_REVIEW_APP_ID", :app_id}, {"HEPH_REVIEW_APP_KEY_FILE", :key_file}],
+  for {name, key} <- [
+        {"HEPH_REVIEW_APP_ID", :app_id},
+        {"HEPH_REVIEW_APP_KEY", :key},
+        {"HEPH_REVIEW_APP_KEY_FILE", :key_file}
+      ],
       value = System.get_env(name, "") |> String.trim(),
       value != "",
-      do: {key, if(key == :key_file, do: Path.expand(value), else: value)}
+      do:
+        {key,
+         case key do
+           :key_file -> Path.expand(value)
+           # The key's own lines are what is signed with; only the ends of the value are trimmed.
+           :key -> String.trim_trailing(System.get_env(name)) <> "\n"
+           _ -> value
+         end}
 
 if review_app != [], do: config(:control_plane, :review_app, review_app)
 

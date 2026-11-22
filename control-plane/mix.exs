@@ -28,7 +28,10 @@ defmodule ControlPlane.MixProject do
       {:ecto_sql, "~> 3.14"},
       {:postgrex, "~> 0.22"},
       {:jason, "~> 1.4"},
-      {:oban, "~> 2.24"}
+      {:oban, "~> 2.24"},
+      # The health endpoint is one route on a listener of its own; nothing else is served.
+      {:plug, "~> 1.19"},
+      {:bandit, "~> 1.8"}
     ]
   end
 
