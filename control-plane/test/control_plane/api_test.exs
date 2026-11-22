@@ -176,12 +176,25 @@ defmodule ControlPlane.ApiTest do
       assert session =~ "max-age=3600"
     end
 
+    test "the user token the login was given is kept sealed with the session, and in no body" do
+      {state, state_cookie} = begin_login()
+      conn = request(:get, "/auth/callback?code=good&state=#{state}", cookie: state_cookie)
+      sealed = set_cookie(conn, "heph_user_token")
+
+      assert sealed =~ "HttpOnly"
+      assert sealed =~ "secure"
+      assert sealed =~ "max-age=3600"
+      refute sealed =~ "token-for-good"
+      refute conn.resp_body =~ "token-for-good"
+    end
+
     test "a login not on the allowlist is refused and no session is made" do
       {state, state_cookie} = begin_login()
       conn = request(:get, "/auth/callback?code=stranger&state=#{state}", cookie: state_cookie)
 
       assert conn.status == 403
       refute set_cookie(conn, "heph_session")
+      refute set_cookie(conn, "heph_user_token")
     end
 
     test "an empty allowlist lets no one in" do
@@ -245,6 +258,7 @@ defmodule ControlPlane.ApiTest do
       conn = request(:get, "/auth/logout", cookie: cookie_for("octocat"))
       assert conn.status == 302
       assert set_cookie(conn, "heph_session") =~ "max-age=0"
+      assert set_cookie(conn, "heph_user_token") =~ "max-age=0"
     end
   end
 
@@ -269,9 +283,13 @@ defmodule ControlPlane.ApiTest do
   end
 
   describe "a method that changes something" do
+    # The reply to a question is the one write that is there whether or not the executor link is
+    # on; it is named in the writes below and has its own tests.
+    @reply ["api", "tickets", ":owner", ":name", ":number", "reply"]
+
     test "is refused with 405 on every route and on a route that does not exist" do
       paths =
-        for route <- Router.routes() do
+        for route <- Router.routes(), route.path != @reply do
           route.path
           |> Enum.map(&if(String.starts_with?(&1, ":"), do: "1", else: &1))
           |> then(&("/" <> Enum.join(&1, "/")))
@@ -290,12 +308,26 @@ defmodule ControlPlane.ApiTest do
     end
   end
 
+  describe "with the executor link off" do
+    test "the reply to a question is the only write the API has" do
+      assert Router.write_routes()
+             |> Enum.reject(& &1[:link])
+             |> Enum.reject(& &1[:webhooks])
+             |> Enum.map(& &1.path) ==
+               [["api", "tickets", ":owner", ":name", ":number", "reply"]]
+
+      assert request(:put, "/api/tickets/o/r/1/reply", cookie: cookie_for("octocat")).status ==
+               405
+    end
+  end
+
   describe "the methods that change something, with the executor link on" do
     # Every route that is not a read, and the only ones. A route added to the table that
     # writes fails the first test until it is named here, on purpose: a write is decided by a
     # person reading this list, not by whoever added the route.
     @allowed_writes [
       {"POST", ["api", "device-tokens"]},
+      {"POST", ["api", "tickets", ":owner", ":name", ":number", "reply"]},
       {"POST", ["api", "device-tokens", ":id", "revoke"]},
       {"POST", ["worker", "claim"]},
       {"POST", ["worker", "workloads", ":id", "events"]},

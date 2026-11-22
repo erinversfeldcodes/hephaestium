@@ -77,6 +77,10 @@ defmodule ControlPlane.CodeHost do
   def directory(repository, path, ref), do: call(repository, :directory, [path, ref])
   def permission(repository, login), do: call(repository, :permission, [login])
 
+  @doc "Whether a permission is one a maintainer has: the one an approver must hold."
+  @spec writer?(permission) :: boolean()
+  def writer?(permission), do: permission in [:admin, :maintain, :write]
+
   defp call(repository, operation, arguments) do
     {module, name} = Systems.code_host(repository)
     apply(module, operation, [name | arguments])

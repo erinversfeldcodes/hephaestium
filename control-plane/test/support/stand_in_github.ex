@@ -38,7 +38,7 @@ defmodule ControlPlane.StandInGitHub do
         done
         # Where a token came from is recorded, for the tests that say how it travels; it
         # is only ever a made-up one.
-        case "$GH_TOKEN" in fake-installation-*) echo "$method $endpoint $GH_TOKEN" >> $d/gh-tokens.log;; esac
+        case "$GH_TOKEN" in fake-installation-*|token-for-*) echo "$method $endpoint $GH_TOKEN" >> $d/gh-tokens.log;; esac
         name=$(printf '%s' "$endpoint" | tr '/?=&:%' '______')
         [ "$endpoint" = graphql ] && name="graphql_$number"
         if [ "$method" != GET ]; then

@@ -18,7 +18,8 @@ defmodule ControlPlane.Tracker do
   @type project :: String.t()
   @type key :: term()
   @type error :: {:error, String.t()}
-  @type capability :: :sub_tickets | :blocking_links | :label_actor_and_time
+  @type capability :: :sub_tickets | :blocking_links | :label_actor_and_time | :act_as_person
+  @type as_person_error :: {:error, :unauthorized | :refused | String.t()}
 
   @callback capabilities() :: MapSet.t(capability())
   @callback approved_tickets(project, label :: String.t()) :: {:ok, [Ticket.t()]} | error
@@ -38,6 +39,10 @@ defmodule ControlPlane.Tracker do
   @callback remove_label(project, key, label :: String.t()) :: :ok | error
   @callback comment_on_ticket(project, key, body :: String.t()) :: :ok | error
   @callback close_ticket(project, key) :: :ok | error
+  @callback comment_as(project, key, credential :: String.t(), body :: String.t()) ::
+              :ok | as_person_error
+  @callback add_label_as(project, key, credential :: String.t(), label :: String.t()) ::
+              :ok | as_person_error
 
   @doc "What the repository's tracker supports."
   def capabilities(repository) do
@@ -78,6 +83,18 @@ defmodule ControlPlane.Tracker do
     do: call(repository, :comment_on_ticket, [key, body])
 
   def close_ticket(repository, key), do: call(repository, :close_ticket, [key])
+
+  @doc """
+  Comment on a ticket as the person the credential is the user token of, not as the control
+  plane. Only for a tracker whose capabilities include `:act_as_person`. `:unauthorized` says
+  the credential has lapsed; `:refused` says the tracker would not let that person.
+  """
+  def comment_as(repository, key, credential, body),
+    do: call(repository, :comment_as, [key, credential, body])
+
+  @doc "Apply a label as the person the credential belongs to, so the label is theirs."
+  def add_label_as(repository, key, credential, label),
+    do: call(repository, :add_label_as, [key, credential, label])
 
   defp call(repository, operation, arguments) do
     {module, project} = Systems.tracker(repository)

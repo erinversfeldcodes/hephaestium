@@ -3,7 +3,7 @@ defmodule ControlPlane.Api.GitHubLogin do
   What the login needs from GitHub: the user token for a code, and the login that token
   belongs to. A behaviour so that tests never reach github.com.
 
-  The token is used once to read the login and is not kept.
+  The token is kept only for a login on the allowlist, sealed with its session.
   """
 
   @callback exchange_code(code :: String.t(), redirect_uri :: String.t(), settings :: map()) ::

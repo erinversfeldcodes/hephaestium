@@ -27,7 +27,8 @@ defmodule ControlPlane.GitHub.Tracker do
   def events_endpoint(repo, number), do: "repos/#{repo}/issues/#{number}/events?per_page=100"
 
   @impl true
-  def capabilities, do: MapSet.new([:sub_tickets, :blocking_links, :label_actor_and_time])
+  def capabilities,
+    do: MapSet.new([:sub_tickets, :blocking_links, :label_actor_and_time, :act_as_person])
 
   @impl true
   def approved_tickets(project, label) do
@@ -205,6 +206,31 @@ defmodule ControlPlane.GitHub.Tracker do
   @impl true
   def close_ticket(project, key),
     do: logged("PATCH", issue(project, key), ["state=closed", "state_reason=completed"])
+
+  @impl true
+  def comment_as(project, key, token, body),
+    do: as_person("POST", issue(project, key) <> "/comments", ["body=" <> body], token)
+
+  @impl true
+  def add_label_as(project, key, token, label),
+    do: as_person("POST", issue(project, key) <> "/labels", ["labels[]=" <> label], token)
+
+  # The request is made with the person's token, so GitHub decides what they may do and names
+  # them as the actor. What GitHub says back is classified and not passed on.
+  defp as_person(method, endpoint, fields, token) do
+    case GitHub.write(method, endpoint, fields, token: token) do
+      {:ok, _} -> :ok
+      {:error, message} when is_binary(message) -> {:error, classify(message)}
+    end
+  end
+
+  defp classify(message) do
+    cond do
+      message =~ "HTTP 401" -> :unauthorized
+      message =~ ~r/HTTP (403|404|422)/ -> :refused
+      true -> "GitHub could not be asked"
+    end
+  end
 
   defp issue(project, key), do: "repos/#{project}/issues/#{key}"
 
