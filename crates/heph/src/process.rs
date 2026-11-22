@@ -420,9 +420,48 @@ pub fn stream(
     environment: &[(String, String)],
     deadline: Duration,
     tick: Duration,
+    on_line: impl FnMut(&str) -> Go,
+    on_tick: impl FnMut() -> Go,
+    notify: impl Fn(&str),
+) -> Result<Streamed, std::io::Error> {
+    stream_with_tail(
+        argv,
+        directory,
+        environment,
+        deadline,
+        tick,
+        on_line,
+        on_tick,
+        notify,
+        None,
+    )
+}
+
+/// [`stream`], keeping the last lines the command wrote to standard error in `tail`. They still
+/// go to this process's standard error a line at a time, as they would have. A caller that
+/// ends a run on the command's failure uses them to say why, since the exit code alone does not.
+///
+/// # Errors
+///
+/// As for [`stream`].
+///
+/// # Panics
+///
+/// If `argv` is empty, as for [`stream`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: what to run, where, with what, for how long, how often to tick, the three things the caller does, and what to keep"
+)]
+pub fn stream_with_tail(
+    argv: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    deadline: Duration,
+    tick: Duration,
     mut on_line: impl FnMut(&str) -> Go,
     mut on_tick: impl FnMut() -> Go,
     notify: impl Fn(&str),
+    tail: Option<&Tail>,
 ) -> Result<Streamed, std::io::Error> {
     let (program, arguments) = argv
         .split_first()
@@ -440,24 +479,24 @@ pub fn stream(
         .envs(environment.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(if tail.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .process_group(0);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let code = if error.kind() == std::io::ErrorKind::NotFound {
-                NOT_FOUND
-            } else {
-                NOT_EXECUTABLE
-            };
             notify(&format!("{program}: {error}"));
-            return Ok(Streamed::NotRun(code));
+            return Ok(Streamed::NotRun(code_when_not_started(&error)));
         }
     };
 
     let standard_output = child.stdout.take().expect("standard output was piped");
     let (lines, reader) = read_lines(standard_output);
+    let tee = tail.and_then(|tail| child.stderr.take().map(|output| tee(output, tail.clone())));
 
     let end_at = Instant::now() + deadline;
     let mut next_tick = Instant::now() + tick;
@@ -537,5 +576,27 @@ pub fn stream(
     // group brings about, except when a process outside the group holds the pipe
     // open, and then waiting for it would wait for that process.
     drop(reader);
+    give_a_moment_to_finish(tee);
     Ok(ended)
+}
+
+/// What a command wrote last is what explains a failure, so its copying is given a moment to
+/// finish; but not waited for beyond that, because a process outside the command's group can
+/// hold the pipe open.
+fn give_a_moment_to_finish(copying: Option<std::thread::JoinHandle<()>>) {
+    if let Some(copying) = copying {
+        let until = Instant::now() + Duration::from_secs(2);
+        while !copying.is_finished() && Instant::now() < until {
+            std::thread::sleep(POLL);
+        }
+    }
+}
+
+/// The code a shell reports for a command that could not be started.
+fn code_when_not_started(error: &std::io::Error) -> i32 {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        NOT_FOUND
+    } else {
+        NOT_EXECUTABLE
+    }
 }
