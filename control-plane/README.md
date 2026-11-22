@@ -39,7 +39,10 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   spent) is removed; when it ends, the label that says how is left (`heph:failed` for
   a failure or a timeout, `heph:blocked` for a blocked one, none for a cancelled
   one) and a comment says what happened, with the reason, the question for a
-  blocked one, the pull request and what it cost. A completed workload's ticket keeps
+  blocked one (the agent's own words, quoted as data in a fenced block like its account), the
+  pull request and what it cost. A run ends blocked when its agent asked a question, when a
+  first run changed nothing and left an account, and when it says the base already fixes the
+  ticket and proposes a person close it; the ticket then waits for `heph:ready` again. A completed workload's ticket keeps
   `heph:running` until its pull request is green, which is the next piece. A label
   or comment that cannot be written never changes how a workload ended. The labels
   and comments are written with `gh`, so its login must be able to write issues.

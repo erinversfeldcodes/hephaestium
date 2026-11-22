@@ -267,6 +267,12 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
         "the agent must be told how to say whether the ticket is resolved: {prompt}"
     );
     assert!(
+        prompt.contains("No person will answer")
+            && prompt.contains(".heph-question")
+            && prompt.contains("resolved-by:"),
+        "the agent must be told nobody answers mid-run, how to stop with a question, and how to say the base already fixes the ticket: {prompt}"
+    );
+    assert!(
         prompt.to_lowercase().contains("do not commit"),
         "the agent must be told the runtime opens the pull request: {prompt}"
     );

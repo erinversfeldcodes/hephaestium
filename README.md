@@ -182,7 +182,13 @@ pushed, and opened as a pull request; that step alone holds the token that can p
 Each secret (that token, and `CLAUDE_CODE_OAUTH_TOKEN` for a Claude Code agent) is the
 variable of its name or the contents of the file its `_FILE` variable names, kept
 outside any repository with mode 600; the executor takes it at start and removes both
-from its environment. It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
+from its environment. The exact value of every secret it holds (those two, the read-only token,
+and the secrets gates declare) is replaced by `[redacted: NAME]` in every string of every event, in
+the run record and in what the executor says on its own error output, whatever the agent or a gate
+printed; a value shorter than eight characters is not replaced, and a secret printed in pieces,
+encoded or changed in any way is not found. What a gate or an agent itself writes to the error
+output the executor passes through, and what a gate printed that is shown to the implementing
+agent, are not redacted. It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
 be run.
 
 A workload with a `revision` section is a revision of a pull request an earlier workload
@@ -192,6 +198,18 @@ what they printed as fenced, capped data that it is told is output and not instr
 and `--deliver` pushes to the pull request's own branch with a plain push, never forced,
 and opens nothing. The branch must be one the runtime made (`heph/...`), and a revision
 that names no failing check, no pull request or an attempt of zero is refused.
+
+An agent that cannot go on, or that finds nothing to change, ends the run `blocked` and not
+`failed`, with what a person needs in the `finished` event's and the run record's `question`; the
+workspace is kept and nothing is pushed. The agent is told that no person will answer in the middle
+of the run, to proceed on what the ticket settles, and otherwise to stop. It asks by writing one
+question to `.heph-question`, with the answer it would choose and why (any run, first or revision).
+A first run that is to deliver and changed nothing ends blocked with the agent's last message as the
+question, when it left one; with no message it still fails, "nothing to deliver". A first run whose
+`.heph-resolution` says `resolved-by: <commit>` (a hexadecimal commit name) says the ticket's problem
+is already fixed on the base branch: it ends blocked with the question proposing that a person close
+the ticket, naming the commit, and nothing is opened. A revision that changes nothing is judged as
+before, and stays failed when it says what the head already says.
 
 A workload that carries `lenses` (every lens of the pinned Athenaeum release, with its text) and
 `prepush_rounds` is read before it is pushed

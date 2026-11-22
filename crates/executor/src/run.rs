@@ -28,6 +28,7 @@ use crate::completeness;
 use crate::deliver;
 use crate::gap;
 use crate::prepush::{self, Reading};
+use crate::redact::Redactor;
 use crate::review;
 use crate::secrets::{self, Secrets};
 use crate::stream::{Spent, Stream};
@@ -85,7 +86,8 @@ pub fn run(
         )));
     }
 
-    let mut stream = Stream::new(out, &workload.id);
+    let redactor = secrets.redactor();
+    let mut stream = Stream::new(out, &workload.id).redacting(redactor.clone());
     stream.emit(Kind::Started(Started {
         executor_version: executor_version.to_owned(),
     }))?;
@@ -110,6 +112,7 @@ pub fn run(
                             &reason,
                             options,
                             executor_version,
+                            &redactor,
                         );
                     }
                 }
@@ -177,7 +180,7 @@ pub fn run(
     let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
     record.steps = steps.into_inner();
     keep(&mut record, verdict)?;
-    write_record(&options.record, &record)
+    write_record(&options.record, &record, &redactor)
 }
 
 /// Run the agent that makes the change. A run that reads its own change says which agent is
@@ -324,9 +327,10 @@ fn finish_failed(
     reason: &str,
     options: &Options,
     executor_version: &str,
+    redactor: &Redactor,
 ) -> Result<(), Refused> {
     let record = stream.finish(workload, Outcome::Failed, reason, executor_version)?;
-    write_record(&options.record, &record)
+    write_record(&options.record, &record, redactor)
 }
 
 /// Make the workspace and run the manifest's bootstrap steps in it.
@@ -504,6 +508,10 @@ fn finish_first_run<W: Write>(
 ) -> Result<(Outcome, String), Refused> {
     let (options, secrets) = (asking.options, asking.secrets);
     let delivering = options.deliver && secrets.get(secrets::GITHUB_TOKEN).is_some();
+    if let Some(question) = stops_to_ask(workload, workspace, delivering, stream) {
+        stream.ask(&question);
+        return Ok((Outcome::Blocked, blocked_reason(workload)));
+    }
     let since = match carry_if(delivering, workload, workspace, since) {
         Ok(Carried::Onto(since)) => since,
         // The base changed what the agent changed: the agent resolves the difference and
@@ -526,6 +534,52 @@ fn finish_first_run<W: Write>(
         Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
         Err(failed) => Ok((Outcome::Failed, failed.summary)),
     }
+}
+
+/// Why the run ended blocked and not failed.
+fn blocked_reason(workload: &Workload) -> String {
+    if workload.revision.is_some() {
+        "the agent cannot go on without a person's answer".to_owned()
+    } else {
+        "the agent has nothing to deliver, and a person is asked what to do".to_owned()
+    }
+}
+
+/// What a person is asked, when the agent's work ended without anything to deliver or with
+/// something it could not decide: its own question; that the base already fixes the ticket,
+/// which a person closes; or, for a first run that is to deliver and changed nothing, what the
+/// agent said about why. None when there is something to carry on with, or nothing to say.
+fn stops_to_ask<W: Write>(
+    workload: &Workload,
+    workspace: &Path,
+    delivering: bool,
+    stream: &Stream<'_, W>,
+) -> Option<String> {
+    let account = stream.account();
+    if let Ok(text) = fs::read_to_string(workspace.join(deliver::QUESTION_FILE))
+        && !text.trim().is_empty()
+    {
+        return Some(text.trim().to_owned());
+    }
+    // A revision is judged on what it changed; only a first run is asked about the ticket.
+    if workload.revision.is_some() {
+        return None;
+    }
+    if let Some(commit) = deliver::resolved_by(workspace) {
+        let mut question = format!(
+            "The ticket's problem looks already fixed on the base branch, by commit {commit}, so there is nothing to change. Should a person close the ticket?"
+        );
+        if let Some(account) = account {
+            question.push_str("\n\nThe agent's account:\n\n");
+            question.push_str(account);
+        }
+        return Some(question);
+    }
+    let unchanged = git_output(&["status", "--porcelain"], workspace).is_ok_and(|s| s.is_empty());
+    if delivering && unchanged {
+        return account.map(str::to_owned);
+    }
+    None
 }
 
 /// Whether the run reads its own change under lenses before it pushes: it was given lenses and
@@ -1411,6 +1465,8 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     text.push('\n');
     text.push_str(deliver::RESOLUTION_FILE);
     text.push('\n');
+    text.push_str(deliver::QUESTION_FILE);
+    text.push('\n');
     text.push_str(deliver::DESCRIPTION_FILE);
     text.push('\n');
     text.push_str(review::VERDICT_FILE);
@@ -1425,8 +1481,27 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
 
 /// Where what a command says about itself goes: standard error, because
 /// standard output carries only events.
+///
+/// What it says has the value of every secret taken out, once [`keep_out_of_the_log`] has
+/// said which they are.
 pub fn say(message: &str) {
-    eprintln!("{message}");
+    eprintln!("{}", for_the_log(message));
+}
+
+static LOGGED: std::sync::OnceLock<Redactor> = std::sync::OnceLock::new();
+
+/// Take the value of every secret `secrets` holds out of everything [`say`] writes from now on.
+/// Called once, before anything is run; a second call changes nothing.
+pub fn keep_out_of_the_log(secrets: &Secrets) {
+    let _ = LOGGED.set(secrets.redactor());
+}
+
+/// `message` as the executor's own log says it.
+#[must_use]
+pub fn for_the_log(message: &str) -> String {
+    LOGGED
+        .get()
+        .map_or_else(|| message.to_owned(), |redactor| redactor.text(message))
 }
 
 fn git(args: &[&str], directory: &Path, what: &str) -> Result<(), String> {
@@ -1486,8 +1561,16 @@ fn bootstrap(
     }
 }
 
-fn write_record(path: &Path, record: &RunRecord) -> Result<(), Refused> {
-    let text = serde_json::to_string_pretty(record).map_err(|e| Refused(e.to_string()))?;
+/// Write the record, with the value of every secret held taken out of it.
+fn write_record(path: &Path, record: &RunRecord, redactor: &Redactor) -> Result<(), Refused> {
+    let mut text = serde_json::to_string_pretty(record).map_err(|e| Refused(e.to_string()))?;
+    if !redactor.is_empty() {
+        let mut value = serde_json::to_value(record).map_err(|e| Refused(e.to_string()))?;
+        // A record that holds no secret is written as it was made.
+        if redactor.json(&mut value) {
+            text = serde_json::to_string_pretty(&value).map_err(|e| Refused(e.to_string()))?;
+        }
+    }
     fs::write(path, text + "\n").map_err(|e| {
         Refused(format!(
             "the record could not be written to {}: {e}",
