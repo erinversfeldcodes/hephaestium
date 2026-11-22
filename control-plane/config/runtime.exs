@@ -82,6 +82,24 @@ if port = whole_number.("HEPH_API_PORT", 1..65535) do
       |> Enum.map(&String.trim/1)
 end
 
+# Where a person reads what an agent wrote, signed in. Both repositories are public, so when this is
+# set the ticket and the pull request carry a link to the run here instead of the agent's words;
+# when it is not, they carry the words as they always did. It is a setting of its own, not the
+# API's base URL, because a laptop sets that for the login and has nowhere public to point.
+case System.get_env("HEPH_DASHBOARD_URL", "") do
+  "" ->
+    :ok
+
+  value ->
+    uri = URI.parse(String.trim(value))
+
+    if uri.scheme not in ["http", "https"] or uri.host in [nil, ""] do
+      raise "HEPH_DASHBOARD_URL must be an http or https address, such as https://heph.example"
+    end
+
+    config :control_plane, :dashboard, url: String.trim(value)
+end
+
 # Executors on developers' machines run the workloads, over the API, instead of this process
 # starting one. Off unless `workers` is named. It needs the API, which is where executors
 # connect, so it is refused without one.

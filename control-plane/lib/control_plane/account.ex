@@ -12,9 +12,22 @@ defmodule ControlPlane.Account do
 
   import Ecto.Query
 
-  alias ControlPlane.{Event, Repo}
+  alias ControlPlane.{Dashboard, Event, Repo, Workload}
 
   @cap 2_000
+
+  @doc """
+  What a comment on a public ticket or pull request says of a run's account. With the dashboard's
+  address configured it is a pointer to the run, because the account is read behind the login;
+  without it there is nowhere to point, so it is the account itself.
+  """
+  @spec public_section(%Workload{}) :: String.t()
+  def public_section(%Workload{} = workload) do
+    case Dashboard.run_link(workload) do
+      nil -> section(workload.id)
+      link -> "What the agent found is read, signed in, on the dashboard: #{link}"
+    end
+  end
 
   @doc "The section of a comment that gives a workload's account, or says there is none."
   @spec section(Ecto.UUID.t()) :: String.t()
