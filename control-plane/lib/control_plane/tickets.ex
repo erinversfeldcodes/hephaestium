@@ -18,7 +18,7 @@ defmodule ControlPlane.Tickets do
     CompletenessComment,
     Evaluations,
     Gaps,
-    GitHub,
+    Tracker,
     PullRequestComments,
     Spend,
     Workload
@@ -103,8 +103,7 @@ defmodule ControlPlane.Tickets do
     end
   end
 
-  defp close(workload),
-    do: write("PATCH", issue(workload), ["state=closed", "state_reason=completed"])
+  defp close(workload), do: ok(Tracker.close_ticket(workload.repository, workload.ticket_number))
 
   # A step's own words are the comment, as written, up to what a comment can hold.
   @comment_limit 60_000
@@ -162,7 +161,7 @@ defmodule ControlPlane.Tickets do
   end
 
   defp post(workload, text),
-    do: write("POST", issue(workload) <> "/comments", ["body=" <> text])
+    do: comment_on(workload, text)
 
   defp end_ticket(%Workload{state: state} = workload) when state in ["failed", "timed_out"] do
     first_error([
@@ -261,9 +260,10 @@ defmodule ControlPlane.Tickets do
       [add_label(workload, @running)] ++
         for(label <- @resume_removes, label in labels, do: remove_label(workload, label)) ++
         [
-          write("POST", issue(workload) <> "/comments", [
-            "body=**Hephaestium:** resumed by #{login}. The pull request #{url || get_in(workload.record || %{}, ["pullRequest", "url"])} will be looked at again, and revised if its checks or its reviews call for it."
-          ])
+          comment_on(
+            workload,
+            "**Hephaestium:** resumed by #{login}. The pull request #{url || get_in(workload.record || %{}, ["pullRequest", "url"])} will be looked at again, and revised if its checks or its reviews call for it."
+          )
         ]
     )
   end
@@ -350,21 +350,19 @@ defmodule ControlPlane.Tickets do
   defp note(workload, text) do
     url = get_in(workload.record || %{}, ["pullRequest", "url"])
 
-    write("POST", issue(workload) <> "/comments", [
-      "body=**Hephaestium:** #{text}\n\nPull request: #{url}"
-    ])
+    comment_on(workload, "**Hephaestium:** #{text}\n\nPull request: #{url}")
   end
 
-  defp issue(workload), do: "repos/#{workload.repository}/issues/#{workload.ticket_number}"
-
   defp add_label(workload, label),
-    do: write("POST", issue(workload) <> "/labels", ["labels[]=#{label}"])
+    do: ok(Tracker.add_label(workload.repository, workload.ticket_number, label))
 
   defp remove_label(workload, label),
-    do: write("DELETE", issue(workload) <> "/labels/" <> URI.encode_www_form(label), [])
+    do: ok(Tracker.remove_label(workload.repository, workload.ticket_number, label))
 
-  defp comment(workload),
-    do: write("POST", issue(workload) <> "/comments", ["body=" <> body(workload)])
+  defp comment(workload), do: comment_on(workload, body(workload))
+
+  defp comment_on(workload, text),
+    do: ok(Tracker.comment_on_ticket(workload.repository, workload.ticket_number, text))
 
   # Every write is tried, and the first that failed is what is returned.
   defp first_error(results) do
@@ -374,16 +372,8 @@ defmodule ControlPlane.Tickets do
     end
   end
 
-  defp write(method, endpoint, fields) do
-    case GitHub.write(method, endpoint, fields) do
-      {:ok, _} ->
-        :ok
-
-      {:error, message} ->
-        Logger.warning("could not #{method} #{endpoint}: #{message}")
-        {:error, message}
-    end
-  end
+  defp ok(:ok), do: :ok
+  defp ok({:error, message}), do: {:error, message}
 
   defp body(workload) do
     record = workload.record || %{}

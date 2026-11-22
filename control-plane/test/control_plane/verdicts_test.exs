@@ -138,7 +138,7 @@ defmodule ControlPlane.VerdictsTest do
 
   # Ask for the reviews, as settling does when the checks are green.
   defp asked(id) do
-    {:ok, _} = Reviews.request(Workloads.get(id), pull(), "52")
+    {:ok, _} = Reviews.request(Workloads.get(id), pull()["head"]["sha"], "52")
     id
   end
 

@@ -5,7 +5,7 @@ defmodule ControlPlane.Settle do
 
   For each completed workload with a pull request whose ticket is not yet settled,
   this reads the pull request, the checks the base branch's ruleset requires, and
-  the check runs on the pull request's head commit, with `gh`:
+  the check runs on the pull request's head commit:
 
     * merged: done. Closed without merging: abandoned.
     * any check ended as anything but success, skipped or neutral: failed, naming
@@ -26,9 +26,10 @@ defmodule ControlPlane.Settle do
 
   alias ControlPlane.{
     Account,
+    Check,
+    CodeHost,
     Evaluations,
     Finding,
-    GitHub,
     ReviewApproval,
     Reviews,
     Tickets,
@@ -78,8 +79,8 @@ defmodule ControlPlane.Settle do
 
   defp stale?(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload),
-         {:ok, %{"state" => "open", "mergeable_state" => "behind"} = pull} <-
-           GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
+         {:ok, %{state: :open, mergeability: :behind} = pull} <-
+           CodeHost.change(workload.repository, number),
          {:ok, :done} <- verdict(workload, pull, number),
          :yes <- revisable(workload, {pull, number}),
          {:ok, %{"commits" => [_ | _]}} <- base_moved(workload, pull, number) do
@@ -99,7 +100,7 @@ defmodule ControlPlane.Settle do
 
   defp settle(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload),
-         {:ok, pull} <- GitHub.get("repos/#{workload.repository}/pulls/#{number}"),
+         {:ok, pull} <- CodeHost.change(workload.repository, number),
          {:ok, verdict} <- verdict(workload, pull, number),
          {:ok, verdict} <- behind(workload, pull, number, verdict),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
@@ -140,7 +141,7 @@ defmodule ControlPlane.Settle do
       :ok
   end
 
-  defp merged?(%{"merged" => true}, _verdict), do: true
+  defp merged?(%{merged: true}, _verdict), do: true
   defp merged?(_pull, {:done, :merged}), do: true
   defp merged?(_pull, _verdict), do: false
 
@@ -160,7 +161,7 @@ defmodule ControlPlane.Settle do
   # branch the runtime made, in this repository, and only while revisions are left:
   # anything else is settled as it always was. A conflict is not handled here: the
   # executor ends such a run naming the files, and a revision would only spend a run.
-  defp behind(workload, %{"state" => "open", "mergeable_state" => "behind"} = pull, number, :done) do
+  defp behind(workload, %{state: :open, mergeability: :behind} = pull, number, :done) do
     case revisable(workload, {pull, number}) do
       :yes ->
         case base_moved(workload, pull, number) do
@@ -181,26 +182,25 @@ defmodule ControlPlane.Settle do
   @moved_commits 50
 
   defp base_moved(workload, pull, number) do
-    sha = get_in(pull, ["head", "sha"])
-    base = get_in(pull, ["base", "ref"]) || "main"
+    sha = pull.head_sha
+    base = pull.base_ref || "main"
 
-    with {:ok, compare} <- GitHub.get("repos/#{workload.repository}/compare/#{sha}...#{base}"),
-         {:ok, mine} <-
-           GitHub.get("repos/#{workload.repository}/pulls/#{number}/files?per_page=100") do
+    with {:ok, compare} <- CodeHost.compare(workload.repository, sha, base),
+         {:ok, mine} <- CodeHost.change_files(workload.repository, number, pages: :first) do
       commits =
-        (compare["commits"] || [])
+        compare.commits
         |> Enum.reverse()
         |> Enum.take(@moved_commits)
         |> Enum.map(&commit_line/1)
 
-      theirs = for file <- compare["files"] || [], do: file["filename"]
-      ours = MapSet.new(for file <- List.wrap(mine), do: file["filename"])
+      theirs = compare.files
+      ours = MapSet.new(mine)
 
       {:ok, %{"commits" => commits, "overlappingFiles" => Enum.filter(theirs, &(&1 in ours))}}
     end
   end
 
-  defp commit_line(%{"sha" => sha, "commit" => %{"message" => message}}) do
+  defp commit_line(%{sha: sha, message: message}) do
     subject = message |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 200)
     "#{String.slice(sha, 0, 7)} #{subject}"
   end
@@ -209,10 +209,10 @@ defmodule ControlPlane.Settle do
   # opted in, and what the verdicts say decides what becomes of it (ADR 0026). If the
   # reviews cannot be asked for, the ticket waits: it is not done on the strength of
   # checks alone when a review was meant to happen.
-  defp reviews(workload, %{"state" => "open"} = pull, number, :done) do
-    if Reviews.enabled?(workload.repository) and pull["merged"] != true do
-      with {:ok, asked} <- Reviews.request(workload, pull, number) do
-        sha = get_in(pull, ["head", "sha"])
+  defp reviews(workload, %{state: :open} = pull, number, :done) do
+    if Reviews.enabled?(workload.repository) and not pull.merged do
+      with {:ok, asked} <- Reviews.request(workload, pull.head_sha, number) do
+        sha = pull.head_sha
         reviewed(workload, pull, number, Reviews.assess(workload, number, sha, asked))
       else
         {:error, message} -> {:waiting, "could not ask for reviews: #{message}"}
@@ -231,7 +231,7 @@ defmodule ControlPlane.Settle do
   defp reviewed(workload, pull, number, {:approved, lines}) do
     notes = "Reviews:\n" <> Enum.join(lines, "\n")
 
-    case ReviewApproval.ensure(workload.repository, number, get_in(pull, ["head", "sha"]), lines) do
+    case ReviewApproval.ensure(workload.repository, number, pull.head_sha, lines) do
       :disabled -> {:ok, :done, notes}
       :approved -> {:ok, :done, notes}
       :submitted -> {:waiting, "approved on GitHub by the review App; waiting for it to count"}
@@ -281,8 +281,8 @@ defmodule ControlPlane.Settle do
   # (a required review, a branch up to date), because an account that may bypass
   # those rules would otherwise merge a blocked pull request through the API without
   # anyone saying so. Anything else is reported on the ticket and left to a person.
-  defp merge(workload, %{"state" => "open"} = pull, number, :done) when pull != %{} do
-    if automerge?(workload.repository) and pull["merged"] != true do
+  defp merge(workload, %{state: :open} = pull, number, :done) do
+    if automerge?(workload.repository) and not pull.merged do
       merge_open(workload, pull, number)
     else
       {:ok, :done}
@@ -292,54 +292,45 @@ defmodule ControlPlane.Settle do
   defp merge(_workload, _pull, _number, verdict), do: {:ok, verdict}
 
   defp merge_open(workload, pull, number) do
-    head = pull["head"] || %{}
-    ref = head["ref"] || ""
+    ref = pull.head_ref || ""
 
     cond do
-      pull["mergeable_state"] in [nil, "unknown"] ->
+      pull.mergeability == :unknown ->
         {:waiting, "GitHub has not worked out whether the pull request can be merged"}
 
       not String.starts_with?(ref, "heph/") ->
         not_merged("it is not a pull request the runtime made (heph/...)")
 
-      get_in(head, ["repo", "full_name"]) != workload.repository ->
+      pull.head_repository != workload.repository ->
         not_merged("its branch is in another repository")
 
-      pull["mergeable_state"] != "clean" ->
-        not_merged(unmergeable(pull["mergeable_state"]))
+      pull.mergeability != :clean ->
+        not_merged(unmergeable(pull.mergeability))
 
       true ->
-        put_merge(workload, number, head["sha"])
+        put_merge(workload, number, pull.head_sha)
     end
   end
 
   defp put_merge(workload, number, sha) do
-    case GitHub.write("PUT", "repos/#{workload.repository}/pulls/#{number}/merge", [
-           "merge_method=squash",
-           "sha=#{sha}"
-         ]) do
-      {:ok, _} -> {:ok, {:done, :merged}}
-      {:error, message} -> merge_refused(message)
+    case CodeHost.merge(workload.repository, number, sha) do
+      :ok -> {:ok, {:done, :merged}}
+      # The code host saying the change cannot be merged (not allowed, conflicting, the
+      # head moved) is an answer, to be reported once. Anything else may pass, so it waits.
+      {:refused, message} -> not_merged("GitHub refused the merge: #{message}")
+      {:error, message} -> {:waiting, "could not merge: #{message}"}
     end
-  end
-
-  # GitHub saying the pull request cannot be merged (not allowed, conflicting, the head
-  # moved) is an answer, to be reported once. Anything else may pass, so it waits.
-  defp merge_refused(message) do
-    if Regex.match?(~r/HTTP (405|409|422)/, message),
-      do: not_merged("GitHub refused the merge: #{message}"),
-      else: {:waiting, "could not merge: #{message}"}
   end
 
   defp not_merged(reason), do: {:ok, {:done, {:not_merged, reason}}}
 
-  defp unmergeable("blocked"),
+  defp unmergeable(:blocked),
     do: "it is blocked: its rules are not met (for example a required review)"
 
-  defp unmergeable("behind"), do: "its branch is behind the base"
-  defp unmergeable("dirty"), do: "it has conflicts with the base"
-  defp unmergeable("draft"), do: "it is a draft"
-  defp unmergeable(state), do: "GitHub reports it as #{state}"
+  defp unmergeable(:behind), do: "its branch is behind the base"
+  defp unmergeable(:conflicted), do: "it has conflicts with the base"
+  defp unmergeable(:draft), do: "it is a draft"
+  defp unmergeable({:other, state}), do: "GitHub reports it as #{state}"
 
   defp finish(workload, verdict) do
     Workloads.settle(workload.id)
@@ -354,8 +345,8 @@ defmodule ControlPlane.Settle do
   defp act(workload, {:rerun, runs}, _notes) do
     results =
       for {name, id} <- runs do
-        case GitHub.write("POST", "repos/#{workload.repository}/actions/jobs/#{id}/rerun", []) do
-          {:ok, _} ->
+        case CodeHost.rerun_check(workload.repository, id) do
+          :ok ->
             Workloads.count_rerun(workload.id, name)
             :ok
 
@@ -375,7 +366,7 @@ defmodule ControlPlane.Settle do
   defp act(workload, {:revise, runs, pull, number}, _notes) do
     failures =
       for {name, run} <- runs do
-        %{"name" => name, "result" => run["conclusion"], "excerpt" => excerpt(workload, run)}
+        %{"name" => name, "result" => run.conclusion, "excerpt" => excerpt(workload, run)}
       end
 
     revise(workload, failures, pull, number, &Tickets.revising/4)
@@ -410,13 +401,13 @@ defmodule ControlPlane.Settle do
     revision =
       workload.workload
       |> Map.put("id", Ecto.UUID.generate())
-      |> put_in(["repository", "baseCommit"], pull["head"]["sha"])
+      |> put_in(["repository", "baseCommit"], pull.head_sha)
       |> Map.put(
         "revision",
         %{
           "pullRequestNumber" => to_string(number),
           "pullRequestUrl" => "https://github.com/#{workload.repository}/pull/#{number}",
-          "branch" => pull["head"]["ref"],
+          "branch" => pull.head_ref,
           "attempt" => attempt,
           "failures" => failures
         }
@@ -462,35 +453,24 @@ defmodule ControlPlane.Settle do
     end
   end
 
-  defp verdict(_workload, %{"merged" => true}, _number), do: {:ok, :done}
-  defp verdict(_workload, %{"state" => "closed"}, _number), do: {:ok, :abandoned}
+  defp verdict(_workload, %{merged: true}, _number), do: {:ok, :done}
+  defp verdict(_workload, %{state: :closed}, _number), do: {:ok, :abandoned}
 
-  defp verdict(workload, %{"head" => %{"sha" => sha}, "base" => %{"ref" => base}} = pull, number) do
-    with {:ok, rules} <- GitHub.get("repos/#{workload.repository}/rules/branches/#{base}"),
-         {:ok, runs} <-
-           GitHub.get("repos/#{workload.repository}/commits/#{sha}/check-runs?per_page=100") do
-      judge(workload, required(rules), newest(runs["check_runs"] || []), {pull, number})
+  defp verdict(workload, %{head_sha: sha, base_ref: base} = pull, number)
+       when not is_nil(sha) and not is_nil(base) do
+    with {:ok, required} <- CodeHost.required_checks(workload.repository, base),
+         {:ok, runs} <- CodeHost.checks(workload.repository, sha) do
+      judge(workload, required, newest(runs), {pull, number})
     end
   end
 
   defp verdict(_workload, _pull, _number), do: {:error, "the pull request has no head and base"}
 
-  defp required(rules) do
-    for %{
-          "type" => "required_status_checks",
-          "parameters" => %{"required_status_checks" => checks}
-        } <-
-          rules,
-        %{"context" => context} <- checks,
-        uniq: true,
-        do: context
-  end
-
   # The newest run of each name.
   defp newest(runs) do
     runs
-    |> Enum.group_by(& &1["name"])
-    |> Map.new(fn {name, rs} -> {name, Enum.max_by(rs, & &1["id"])} end)
+    |> Enum.group_by(& &1.name)
+    |> Map.new(fn {name, rs} -> {name, Enum.max_by(rs, & &1.id)} end)
   end
 
   # What a failing check said, for the agent: the check's own title and summary and the
@@ -500,16 +480,14 @@ defmodule ControlPlane.Settle do
   @separator "\n--- the end of the job's log ---\n"
 
   defp excerpt(workload, run) do
-    output = run["output"] || %{}
-
     summary =
-      [output["title"], output["summary"]]
+      [run.title, run.summary]
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
       |> Enum.join("\n")
       |> cut_start(1_500)
 
     log =
-      case GitHub.text("repos/#{workload.repository}/actions/jobs/#{run["id"]}/logs") do
+      case CodeHost.check_log(workload.repository, run.id) do
         {:ok, text} ->
           text
           |> strip_colours()
@@ -555,11 +533,11 @@ defmodule ControlPlane.Settle do
   # maximum execution time of 15m0s"), so they are read, and the check is treated as `timed_out`,
   # which is revised or failed like any other. Annotations that cannot be read leave it a
   # cancellation, as it was.
-  defp timed_out(workload, %{"conclusion" => "cancelled", "id" => id} = run) do
-    case GitHub.get("repos/#{workload.repository}/check-runs/#{id}/annotations") do
-      {:ok, annotations} when is_list(annotations) ->
+  defp timed_out(workload, %Check{conclusion: "cancelled", id: id} = run) do
+    case CodeHost.check_annotations(workload.repository, id) do
+      {:ok, annotations} ->
         if Enum.any?(annotations, &exceeded_time_limit?/1),
-          do: Map.put(run, "conclusion", "timed_out"),
+          do: %{run | conclusion: "timed_out"},
           else: run
 
       _ ->
@@ -569,10 +547,7 @@ defmodule ControlPlane.Settle do
 
   defp timed_out(_workload, run), do: run
 
-  defp exceeded_time_limit?(%{"message" => message}) when is_binary(message),
-    do: message =~ ~r/exceeded the maximum execution time/i
-
-  defp exceeded_time_limit?(_), do: false
+  defp exceeded_time_limit?(message), do: message =~ ~r/exceeded the maximum execution time/i
 
   # The revisions used toward the budget: counted from the attempt the pull request had
   # reached when a maintainer last resumed it, so a resume grants a fresh budget.
@@ -589,15 +564,15 @@ defmodule ControlPlane.Settle do
 
     ended =
       for {name, run} <- looked_at,
-          run != nil and run["status"] == "completed",
+          run != nil and run.state == :completed,
           do: {name, timed_out(workload, run)}
 
-    bad = for {name, run} <- ended, run["conclusion"] not in @good, do: {name, run}
-    cancelled = for {name, run} <- bad, run["conclusion"] == "cancelled", do: {name, run}
+    bad = for {name, run} <- ended, run.conclusion not in @good, do: {name, run}
+    cancelled = for {name, run} <- bad, run.conclusion == "cancelled", do: {name, run}
     failed = Enum.map(bad, &elem(&1, 0))
 
     unfinished =
-      for {name, run} <- looked_at, is_nil(run) or run["status"] != "completed", do: name
+      for {name, run} <- looked_at, is_nil(run) or run.state != :completed, do: name
 
     real = bad -- cancelled
     revisable = revisable(workload, pull_and_number)
@@ -607,7 +582,7 @@ defmodule ControlPlane.Settle do
 
     cond do
       failed != [] and bad == cancelled and rerunnable?(workload, cancelled) ->
-        {:ok, {:rerun, for({name, run} <- cancelled, do: {name, run["id"]})}}
+        {:ok, {:rerun, for({name, run} <- cancelled, do: {name, run.id})}}
 
       real != [] and revisable == :yes ->
         {pull, number} = pull_and_number
@@ -662,8 +637,7 @@ defmodule ControlPlane.Settle do
   # What was left to CI is said on the ticket when it is done, because the check it
   # was left to has been seen to pass. A pull request that was merged before it was
   # looked at has not been checked, so nothing is claimed for it.
-  defp with_left_to_ci(workload, %{"state" => "open", "merged" => merged}, verdict, notes)
-       when merged != true do
+  defp with_left_to_ci(workload, %{state: :open, merged: false}, verdict, notes) do
     case {done?(verdict), deferred(workload)} do
       {true, [_ | _] = left} ->
         lines =
@@ -697,8 +671,7 @@ defmodule ControlPlane.Settle do
   # and the pull request is a branch of this repository that the runtime made. Anything
   # else says why not.
   defp revisable(workload, {pull, _number}) do
-    head = pull["head"] || %{}
-    ref = head["ref"] || ""
+    ref = pull.head_ref || ""
 
     cond do
       revisions() == 0 ->
@@ -710,7 +683,7 @@ defmodule ControlPlane.Settle do
       not String.starts_with?(ref, "heph/") ->
         {:no, "its branch #{inspect(ref)} is not one the runtime made (heph/...)"}
 
-      get_in(head, ["repo", "full_name"]) != workload.repository ->
+      pull.head_repository != workload.repository ->
         {:no, "its branch is in another repository"}
 
       true ->
