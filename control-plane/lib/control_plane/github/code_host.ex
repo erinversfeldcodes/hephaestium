@@ -221,9 +221,12 @@ defmodule ControlPlane.GitHub.CodeHost do
     end
   end
 
+  @doc "The endpoint that says what a login may do in a repository."
+  def permission_endpoint(repo, login), do: "repos/#{repo}/collaborators/#{login}/permission"
+
   @impl true
   def permission(repository, login) do
-    case GitHub.get("repos/#{repository}/collaborators/#{login}/permission") do
+    case GitHub.get(permission_endpoint(repository, login)) do
       {:ok, %{"permission" => "admin"}} -> {:ok, :admin}
       {:ok, %{"permission" => "maintain"}} -> {:ok, :maintain}
       {:ok, %{"permission" => "write"}} -> {:ok, :write}

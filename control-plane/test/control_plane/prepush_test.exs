@@ -141,7 +141,7 @@ defmodule ControlPlane.PrepushTest do
 
   describe "intake" do
     setup %{gh: gh} do
-      StandInGitHub.respond(gh, Run.ready_endpoint(@repo), [
+      StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.ready_endpoint(@repo, "heph:ready"), [
         %{
           "number" => 12,
           "state" => "open",
@@ -150,7 +150,7 @@ defmodule ControlPlane.PrepushTest do
         }
       ])
 
-      StandInGitHub.respond(gh, Run.events_endpoint(@repo, 12), [
+      StandInGitHub.respond(gh, ControlPlane.GitHub.Tracker.events_endpoint(@repo, 12), [
         %{
           "event" => "labeled",
           "created_at" => @approved_at,
@@ -159,10 +159,14 @@ defmodule ControlPlane.PrepushTest do
         }
       ])
 
-      StandInGitHub.respond(gh, Run.permission_endpoint(@repo, "maint"), %{
-        "permission" => "write",
-        "role_name" => "write"
-      })
+      StandInGitHub.respond(
+        gh,
+        ControlPlane.GitHub.CodeHost.permission_endpoint(@repo, "maint"),
+        %{
+          "permission" => "write",
+          "role_name" => "write"
+        }
+      )
 
       StandInGitHub.respond_graphql(gh, 12, %{
         "data" => %{"repository" => %{"issue" => %{"userContentEdits" => %{"nodes" => []}}}}
@@ -257,7 +261,7 @@ defmodule ControlPlane.PrepushTest do
       }
 
     test "carries no lenses and no rounds, and nothing a round made", %{id: id} do
-      assert {:ok, _asked} = Reviews.request(Workloads.get(id), pull(), "52")
+      assert {:ok, _asked} = Reviews.request(Workloads.get(id), pull()["head"]["sha"], "52")
 
       reviews =
         Repo.all(from(w in Workload, where: fragment("?->'review' IS NOT NULL", w.workload)))

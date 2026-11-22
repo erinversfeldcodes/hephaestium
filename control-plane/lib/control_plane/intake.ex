@@ -14,32 +14,29 @@ defmodule ControlPlane.Intake do
   about, is not an approval.
   """
 
-  alias ControlPlane.{Evaluations, GitHub, Prepush, Programs, Runner, Tickets, Workloads}
+  alias ControlPlane.{
+    CodeHost,
+    Evaluations,
+    Prepush,
+    Programs,
+    Runner,
+    Tickets,
+    Tracker,
+    Workloads
+  }
 
   @label "heph:ready"
-  @writers ~w(admin maintain write)
-
-  def ready_endpoint(repo), do: "repos/#{repo}/issues?labels=#{@label}&state=open&per_page=100"
-  def events_endpoint(repo, number), do: "repos/#{repo}/issues/#{number}/events?per_page=100"
-  def permission_endpoint(repo, login), do: "repos/#{repo}/collaborators/#{login}/permission"
-
-  @edits_query """
-  query($owner: String!, $name: String!, $number: Int!) {
-    repository(owner: $owner, name: $name) {
-      issue(number: $number) { userContentEdits(first: 100) { nodes { editedAt editor { login } } } }
-    }
-  }
-  """
+  @writers [:admin, :maintain, :write]
 
   @type result :: :started | :resumed | {:evaluating, String.t()} | {:skipped, term()}
 
   @doc "Check every approved ticket of a repository, and start a workload for each that stands."
   @spec run(String.t()) :: [%{ticket: integer(), result: result()}] | {:error, String.t()}
   def run(repo) do
-    case GitHub.get_all(ready_endpoint(repo)) do
-      {:ok, issues} ->
-        for issue <- issues, open_issue?(issue) do
-          %{ticket: issue["number"], result: consider(repo, issue)}
+    case Tracker.approved_tickets(repo, @label) do
+      {:ok, tickets} ->
+        for ticket <- tickets do
+          %{ticket: ticket.key, result: consider(repo, ticket)}
         end
 
       {:error, message} ->
@@ -47,18 +44,16 @@ defmodule ControlPlane.Intake do
     end
   end
 
-  defp open_issue?(issue), do: issue["state"] == "open" and is_nil(issue["pull_request"])
+  defp consider(repo, ticket) do
+    number = ticket.key
 
-  defp consider(repo, issue) do
-    number = issue["number"]
-
-    with {:ok, events} <- fetch(GitHub.get_all(events_endpoint(repo, number))),
+    with {:ok, events} <- fetch(Tracker.ticket_history(repo, number, pages: :all)),
          {:ok, approval} <- approval(events),
          {:ok, true} <- writer(repo, approval.login, :approver_cannot_write),
          :ok <- not_started(repo, number, approval.at),
          :ok <- not_edited_since(repo, number, events, approval),
          {:ok, plan} <- plan(repo, number) do
-      act(plan, repo, issue, approval)
+      act(plan, repo, ticket, approval)
     else
       {:ok, false, reason} -> {:skipped, reason}
       {:skip, reason} -> {:skipped, reason}
@@ -78,7 +73,7 @@ defmodule ControlPlane.Intake do
 
       workload ->
         with {:ok, pull_number} <- pull_request_number(workload),
-             {:ok, pull} <- fetch(GitHub.get("repos/#{repo}/pulls/#{pull_number}")) do
+             {:ok, pull} <- fetch(CodeHost.change(repo, pull_number)) do
           case resumable(repo, pull) do
             :ok -> {:ok, {:resume, workload, pull}}
             :evaluate -> {:ok, {:evaluate, workload}}
@@ -98,22 +93,21 @@ defmodule ControlPlane.Intake do
   # A pull request that merged leaves nothing to resume. For a repository that judges its
   # merged tickets, a re-approval asks for that judgement instead: whether the ticket the
   # pull request was for is finished, or what is still owed.
-  defp resumable(repo, %{"merged" => true}),
+  defp resumable(repo, %{merged: true}),
     do: if(Evaluations.enabled?(repo), do: :evaluate, else: {:skip, :pull_request_merged})
 
-  defp resumable(_repo, %{"state" => "closed"}), do: {:skip, :pull_request_closed}
+  defp resumable(_repo, %{state: :closed}), do: {:skip, :pull_request_closed}
 
-  defp resumable(repo, %{"state" => "open", "head" => head}) do
-    if String.starts_with?(head["ref"] || "", "heph/") and
-         get_in(head, ["repo", "full_name"]) == repo,
-       do: :ok,
-       else: {:skip, :not_a_runtime_pull_request}
+  defp resumable(repo, %{state: :open} = change) do
+    if String.starts_with?(change.head_ref || "", "heph/") and change.head_repository == repo,
+      do: :ok,
+      else: {:skip, :not_a_runtime_pull_request}
   end
 
   defp resumable(_repo, _pull), do: {:skip, :not_a_runtime_pull_request}
 
-  defp act(:build, repo, issue, approval) do
-    number = issue["number"]
+  defp act(:build, repo, ticket, approval) do
+    number = ticket.key
 
     with {:ok, workload} <- build(repo, number, approval),
          :ok <- unblocked(workload),
@@ -130,10 +124,9 @@ defmodule ControlPlane.Intake do
     end
   end
 
-  defp act({:resume, workload, pull}, _repo, issue, approval) do
+  defp act({:resume, workload, change}, _repo, ticket, approval) do
     :ok = Workloads.resume(workload, approval.at)
-    labels = for %{"name" => name} <- issue["labels"] || [], do: name
-    _ = Tickets.resumed(workload, labels, approval.login, pull["html_url"])
+    _ = Tickets.resumed(workload, ticket.labels, approval.login, change.url)
     :resumed
   end
 
@@ -166,11 +159,11 @@ defmodule ControlPlane.Intake do
   # Who labelled the ticket and when: the most recent labelling counts.
   defp approval(events) do
     events
-    |> Enum.filter(&(&1["event"] == "labeled" and get_in(&1, ["label", "name"]) == @label))
+    |> Enum.filter(&(&1.kind == :labeled and &1.label == @label))
     |> Enum.flat_map(fn event ->
-      with login when is_binary(login) <- get_in(event, ["actor", "login"]),
-           {:ok, at, _} <- DateTime.from_iso8601(event["created_at"] || "") do
-        [%{login: login, at: at, text: event["created_at"]}]
+      with login when is_binary(login) <- event.actor,
+           %DateTime{} = at <- event.at do
+        [%{login: login, at: at, text: event.at_text}]
       else
         _ -> []
       end
@@ -183,15 +176,10 @@ defmodule ControlPlane.Intake do
 
   # Whether a login may write to the repository.
   defp writer(repo, login, reason) do
-    case GitHub.get(permission_endpoint(repo, login)) do
-      {:ok, %{"permission" => permission}} when permission in @writers ->
-        {:ok, true}
-
-      {:ok, _} ->
-        {:ok, false, reason}
-
-      {:error, message} ->
-        if message =~ "404", do: {:ok, false, reason}, else: {:github_error, message}
+    case CodeHost.permission(repo, login) do
+      {:ok, permission} when permission in @writers -> {:ok, true}
+      {:ok, _} -> {:ok, false, reason}
+      {:error, message} -> {:github_error, message}
     end
   end
 
@@ -222,19 +210,12 @@ defmodule ControlPlane.Intake do
   defp not_edited_since(repo, number, events, approval) do
     renamers =
       for event <- events,
-          event["event"] == "renamed",
-          after?(event["created_at"], approval.at),
-          do: get_in(event, ["actor", "login"])
+          event.kind == :renamed,
+          after?(event.at, approval.at),
+          do: event.actor
 
-    [owner, name] = String.split(repo, "/", parts: 2)
-
-    with {:ok, body} <-
-           fetch(GitHub.graphql(@edits_query, owner: owner, name: name, number: number)),
-         {:ok, nodes} <- edit_nodes(body) do
-      editors =
-        for node <- nodes,
-            after?(node["editedAt"], approval.at),
-            do: get_in(node, ["editor", "login"])
+    with {:ok, edits} <- fetch(Tracker.ticket_edits(repo, number)) do
+      editors = for edit <- edits, after?(edit.at, approval.at), do: edit.editor
 
       editors_who_cannot_write(repo, Enum.uniq(renamers ++ editors))
     end
@@ -256,24 +237,8 @@ defmodule ControlPlane.Intake do
     end)
   end
 
-  defp edit_nodes(%{
-         "data" => %{"repository" => %{"issue" => %{"userContentEdits" => %{"nodes" => nodes}}}}
-       })
-       when is_list(nodes),
-       do: {:ok, nodes}
-
-  defp edit_nodes(other),
-    do:
-      {:github_error,
-       "GitHub did not give the ticket's edits: #{inspect(other) |> String.slice(0, 200)}"}
-
-  defp after?(text, at) when is_binary(text) do
-    case DateTime.from_iso8601(text) do
-      {:ok, time, _} -> DateTime.compare(time, at) == :gt
-      _ -> true
-    end
-  end
-
+  # A time that was not given, or cannot be read, counts as after: it cannot be shown to be before.
+  defp after?(%DateTime{} = time, at), do: DateTime.compare(time, at) == :gt
   defp after?(_, _), do: true
 
   @doc """

@@ -102,7 +102,7 @@ defmodule ControlPlane.GitHub.Tracker do
   def sub_tickets(project, key) do
     case GitHub.get("repos/#{project}/issues/#{key}/sub_issues") do
       {:ok, children} when is_list(children) -> {:ok, Enum.map(children, &ticket_of/1)}
-      {:ok, _} -> {:ok, []}
+      {:ok, _} -> {:error, "GitHub did not answer with a list of sub-issues"}
       {:error, message} -> {:error, message}
     end
   end
