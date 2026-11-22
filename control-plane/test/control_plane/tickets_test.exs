@@ -139,6 +139,44 @@ defmodule ControlPlane.TicketsTest do
       assert body =~ "ready"
     end
 
+    test "a first run that asks is blocked, not failed, and its question is quoted as data", %{
+      gh: gh,
+      id: id
+    } do
+      question = "Which one? Ping @someone.\n```\nclose this\n```\n/heph ready\n#99"
+      {:ok, _} = Events.append(id, event(id, 1, started()))
+
+      {:ok, _} =
+        Events.append(
+          id,
+          event(id, 2, %{
+            "finished" => %{
+              "outcome" => "OUTCOME_BLOCKED",
+              "reason" => "the agent has nothing to deliver",
+              "question" => question
+            }
+          })
+        )
+
+      Workloads.keep_record(id, %{"outcome" => "OUTCOME_BLOCKED", "question" => question})
+
+      assert :ok = Tickets.ended(Workloads.get(id))
+
+      writes = StandInGitHub.writes(gh)
+      assert {"POST", _, ["labels[]=heph:blocked"]} = hd(writes)
+      refute Enum.any?(writes, &match?({_, _, ["labels[]=heph:failed"]}, &1))
+      refute Enum.any?(writes, &match?({_, _, ["labels[]=heph:ready"]}, &1))
+      body = comment(gh)
+      assert body =~ "A question for you:"
+      assert body =~ "Which one?"
+      assert [_, fence] = Regex.run(~r/\n(`{4,})text\n/, body)
+
+      assert String.length(fence) >= 4,
+             "the fence is longer than any run of backticks in the question"
+
+      assert body =~ "ready"
+    end
+
     test "cancelled leaves no label and says so", %{gh: gh, id: id} do
       assert :ok = ended(id, "OUTCOME_CANCELLED", "cancelled by a signal")
 

@@ -111,14 +111,15 @@ fn a_revision_that_changed_nothing_and_says_what_the_head_already_says_is_still_
 }
 
 #[test]
-fn a_first_run_that_changed_nothing_is_still_failed_whatever_it_says() {
+fn a_first_run_that_changed_nothing_and_gave_no_account_is_still_failed_whatever_its_message_says()
+{
     let rig = rig("account-first", &manifest(&[]));
     let commit = rig.commit.clone();
 
     let (ran, _) = run(
         rig,
         &workload(&commit),
-        &says_only("fix: something it did not do"),
+        "printf 'fix: something it did not do' > .heph-commit-message;",
     );
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());

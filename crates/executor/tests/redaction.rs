@@ -185,6 +185,27 @@ fn a_token_in_the_reason_the_run_ends_on_is_a_marker_in_the_event_and_the_record
 }
 
 #[test]
+fn a_secret_in_the_question_the_agent_asks_is_a_marker_in_the_event_and_the_record() {
+    let rig = common::rig("redact-question", &common::manifest(&[]));
+    let script = "printf 'Should I use %s for it?' \"$CLAUDE_CODE_OAUTH_TOKEN\" > .heph-question;";
+
+    let ran = run(rig, script, &[("CLAUDE_CODE_OAUTH_TOKEN", CLAUDE)]);
+
+    let expected = format!("Should I use {MARKER} for it?");
+    let events = ran.events();
+    let Some(contracts::v1alpha1::event::Kind::Finished(done)) =
+        events.last().and_then(|e| e.kind.as_ref())
+    else {
+        panic!("no finished event: {}", ran.stderr());
+    };
+    assert_eq!(done.outcome, Outcome::Blocked as i32, "{}", ran.stderr());
+    assert_eq!(done.question, expected, "the event");
+    assert_eq!(ran.record().question, expected, "the record");
+    assert!(!record_text(&ran).contains(CLAUDE), "{}", record_text(&ran));
+    assert!(!stdout(&ran).contains(CLAUDE));
+}
+
+#[test]
 fn text_that_holds_only_part_of_a_secret_is_left_as_it_was() {
     let rig = common::rig("redact-part", &common::manifest(&[]));
     let (half, longer) = (&CLAUDE[..12], format!("{CLAUDE}-and-more"));

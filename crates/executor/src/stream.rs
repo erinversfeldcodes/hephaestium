@@ -75,6 +75,10 @@ pub struct Stream<'a, W: Write> {
     skills: Vec<SkillLoaded>,
     gates: Vec<GateRun>,
     pull_request: Option<PullRequestOpened>,
+    // The last thing the agent said in words: its account of what it did or found.
+    last_message: Option<String>,
+    // What the run asks a person, when it ended by asking.
+    question: String,
     redactor: Redactor,
 }
 
@@ -90,8 +94,25 @@ impl<'a, W: Write> Stream<'a, W> {
             skills: Vec::new(),
             gates: Vec::new(),
             pull_request: None,
+            last_message: None,
+            question: String::new(),
             redactor: Redactor::default(),
         }
+    }
+
+    /// The last thing the agent said in words, if it said anything besides whitespace.
+    #[must_use]
+    pub fn account(&self) -> Option<&str> {
+        self.last_message
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    }
+
+    /// Say what the run asks a person: the question is written in the last event and the
+    /// run record when the run finishes.
+    pub fn ask(&mut self, question: &str) {
+        question.clone_into(&mut self.question);
     }
 
     /// Take the value of every secret `redactor` holds out of each event before it is written,
@@ -125,6 +146,7 @@ impl<'a, W: Write> Stream<'a, W> {
             }
             Kind::SkillLoaded(skill) => self.skills.push(skill.clone()),
             Kind::PullRequestOpened(pr) => self.pull_request = Some(pr.clone()),
+            Kind::AgentMessage(said) => self.last_message = Some(said.text.clone()),
             Kind::GateFinished(gate) => self.gates.push(GateRun {
                 name: gate.name.clone(),
                 result: gate.result.clone(),
@@ -183,7 +205,7 @@ impl<'a, W: Write> Stream<'a, W> {
         self.emit(Kind::Finished(Finished {
             outcome: outcome as i32,
             reason: reason.to_owned(),
-            question: String::new(),
+            question: self.question.clone(),
         }))?;
         let finished_at = Timestamp {
             seconds: self.last.0,
@@ -194,7 +216,7 @@ impl<'a, W: Write> Stream<'a, W> {
             workload: Some(workload.clone()),
             outcome: outcome as i32,
             reason: reason.to_owned(),
-            question: String::new(),
+            question: self.question,
             started_at: self.started_at,
             finished_at: Some(finished_at),
             gates: self.gates,

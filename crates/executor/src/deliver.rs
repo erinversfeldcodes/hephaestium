@@ -31,6 +31,10 @@ pub const RESOLUTION_FILE: &str = ".heph-resolution";
 /// commit message's body is the description when there is none.
 pub const DESCRIPTION_FILE: &str = ".heph-description.md";
 
+/// Where the agent leaves a question when it cannot go on: one question, with the answer it
+/// would choose and why. The run ends blocked with it, for a person to answer.
+pub const QUESTION_FILE: &str = ".heph-question";
+
 /// How long one git or gh command may take.
 const TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -465,6 +469,21 @@ fn read_resolution(workspace: &Path) -> Resolution {
         return Resolution::Partial((!rest.is_empty()).then(|| rest.to_owned()));
     }
     Resolution::Unsaid
+}
+
+/// The commit the agent says already fixes the ticket on the base branch, when
+/// [`RESOLUTION_FILE`] says `resolved-by: <commit>`. Only a commit's hexadecimal name counts, so
+/// text that is not one is never put in front of a person as a commit.
+#[must_use]
+pub fn resolved_by(workspace: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(workspace.join(RESOLUTION_FILE)).ok()?;
+    let (word, rest) = text.trim().split_once(':')?;
+    if !word.trim().eq_ignore_ascii_case("resolved-by") {
+        return None;
+    }
+    let commit = rest.trim();
+    ((7..=64).contains(&commit.len()) && commit.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| commit.to_owned())
 }
 
 /// What goes in the pull request's description besides the agent's message.

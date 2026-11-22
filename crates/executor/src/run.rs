@@ -508,6 +508,10 @@ fn finish_first_run<W: Write>(
 ) -> Result<(Outcome, String), Refused> {
     let (options, secrets) = (asking.options, asking.secrets);
     let delivering = options.deliver && secrets.get(secrets::GITHUB_TOKEN).is_some();
+    if let Some(question) = stops_to_ask(workload, workspace, delivering, stream) {
+        stream.ask(&question);
+        return Ok((Outcome::Blocked, blocked_reason(workload)));
+    }
     let since = match carry_if(delivering, workload, workspace, since) {
         Ok(Carried::Onto(since)) => since,
         // The base changed what the agent changed: the agent resolves the difference and
@@ -530,6 +534,52 @@ fn finish_first_run<W: Write>(
         Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
         Err(failed) => Ok((Outcome::Failed, failed.summary)),
     }
+}
+
+/// Why the run ended blocked and not failed.
+fn blocked_reason(workload: &Workload) -> String {
+    if workload.revision.is_some() {
+        "the agent cannot go on without a person's answer".to_owned()
+    } else {
+        "the agent has nothing to deliver, and a person is asked what to do".to_owned()
+    }
+}
+
+/// What a person is asked, when the agent's work ended without anything to deliver or with
+/// something it could not decide: its own question; that the base already fixes the ticket,
+/// which a person closes; or, for a first run that is to deliver and changed nothing, what the
+/// agent said about why. None when there is something to carry on with, or nothing to say.
+fn stops_to_ask<W: Write>(
+    workload: &Workload,
+    workspace: &Path,
+    delivering: bool,
+    stream: &Stream<'_, W>,
+) -> Option<String> {
+    let account = stream.account();
+    if let Ok(text) = fs::read_to_string(workspace.join(deliver::QUESTION_FILE))
+        && !text.trim().is_empty()
+    {
+        return Some(text.trim().to_owned());
+    }
+    // A revision is judged on what it changed; only a first run is asked about the ticket.
+    if workload.revision.is_some() {
+        return None;
+    }
+    if let Some(commit) = deliver::resolved_by(workspace) {
+        let mut question = format!(
+            "The ticket's problem looks already fixed on the base branch, by commit {commit}, so there is nothing to change. Should a person close the ticket?"
+        );
+        if let Some(account) = account {
+            question.push_str("\n\nThe agent's account:\n\n");
+            question.push_str(account);
+        }
+        return Some(question);
+    }
+    let unchanged = git_output(&["status", "--porcelain"], workspace).is_ok_and(|s| s.is_empty());
+    if delivering && unchanged {
+        return account.map(str::to_owned);
+    }
+    None
 }
 
 /// Whether the run reads its own change under lenses before it pushes: it was given lenses and
@@ -1414,6 +1464,8 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
     text.push_str(deliver::MESSAGE_FILE);
     text.push('\n');
     text.push_str(deliver::RESOLUTION_FILE);
+    text.push('\n');
+    text.push_str(deliver::QUESTION_FILE);
     text.push('\n');
     text.push_str(deliver::DESCRIPTION_FILE);
     text.push('\n');

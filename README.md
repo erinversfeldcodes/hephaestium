@@ -199,6 +199,18 @@ and `--deliver` pushes to the pull request's own branch with a plain push, never
 and opens nothing. The branch must be one the runtime made (`heph/...`), and a revision
 that names no failing check, no pull request or an attempt of zero is refused.
 
+An agent that cannot go on, or that finds nothing to change, ends the run `blocked` and not
+`failed`, with what a person needs in the `finished` event's and the run record's `question`; the
+workspace is kept and nothing is pushed. The agent is told that no person will answer in the middle
+of the run, to proceed on what the ticket settles, and otherwise to stop. It asks by writing one
+question to `.heph-question`, with the answer it would choose and why (any run, first or revision).
+A first run that is to deliver and changed nothing ends blocked with the agent's last message as the
+question, when it left one; with no message it still fails, "nothing to deliver". A first run whose
+`.heph-resolution` says `resolved-by: <commit>` (a hexadecimal commit name) says the ticket's problem
+is already fixed on the base branch: it ends blocked with the question proposing that a person close
+the ticket, naming the commit, and nothing is opened. A revision that changes nothing is judged as
+before, and stays failed when it says what the head already says.
+
 A workload that carries `lenses` (every lens of the pinned Athenaeum release, with its text) and
 `prepush_rounds` is read before it is pushed
 ([ADR 0035](./docs/adr/0035-a-change-is-reviewed-locally-under-every-lens-and-pushed-only-when-each-has-approved-it.md)).
