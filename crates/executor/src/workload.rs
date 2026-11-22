@@ -68,27 +68,23 @@ fn check_values(workload: &Workload) -> Result<(), String> {
     Ok(())
 }
 
-/// What a revision is pushed to and told. The branch goes to `git push`, so it
-/// must be one the runtime made and nothing that could be taken for an option or
-/// a way to another ref; the pull request must be a GitHub address, and there
-/// must be something that failed.
+/// What a revision is pushed to and told. The branch goes to `git push`, so it must be
+/// a name git accepts for a branch and nothing that could be taken for an option or a
+/// way to another ref, and it is never the repository's base branch; the pull request
+/// must be a GitHub address, and there must be something that failed. Which branch a
+/// pull request is on is the control plane's record, so the name is not held to a prefix.
 fn check_revision(workload: &Workload) -> Result<(), String> {
     let Some(revision) = workload.revision.as_ref() else {
         return Ok(());
     };
     let branch = &revision.branch;
-    let rest = branch.strip_prefix("heph/");
-    if rest.is_none_or(|rest| {
-        rest.is_empty()
-            || rest
-                .split('/')
-                .any(|part| part.is_empty() || part == "." || part == "..")
-            || !rest
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
-    }) {
+    let base = workload
+        .repository
+        .as_ref()
+        .map_or("", |repository| repository.base_branch.as_str());
+    if let Some(problem) = unsafe_branch(branch, base) {
         return Err(format!(
-            "the revision's branch {branch:?} is not one the runtime made (heph/ and then letters, digits, - _ . and /)"
+            "the revision's branch {branch:?} is not one the runtime can push to: {problem}"
         ));
     }
     if revision.pull_request_number <= 0 {
@@ -118,6 +114,41 @@ fn check_revision(workload: &Workload) -> Result<(), String> {
         return Err("a failing check in the revision has no name".to_owned());
     }
     Ok(())
+}
+
+/// Why a branch name is not safe to push a revision to, or nothing when it is. The rules are
+/// a conservative part of git's own for a branch name (`git check-ref-format --branch`):
+/// letters, digits and `-_./`, no component that is empty, begins with `.` or ends `.lock`,
+/// no `..`, no leading `-`, no trailing `.`; and it is not the base branch.
+fn unsafe_branch(branch: &str, base: &str) -> Option<&'static str> {
+    if branch.is_empty() {
+        return Some("it is empty");
+    }
+    if branch.starts_with('-') {
+        return Some("it begins with a hyphen");
+    }
+    if !branch
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return Some("it uses more than letters, digits, - _ . and /");
+    }
+    if branch.contains("..") || branch.ends_with('.') {
+        return Some("it has a .. or ends with a dot");
+    }
+    if branch.split('/').any(|part| {
+        part.is_empty()
+            || part.starts_with('.')
+            || part
+                .rsplit_once('.')
+                .is_some_and(|(_, last)| last == "lock")
+    }) {
+        return Some("a part of it is empty, begins with a dot or ends in .lock");
+    }
+    if branch == "HEAD" || branch == base {
+        return Some("it is the base branch");
+    }
+    None
 }
 
 /// What an evaluation is told. It is never also a revision or a review: each ends a

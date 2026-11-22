@@ -562,6 +562,13 @@ defmodule ControlPlane.SettleTest do
     defp revision_of(id),
       do: Enum.find(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
 
+    defp record_branch(id, branch) do
+      Workloads.keep_record(id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url, "headBranch" => branch}
+      })
+    end
+
     test "a revision keeps the lenses and rounds its first run carried, so its push is read too",
          %{id: id} do
       lenses = [%{"pack" => "rust", "document" => "the rust lens"}]
@@ -739,6 +746,32 @@ defmodule ControlPlane.SettleTest do
       assert note =~ "branch"
       assert revision_of(id) == nil
       assert hd(comments(gh)) =~ "not revised"
+    end
+
+    test "a pull request whose head is the recorded branch is revised, whatever the branch is called",
+         %{gh: gh, id: id} do
+      record_branch(id, "feature/PROJ-12-a-fix")
+      StandInGitHub.respond(gh, @pull, pull_on("feature/PROJ-12-a-fix"))
+
+      assert result(id) == {:revising, 1}
+      assert revision_of(id).workload["revision"]["branch"] == "feature/PROJ-12-a-fix"
+    end
+
+    test "a pull request with the old prefix but another recorded branch is not revised", %{
+      gh: gh,
+      id: id
+    } do
+      record_branch(id, "feature/PROJ-12-a-fix")
+      StandInGitHub.respond(gh, @pull, pull_on("heph/12-by-a-person"))
+
+      assert {:failed, ["ci"], note} = result(id)
+      assert note =~ "recorded"
+      assert revision_of(id) == nil
+    end
+
+    test "a pull request recorded with no branch and the old prefix is still revised", %{id: id} do
+      assert Workloads.recorded_branch(Workloads.get(id)) == nil
+      assert result(id) == {:revising, 1}
     end
 
     test "a pull request from a branch in another repository is not revised", %{gh: gh, id: id} do
@@ -1188,6 +1221,13 @@ defmodule ControlPlane.SettleTest do
     defp merges(gh),
       do: for({"PUT", @merge, fields} <- StandInGitHub.writes(gh), do: fields)
 
+    defp record_merge_branch(id, branch) do
+      Workloads.keep_record(id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url, "headBranch" => branch}
+      })
+    end
+
     test "green and clean: it is merged once, squashed, at the head it judged, and the ticket says so",
          %{gh: gh, id: id} do
       assert result(id) == {:done, :merged}
@@ -1253,6 +1293,26 @@ defmodule ControlPlane.SettleTest do
 
     test "a pull request that is not one the runtime made is not merged", %{gh: gh, id: id} do
       StandInGitHub.respond(gh, @pull, mergeable("clean", "feature/someone-elses"))
+
+      assert {:done, {:not_merged, reason}} = result(id)
+      assert reason =~ "runtime"
+      assert merges(gh) == []
+    end
+
+    test "a pull request whose head is the recorded branch is merged, whatever the branch is called",
+         %{gh: gh, id: id} do
+      record_merge_branch(id, "feature/PROJ-12-a-fix")
+      StandInGitHub.respond(gh, @pull, mergeable("clean", "feature/PROJ-12-a-fix"))
+
+      assert result(id) == {:done, :merged}
+      assert length(merges(gh)) == 1
+    end
+
+    test "a pull request with the old prefix but another recorded branch is not merged", %{
+      gh: gh,
+      id: id
+    } do
+      record_merge_branch(id, "feature/PROJ-12-a-fix")
 
       assert {:done, {:not_merged, reason}} = result(id)
       assert reason =~ "runtime"

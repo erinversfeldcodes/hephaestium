@@ -157,10 +157,41 @@ fn a_revision_whose_branch_has_moved_is_not_forced() {
 }
 
 #[test]
+fn a_revision_goes_on_its_recorded_branch_whatever_the_branch_is_called() {
+    let branch = "feature/PROJ-12-an-earlier-title";
+    let rig = rig("revision-named", &manifest(&[]));
+    git(&rig.source, &["switch", "-q", "-c", branch]);
+    rig.scratch
+        .write("source/web/first.txt", "the first attempt\n");
+    git(&rig.source, &["add", "."]);
+    git(
+        &rig.source,
+        &["commit", "-q", "-m", "fix: the first attempt"],
+    );
+    let head = git(&rig.source, &["rev-parse", "HEAD"]);
+    git(&rig.source, &["switch", "-q", "main"]);
+    let mut value = workload(&head);
+    value["revision"] = revision(branch);
+
+    let (ran, source) = run_revision(rig, &value, &agent_script(""));
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    let events = ran.events();
+    let Some(Kind::PullRequestOpened(pr)) = events[events.len() - 2].kind.as_ref() else {
+        panic!("{:?}", kinds(&events));
+    };
+    assert_eq!(pr.head_branch, branch);
+    assert_eq!(git(&source, &["rev-parse", &format!("{branch}^")]), head);
+}
+
+#[test]
 #[rustfmt::skip] // rustfmt drops the semicolons that clippy asks closures like these to keep
 fn a_revision_that_is_not_safe_is_refused_before_anything_is_created() {
     for (name, edit) in [
-        ("a branch that is not the runtime's", "main"),
+        ("the base branch", "main"),
+        ("a branch that ends in a dot", "feature/x."),
+        ("a branch with a lock part", "feature/x.lock/y"),
+        ("a branch with an empty part", "feature//x"),
         ("a branch that climbs out", "heph/../main"),
         ("a branch that is an option", "-heph/x"),
         ("a branch with a space", "heph/a b"),
