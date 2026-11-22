@@ -17,6 +17,7 @@ use heph::lock;
 use heph::manifest::{self, Invalid};
 use heph::run;
 use heph::sync;
+use heph::worker;
 use heph::workload;
 
 /// What a build reports when no version was compiled in.
@@ -85,6 +86,25 @@ Commands:
                          Exits 0 if the workload completed, 1 if it ended any
                          other way, 2 on a usage error and 3 if it could not
                          be run.
+
+  worker --control-plane URL [--runs-dir PATH] [--executor PATH]
+                         Do the work a hosted control plane gives this machine:
+                         ask it for a workload, run the executor on it as `run`
+                         does, send the events and the run record back, and ask
+                         again, until stopped by an interrupt or a termination,
+                         which stops the executor and sends how it ended. It
+                         opens every connection and listens on none, and tries
+                         again with growing waits when it cannot connect. The
+                         device token, which a signed-in person makes in the
+                         control plane, is HEPH_WORKER_TOKEN, or
+                         HEPH_WORKER_TOKEN_FILE, or the file
+                         ~/.config/hephaestium/worker-token (mode 600); it is
+                         never an argument, and never sent in anything but the
+                         Authorization header. The executor's own secrets stay
+                         on this machine, found as `run` finds them. Plain http
+                         is accepted only for this machine. Exits 0 when
+                         stopped, 2 on a usage error and 3 if it could not go
+                         on.
 
   workload TICKET [--repo OWNER/NAME] [--root PATH] [--model NAME]
                    [--timeout-seconds N] [--budget-usd X]
@@ -197,6 +217,9 @@ fn main() -> ExitCode {
             .map_or_else(workload_usage_error, |request| run_workload(&request)),
         ["run", rest @ ..] => WorkloadRequest::parse(rest, true)
             .map_or_else(run_usage_error, |request| run_ticket(&request)),
+        ["worker", rest @ ..] => {
+            Worker::parse(rest).map_or_else(worker_usage_error, |request| run_worker(&request))
+        }
         ["sync", rest @ ..] => {
             Sync::parse(rest).map_or_else(sync_usage_error, |request| run_sync(&request))
         }
@@ -1057,6 +1080,67 @@ fn run_ticket(request: &WorkloadRequest) -> ExitCode {
     match run::run(&options) {
         Ok(run::Ended::Completed) => ExitCode::SUCCESS,
         Ok(run::Ended::Otherwise) => ExitCode::from(FAILED),
+        Err(message) => could_not_run(&message),
+    }
+}
+
+/// What `worker` was asked to do.
+struct Worker {
+    control_plane: String,
+    runs_dir: Option<String>,
+    executor: Option<String>,
+}
+
+impl Worker {
+    /// Read the arguments after `worker`, or `None` if they are not the options with their
+    /// values or there is no address.
+    fn parse(arguments: &[&str]) -> Option<Self> {
+        let mut control_plane = None;
+        let mut runs_dir = None;
+        let mut executor = None;
+        let mut remaining = arguments.iter();
+        while let Some(argument) = remaining.next() {
+            let value = (*remaining.next()?).to_owned();
+            match *argument {
+                "--control-plane" => control_plane = Some(value),
+                "--runs-dir" => runs_dir = Some(value),
+                "--executor" => executor = Some(value),
+                _ => return None,
+            }
+        }
+        Some(Self {
+            control_plane: control_plane?,
+            runs_dir,
+            executor,
+        })
+    }
+}
+
+fn worker_usage_error() -> ExitCode {
+    eprintln!(
+        "heph: expected 'worker --control-plane URL [--runs-dir PATH] [--executor PATH]'\n\n{USAGE}"
+    );
+    ExitCode::from(USAGE_ERROR)
+}
+
+/// Do the work a control plane gives this machine, until told to stop.
+fn run_worker(request: &Worker) -> ExitCode {
+    let token = match worker::token() {
+        Ok(token) => token,
+        Err(message) => return could_not_run(&message),
+    };
+    // A stop is passed on to the executor and waited for, and does not end this program
+    // before the run has said how it ended.
+    if let Err(error) = heph::process::install_cancellation() {
+        return could_not_run(&format!("could not install the signal handlers: {error}"));
+    }
+    let options = worker::Options {
+        control_plane: request.control_plane.clone(),
+        runs_dir: request.runs_dir.as_ref().map(std::path::PathBuf::from),
+        executor: request.executor.as_ref().map(std::path::PathBuf::from),
+    };
+    match worker::run(&options, token, &heph::process::cancelled) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(message) => could_not_run(&message),
     }
 }

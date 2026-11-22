@@ -7,6 +7,7 @@
 )]
 
 pub mod github;
+pub mod link;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

@@ -50,12 +50,12 @@ pub enum Ended {
     Otherwise,
 }
 
-fn environment(name: &str) -> Option<String> {
+pub(crate) fn environment(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 /// Where `hephaestium`'s own files are kept: `$XDG_CONFIG_HOME` or `~/.config`.
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let base = environment("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| environment("HOME").map(|home| PathBuf::from(home).join(".config")))?;
@@ -64,7 +64,7 @@ fn config_dir() -> Option<PathBuf> {
 
 /// The runs directory: the option, else `$XDG_STATE_HOME/hephaestium/runs`,
 /// else `~/.local/state/hephaestium/runs`.
-fn runs_dir(option: Option<&Path>) -> Result<PathBuf, String> {
+pub(crate) fn runs_dir(option: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(path) = option.filter(|path| !path.as_os_str().is_empty()) {
         return Ok(path.to_path_buf());
     }
@@ -80,7 +80,7 @@ fn runs_dir(option: Option<&Path>) -> Result<PathBuf, String> {
 /// file offered to the executor through its `_FILE` variable, for that child
 /// only. A secret a run cannot go on without, and that is nowhere, is an error
 /// that says where to put it.
-fn secret_files() -> Result<Vec<(String, PathBuf)>, String> {
+pub(crate) fn secret_files() -> Result<Vec<(String, PathBuf)>, String> {
     let mut offered = Vec::new();
     for (name, file, required) in SECRETS {
         if environment(name).is_some() || environment(&format!("{name}_FILE")).is_some() {
@@ -106,7 +106,7 @@ fn secret_files() -> Result<Vec<(String, PathBuf)>, String> {
 
 /// The executor to run: the option, else the one in `beside` (the directory of
 /// this program), else the one on the path.
-fn executor_path(option: Option<&Path>, beside: Option<&Path>) -> PathBuf {
+pub(crate) fn executor_path(option: Option<&Path>, beside: Option<&Path>) -> PathBuf {
     if let Some(path) = option {
         return path.to_path_buf();
     }
@@ -114,6 +114,31 @@ fn executor_path(option: Option<&Path>, beside: Option<&Path>) -> PathBuf {
         .map(|dir| dir.join("executor"))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from("executor"))
+}
+
+/// The command that runs the executor on a workload, delivering, with the secret files it is
+/// offered, and its output piped. Where its diagnostics go is for the caller to say.
+pub(crate) fn executor_command(
+    executor: &Path,
+    workload_file: &Path,
+    work: &Path,
+    record: &Path,
+    offered: Vec<(String, PathBuf)>,
+) -> Command {
+    let mut command = Command::new(executor);
+    command
+        .arg("run")
+        .arg("--workload")
+        .arg(workload_file)
+        .arg("--work-dir")
+        .arg(work)
+        .arg("--record")
+        .arg(record)
+        .arg("--deliver")
+        .envs(offered)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped());
+    command
 }
 
 /// Run a ticket.
@@ -175,20 +200,8 @@ pub fn run(options: &Options) -> Result<Ended, String> {
 
     let log_file = std::fs::File::create(&log)
         .map_err(|e| format!("could not make {}: {e}", log.display()))?;
-    let mut command = Command::new(&executor);
-    command
-        .arg("run")
-        .arg("--workload")
-        .arg(&workload_file)
-        .arg("--work-dir")
-        .arg(&work)
-        .arg("--record")
-        .arg(&record)
-        .arg("--deliver")
-        .envs(offered)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(log_file));
+    let mut command = executor_command(&executor, &workload_file, &work, &record, offered);
+    command.stderr(Stdio::from(log_file));
     let mut child = command.spawn().map_err(|error| {
         format!(
             "could not start the executor ({}): {error}",
@@ -228,7 +241,7 @@ pub fn run(options: &Options) -> Result<Ended, String> {
 /// How long a run that did not complete keeps its checkout: the option, else the
 /// environment, else 72 hours. A setting that is not a whole number of hours is an
 /// error, found before anything is made.
-fn keep_window(option: Option<u64>) -> Result<Duration, String> {
+pub(crate) fn keep_window(option: Option<u64>) -> Result<Duration, String> {
     let hours = match (option, environment("HEPH_WORKSPACE_KEEP_HOURS")) {
         (Some(hours), _) => hours,
         (None, Some(text)) => text.parse().map_err(|_| {

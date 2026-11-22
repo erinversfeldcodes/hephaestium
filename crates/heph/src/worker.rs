@@ -1,0 +1,644 @@
+//! `heph worker`: do the work a hosted control plane gives this machine.
+//!
+//! The worker opens every connection. It asks the control plane for a workload, runs the
+//! executor on it as `heph run` does, sends the executor's events in order as they come, keeps
+//! the lease alive, and sends the run record at the end. Model keys, the code host's token and
+//! the repository's own scripts stay on this machine: the worker reads the executor's secrets
+//! only to hand the executor the files they are in, and sends nothing but what the executor
+//! wrote, which has already had every secret it holds taken out.
+
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher as _, Hasher as _};
+use std::io::{BufRead as _, BufReader};
+use std::os::unix::fs::DirBuilderExt as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
+use rustix::process::{Pid, Signal, kill_process};
+use serde_json::Value;
+
+use crate::link::{Claim, Client, Failure, Token};
+use crate::run;
+use crate::workspaces;
+
+/// The variable the device token is given in.
+pub const TOKEN_VARIABLE: &str = "HEPH_WORKER_TOKEN";
+
+/// The variable that names a file the device token is in.
+pub const TOKEN_FILE_VARIABLE: &str = "HEPH_WORKER_TOKEN_FILE";
+
+/// Where the token is looked for, under the configuration directory, when no variable says.
+const TOKEN_FILE: &str = "worker-token";
+
+/// The first wait after a failure to reach the control plane, which doubles each time.
+const BACKOFF_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait between tries.
+const BACKOFF_LONGEST: Duration = Duration::from_secs(60);
+
+/// The longest wait between tries of a request that belongs to a run in progress, which must be
+/// made again well inside the lease.
+const BACKOFF_IN_A_RUN: Duration = Duration::from_secs(5);
+
+/// A claim that is answered with none sooner than this after it was asked is not a long poll
+/// that waited, so the next one is not made at once.
+const SHORTEST_POLL: Duration = Duration::from_secs(1);
+
+/// How long an executor that has been told to stop is given before it is killed.
+const GRACE: Duration = Duration::from_secs(10);
+
+/// The most events sent in one request.
+const MOST_EVENTS: usize = 500;
+
+/// How often what is waited for is looked at: a stop, a line from the executor.
+const LOOK: Duration = Duration::from_millis(100);
+
+/// What `run` was asked to do.
+pub struct Options {
+    pub control_plane: String,
+    pub runs_dir: Option<PathBuf>,
+    pub executor: Option<PathBuf>,
+}
+
+/// The device token: from `HEPH_WORKER_TOKEN`, else the file `HEPH_WORKER_TOKEN_FILE` names,
+/// else `worker-token` under the configuration directory. A file must be one only its owner
+/// can read. It is never taken from an argument, which a process listing would show, and no
+/// message made here holds it.
+///
+/// # Errors
+///
+/// Returns where to put the token when there is none, or what is wrong with the one given.
+pub fn token() -> Result<Token, String> {
+    token_from(
+        run::environment(TOKEN_VARIABLE),
+        run::environment(TOKEN_FILE_VARIABLE),
+        run::config_dir().map(|dir| dir.join(TOKEN_FILE)),
+    )
+}
+
+fn token_from(
+    variable: Option<String>,
+    named_file: Option<String>,
+    default_file: Option<PathBuf>,
+) -> Result<Token, String> {
+    match (variable, named_file) {
+        (Some(_), Some(_)) => Err(format!(
+            "{TOKEN_VARIABLE} and {TOKEN_FILE_VARIABLE} are both set: give one"
+        )),
+        (Some(value), None) => Ok(Token::new(value.trim().to_owned())),
+        (None, Some(path)) => read_token(Path::new(&path), TOKEN_FILE_VARIABLE),
+        (None, None) => match default_file.clone().filter(|path| path.is_file()) {
+            Some(path) => read_token(&path, "the token file"),
+            None => Err(format!(
+                "no device token: set {TOKEN_VARIABLE}, or {TOKEN_FILE_VARIABLE} to a file only you can read, or put the token in {} (mode 600). A signed-in person makes one in the control plane",
+                default_file.map_or_else(
+                    || format!("~/.config/hephaestium/{TOKEN_FILE}"),
+                    |path| path.display().to_string()
+                )
+            )),
+        },
+    }
+}
+
+fn read_token(path: &Path, what: &str) -> Result<Token, String> {
+    let shown = path.display();
+    let metadata = std::fs::metadata(path).map_err(|error| format!("{what}: {shown}: {error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("{what}: {shown} is not a regular file"));
+    }
+    if metadata.mode() & 0o077 != 0 {
+        return Err(format!(
+            "{what}: {shown} can be read by others (mode {:03o}); run: chmod 600 {shown}",
+            metadata.mode() & 0o777
+        ));
+    }
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("{what}: {shown}: {error}"))?;
+    let value = text.trim();
+    if value.is_empty() {
+        return Err(format!("{what}: {shown} is empty"));
+    }
+    Ok(Token::new(value.to_owned()))
+}
+
+/// How long to wait after the `failures`th failure in a row to do something: it doubles from
+/// `first` up to `longest`, and is made random between half of that and all of it, so that
+/// machines that lost the same connection together do not all come back together.
+fn backoff(failures: u32, first: Duration, longest: Duration) -> Duration {
+    let doubled = first.saturating_mul(2_u32.saturating_pow(failures.saturating_sub(1)));
+    let wait = doubled.min(longest);
+    // A random number from the standard library's own seeded hasher: nothing here needs more.
+    let random = RandomState::new().build_hasher().finish();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a fraction of a wait does not need all 64 bits"
+    )]
+    let fraction = (random >> 11) as f64 / (1_u64 << 53) as f64;
+    wait.mul_f64(0.5 + fraction / 2.0)
+}
+
+/// Wait, looking for a stop. False when there was one.
+fn pause(wait: Duration, stop: &dyn Fn() -> bool) -> bool {
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        if stop() {
+            return false;
+        }
+        std::thread::sleep(LOOK.min(until.saturating_duration_since(Instant::now())));
+    }
+    !stop()
+}
+
+/// What a claim that was made on a thread of its own came to.
+enum Asked {
+    Answer(Result<Option<Claim>, Failure>),
+    Stopped,
+}
+
+/// Ask for a workload without being held by the wait when a stop comes. A claim that is
+/// answered after the stop is dropped, and the control plane's lease on it lapses.
+fn ask(client: &Client, stop: &dyn Fn() -> bool) -> Asked {
+    let (sender, answer) = mpsc::channel();
+    let client = client.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(client.claim());
+    });
+    loop {
+        if stop() {
+            return Asked::Stopped;
+        }
+        match answer.recv_timeout(LOOK) {
+            Ok(answer) => return Asked::Answer(answer),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Asked::Answer(Err(Failure::Trouble(
+                    "the claim ended without an answer".to_owned(),
+                )));
+            }
+        }
+    }
+}
+
+/// Claim workloads and run them until told to stop.
+///
+/// A workload is claimed only when nothing else is running, so a worker runs one at a time. A
+/// claim whose answer is lost is never run: the worker never saw it, and the control plane's
+/// lease on it lapses.
+///
+/// # Errors
+///
+/// Returns why the worker cannot go on: the address is unusable, the executor's secrets are
+/// missing, or the control plane does not accept the token.
+pub fn run(options: &Options, token: Token, stop: &dyn Fn() -> bool) -> Result<(), String> {
+    let client = Client::new(&options.control_plane, token)?;
+    // Found out before anything is claimed, so that a worker that could not deliver does not
+    // take work it will only fail.
+    run::secret_files()?;
+
+    let mut failures: u32 = 0;
+    while !stop() {
+        let asked_at = Instant::now();
+        let claim = match ask(&client, stop) {
+            Asked::Stopped => break,
+            Asked::Answer(Ok(claim)) => {
+                failures = 0;
+                claim
+            }
+            Asked::Answer(Err(Failure::Denied)) => {
+                return Err(
+                    "the control plane does not accept the device token: it was revoked or is not one it made"
+                        .to_owned(),
+                );
+            }
+            Asked::Answer(Err(failure)) => {
+                failures = failures.saturating_add(1);
+                let wait = backoff(failures, BACKOFF_FIRST, BACKOFF_LONGEST);
+                eprintln!(
+                    "heph: worker: could not claim ({failure}); trying again in {} seconds",
+                    wait.as_secs().max(1)
+                );
+                pause(wait, stop);
+                continue;
+            }
+        };
+        let Some(claim) = claim else {
+            if asked_at.elapsed() < SHORTEST_POLL {
+                pause(SHORTEST_POLL, stop);
+            }
+            continue;
+        };
+        // A stop that came while the answer was on its way: nothing is started.
+        if stop() {
+            break;
+        }
+        if let Err(message) = serve(&client, &claim, options, stop) {
+            eprintln!("heph: worker: workload {}: {message}", claim.id);
+        }
+    }
+    Ok(())
+}
+
+/// A name that is safe to make a directory of.
+fn safe(text: &str) -> Option<&str> {
+    let ok = !text.is_empty()
+        && text != "."
+        && text != ".."
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    ok.then_some(text)
+}
+
+/// Make the directory a run is kept in, outside any project, and put the workload in it.
+fn make_run_directory(claim: &Claim, options: &Options) -> Result<PathBuf, String> {
+    let workload = &claim.workload;
+    let id = safe(&claim.id).ok_or("its id is not one that can name a directory")?;
+    let repository = format!(
+        "{}-{}",
+        safe(workload["repository"]["owner"].as_str().unwrap_or_default())
+            .ok_or("it names no repository owner")?,
+        safe(workload["repository"]["name"].as_str().unwrap_or_default())
+            .ok_or("it names no repository")?
+    );
+    let ticket = safe(workload["ticket"]["number"].as_str().unwrap_or("0")).unwrap_or("0");
+
+    let keep = run::keep_window(None)?;
+    let runs = run::runs_dir(options.runs_dir.as_deref())?;
+    for warning in &workspaces::sweep(&runs, keep, std::time::SystemTime::now()).warnings {
+        eprintln!("heph: warning: {warning}");
+    }
+    let directory = runs.join(repository).join(format!("{ticket}-{id}"));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&directory)
+        .map_err(|e| format!("could not make {}: {e}", directory.display()))?;
+    let text = serde_json::to_string_pretty(workload).map_err(|e| e.to_string())?;
+    let workload_file = directory.join("workload.json");
+    std::fs::write(&workload_file, text + "\n")
+        .map_err(|e| format!("could not write {}: {e}", workload_file.display()))?;
+    Ok(directory)
+}
+
+/// Run one claimed workload and send what it says. The error is why it could not be run at all;
+/// the control plane's lease on it then lapses.
+fn serve(
+    client: &Client,
+    claim: &Claim,
+    options: &Options,
+    stop: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let directory = make_run_directory(claim, options)?;
+    let workload_file = directory.join("workload.json");
+    let offered = run::secret_files()?;
+    let work = directory.join("work");
+    let record = directory.join("record.json");
+    // A workload that was put back is run again from the start: what a lost run left is of no
+    // use, and its record must not be taken for this run's.
+    let _ = std::fs::remove_file(&record);
+    let _ = std::fs::remove_dir_all(&work);
+    let log = std::fs::File::create(directory.join("executor.log"))
+        .map_err(|e| format!("could not make the executor's log: {e}"))?;
+
+    let this_program = std::env::current_exe().ok();
+    let executor = run::executor_path(
+        options.executor.as_deref(),
+        this_program.as_deref().and_then(Path::parent),
+    );
+    let mut command = run::executor_command(&executor, &workload_file, &work, &record, offered);
+    // The executor, and the agent and the scripts under it, are not given the token that
+    // speaks for this machine to the control plane.
+    command
+        .env_remove(TOKEN_VARIABLE)
+        .env_remove(TOKEN_FILE_VARIABLE)
+        .stderr(Stdio::from(log));
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "could not start the executor ({}): {error}",
+            executor.display()
+        )
+    })?;
+    println!("workload {}: running", claim.id);
+
+    let output = child.stdout.take().ok_or("the executor has no output")?;
+    let lines = read_lines(output);
+    let mut sending = Sending {
+        client,
+        claim,
+        last_ok: Instant::now(),
+        started: Instant::now(),
+    };
+    let gone = sending.follow(&mut child, &lines, stop);
+    let status = child
+        .wait()
+        .map_err(|e| format!("waiting for the executor failed: {e}"))?;
+    if let Some(why) = gone {
+        println!(
+            "workload {}: stopped, because {why}; nothing more is sent for it",
+            claim.id
+        );
+        return Ok(());
+    }
+
+    let Ok(text) = std::fs::read_to_string(&record) else {
+        // Nothing is made up in its place: the control plane sees the lease lapse and decides
+        // from the events what that means.
+        return Err(format!(
+            "the executor ended ({}) without a run record: {}",
+            status
+                .code()
+                .map_or_else(|| "by a signal".to_owned(), |c| format!("code {c}")),
+            tail(&directory.join("executor.log"))
+        ));
+    };
+    let value: Value = serde_json::from_str(&text)
+        .ok()
+        .filter(Value::is_object)
+        .ok_or("the run record is not a JSON object")?;
+    match sending.deliver(|| client.record(&claim.id, &text)) {
+        Delivered::Yes => {}
+        Delivered::Gone(why) => {
+            println!(
+                "workload {}: the record was not kept, because {why}",
+                claim.id
+            );
+            return Ok(());
+        }
+    }
+    let outcome = value["outcome"]
+        .as_str()
+        .unwrap_or("OUTCOME_UNSPECIFIED")
+        .trim_start_matches("OUTCOME_")
+        .to_lowercase();
+    println!("workload {}: {outcome}", claim.id);
+    if outcome == "completed"
+        && let Err(warning) = workspaces::delete_checkout(&directory)
+    {
+        eprintln!("heph: warning: {warning}");
+    }
+    Ok(())
+}
+
+/// The executor's output a line at a time, on a thread of its own so that this one can notice a
+/// stop, the end of a lease and the time for a heartbeat while the executor is quiet.
+fn read_lines(output: std::process::ChildStdout) -> Receiver<String> {
+    let (sender, lines) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(output).split(b'\n') {
+            let Ok(bytes) = line else { break };
+            if sender
+                .send(String::from_utf8_lossy(&bytes).into_owned())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    lines
+}
+
+/// The last few lines of a file, for saying what went wrong.
+fn tail(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(8)..].join("\n")
+}
+
+enum Delivered {
+    Yes,
+    /// The control plane does not hold the workload for this machine any more, or will not
+    /// take what is sent, or could not be reached for as long as a lease lasts. Why.
+    Gone(String),
+}
+
+/// What is sent for one run, and how long it has been since anything was.
+struct Sending<'a> {
+    client: &'a Client,
+    claim: &'a Claim,
+    last_ok: Instant,
+    started: Instant,
+}
+
+impl Sending<'_> {
+    /// Read the executor's output until it ends, sending each event as it comes. A stop asked
+    /// of this program is passed on once, to the executor, which says how it ended; and
+    /// reading goes on until it has. Returns why the run was stopped when the control plane
+    /// took the workload back, and the executor was stopped for it.
+    fn follow(
+        &mut self,
+        child: &mut Child,
+        lines: &Receiver<String>,
+        stop: &dyn Fn() -> bool,
+    ) -> Option<String> {
+        let (client, claim) = (self.client, self.claim);
+        let heartbeat_every = claim.lease / 4;
+        let mut batch: Vec<String> = Vec::new();
+        let mut told_to_stop = false;
+        let mut gone: Option<(String, Instant)> = None;
+        let mut killed = false;
+        loop {
+            let mut ended = false;
+            match lines.recv_timeout(LOOK) {
+                Ok(line) => {
+                    batch.push(line);
+                    while batch.len() < MOST_EVENTS
+                        && let Ok(line) = lines.try_recv()
+                    {
+                        batch.push(line);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => ended = true,
+            }
+
+            if gone.is_some() {
+                // What it says now is not sent: the control plane does not hold the run.
+                batch.clear();
+            } else if !batch.is_empty() {
+                let numbered: Vec<String> =
+                    batch.drain(..).map(|line| self.numbered(&line)).collect();
+                for line in &numbered {
+                    show(line, self.started);
+                }
+                if let Delivered::Gone(why) = self.deliver(|| client.events(&claim.id, &numbered)) {
+                    gone = Some((why, Instant::now()));
+                    terminate(child);
+                }
+            } else if self.last_ok.elapsed() >= heartbeat_every
+                && let Delivered::Gone(why) = self.deliver(|| client.heartbeat(&claim.id))
+            {
+                gone = Some((why, Instant::now()));
+                terminate(child);
+            }
+
+            if stop() && !told_to_stop && gone.is_none() {
+                told_to_stop = true;
+                println!("stopping: telling the executor to stop what it is running…");
+                terminate(child);
+            }
+            if let Some((_, since)) = &gone
+                && !killed
+                && since.elapsed() >= GRACE
+            {
+                killed = true;
+                let _ = child.kill();
+            }
+            if ended {
+                return gone.map(|(why, _)| why);
+            }
+        }
+    }
+
+    /// Make a request that belongs to the run, again and again while the control plane cannot
+    /// be reached, for as long as a lease lasts.
+    fn deliver(&mut self, request: impl Fn() -> Result<(), Failure>) -> Delivered {
+        let mut failures: u32 = 0;
+        loop {
+            match request() {
+                Ok(()) => {
+                    self.last_ok = Instant::now();
+                    return Delivered::Yes;
+                }
+                Err(Failure::Trouble(why)) => {
+                    if self.last_ok.elapsed() >= self.claim.lease {
+                        return Delivered::Gone(format!(
+                            "the control plane could not be reached for as long as a lease lasts ({why})"
+                        ));
+                    }
+                    failures = failures.saturating_add(1);
+                    std::thread::sleep(backoff(failures, BACKOFF_FIRST, BACKOFF_IN_A_RUN));
+                }
+                Err(other) => return Delivered::Gone(other.to_string()),
+            }
+        }
+    }
+
+    /// The line as the control plane is to keep it: the executor numbers its events from 1, and
+    /// a workload that was put back goes on from where the lost run left off.
+    fn numbered(&self, line: &str) -> String {
+        let offset = self.claim.next_sequence - 1;
+        if offset == 0 {
+            return line.to_owned();
+        }
+        let Ok(mut event) = serde_json::from_str::<Value>(line) else {
+            return line.to_owned();
+        };
+        let sequence = match &event["sequence"] {
+            Value::String(text) => text.parse::<u64>().ok(),
+            number => number.as_u64(),
+        };
+        let Some(sequence) = sequence else {
+            return line.to_owned();
+        };
+        // The contract's JSON mapping writes a 64-bit number as a string.
+        event["sequence"] = Value::String((sequence + offset).to_string());
+        event.to_string()
+    }
+}
+
+/// Tell the executor to stop what it started, once. It says how it ended and exits.
+fn terminate(child: &Child) {
+    if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
+        let _ = kill_process(pid, Signal::TERM);
+    }
+}
+
+/// Show the event, as `heph run` does.
+fn show(line: &str, started: Instant) {
+    if let Some(shown) = serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|event| run::render(&event))
+    {
+        let seconds = started.elapsed().as_secs();
+        println!("[{:02}:{:02}] {shown}", seconds / 60, seconds % 60);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn file(name: &str, mode: u32, text: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("heph-worker-{name}-{}", std::process::id()));
+        std::fs::write(&path, text).expect("a file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        path
+    }
+
+    #[test]
+    fn the_token_is_the_variable_else_the_named_file_else_the_default_file() {
+        let named = file("named", 0o600, "hdt_from-file\n");
+        let default = file("default", 0o600, "hdt_default\n");
+        let shown = |token: Result<Token, String>| format!("{token:?}");
+        assert!(
+            token_from(Some("hdt_v".into()), None, Some(default.clone()))
+                .expect("a token")
+                .is_in("hdt_v")
+        );
+        assert!(
+            token_from(
+                None,
+                Some(named.display().to_string()),
+                Some(default.clone())
+            )
+            .expect("a token")
+            .is_in("hdt_from-file")
+        );
+        assert!(
+            token_from(None, None, Some(default.clone()))
+                .expect("a token")
+                .is_in("hdt_default")
+        );
+        assert!(!shown(token_from(None, None, Some(default))).contains("hdt_default"));
+    }
+
+    #[test]
+    fn two_ways_of_giving_the_token_are_an_error_and_none_says_where_to_put_it() {
+        let error = token_from(Some("a".into()), Some("/x".into()), None).expect_err("both");
+        assert!(error.contains("give one"), "{error}");
+        let error =
+            token_from(None, None, Some(PathBuf::from("/nowhere/worker-token"))).expect_err("none");
+        assert!(error.contains("/nowhere/worker-token"), "{error}");
+        assert!(error.contains("mode 600"), "{error}");
+    }
+
+    #[test]
+    fn a_token_file_others_can_read_or_that_is_empty_is_refused_without_showing_it() {
+        let open = file("open", 0o644, "hdt_the-secret\n");
+        let error = token_from(None, Some(open.display().to_string()), None).expect_err("open");
+        assert!(error.contains("chmod 600"), "{error}");
+        assert!(!error.contains("hdt_the-secret"), "{error}");
+        let empty = file("empty", 0o600, "\n");
+        let error = token_from(None, Some(empty.display().to_string()), None).expect_err("empty");
+        assert!(error.contains("is empty"), "{error}");
+    }
+
+    #[test]
+    fn a_wait_doubles_to_a_cap_and_is_never_less_than_half_of_it() {
+        let first = Duration::from_secs(1);
+        let longest = Duration::from_secs(60);
+        for _ in 0..200 {
+            for (failures, whole) in [(1, 1), (2, 2), (3, 4), (6, 32), (7, 60), (40, 60)] {
+                let wait = backoff(failures, first, longest);
+                let whole = Duration::from_secs(whole);
+                assert!(wait >= whole / 2 && wait <= whole, "{failures}: {wait:?}");
+            }
+        }
+        let varied: std::collections::BTreeSet<u128> = (0..50)
+            .map(|_| backoff(5, first, longest).as_micros())
+            .collect();
+        assert!(varied.len() > 1, "the wait is the same every time");
+    }
+
+    #[test]
+    fn only_plain_names_make_a_directory() {
+        assert_eq!(safe("0d7a1c3e-6f2b"), Some("0d7a1c3e-6f2b"));
+        assert_eq!(safe(".."), None);
+        assert_eq!(safe("a/b"), None);
+        assert_eq!(safe(""), None);
+    }
+}
