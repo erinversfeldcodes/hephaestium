@@ -149,6 +149,35 @@ defmodule ControlPlane.GitHub.Tracker do
   end
 
   @impl true
+  def ensure_labels(project, labels) do
+    with {:ok, existing} <- GitHub.get_all("repos/#{project}/labels?per_page=100") do
+      present = for %{"name" => name} <- existing, into: MapSet.new(), do: name
+
+      failures =
+        for label <- labels, not MapSet.member?(present, label.name), reduce: [] do
+          failures ->
+            case create_label(project, label) do
+              :ok -> failures
+              {:error, message} -> failures ++ ["#{label.name}: #{message}"]
+            end
+        end
+
+      if failures == [], do: :ok, else: {:error, Enum.join(failures, "; ")}
+    end
+  end
+
+  # The only write to a repository's configuration the control plane makes, so it is said in
+  # the log.
+  defp create_label(project, label) do
+    fields = ["name=#{label.name}", "color=#{label.colour}", "description=#{label.description}"]
+
+    with {:ok, _} <- GitHub.write("POST", "repos/#{project}/labels", fields) do
+      Logger.info("created the label #{label.name} in #{project}")
+      :ok
+    end
+  end
+
+  @impl true
   def add_label(project, key, label),
     do: logged("POST", issue(project, key) <> "/labels", ["labels[]=#{label}"])
 

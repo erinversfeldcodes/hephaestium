@@ -32,6 +32,7 @@ defmodule ControlPlane.Tracker do
               {:ok, Ticket.t()} | error
   @callback link_sub_ticket(project, parent :: key, child :: Ticket.t()) :: :ok | error
   @callback block_ticket(project, key, blocker :: Ticket.t()) :: :ok | error
+  @callback ensure_labels(project, labels :: [ControlPlane.TicketLabels.label()]) :: :ok | error
   @callback add_label(project, key, label :: String.t()) :: :ok | error
   @callback remove_label(project, key, label :: String.t()) :: :ok | error
   @callback comment_on_ticket(project, key, body :: String.t()) :: :ok | error
@@ -59,6 +60,13 @@ defmodule ControlPlane.Tracker do
     do: call(repository, :link_sub_ticket, [parent, child])
 
   def block_ticket(repository, key, blocker), do: call(repository, :block_ticket, [key, blocker])
+
+  @doc """
+  Make the labels exist in the repository's tracker: read what is there once, create only
+  what is missing, and leave every label that exists as it is.
+  """
+  def ensure_labels(repository, labels), do: call(repository, :ensure_labels, [labels])
+
   def add_label(repository, key, label), do: call(repository, :add_label, [key, label])
   def remove_label(repository, key, label), do: call(repository, :remove_label, [key, label])
 
