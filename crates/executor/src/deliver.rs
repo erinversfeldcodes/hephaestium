@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use contracts::v1alpha1::{PullRequestOpened, Workload};
-use heph::process::{Go, Streamed, stream};
+use heph::process::{Go, Streamed, Tick, stream};
 
 use crate::run::say;
 
@@ -110,8 +110,26 @@ fn environment(token: &str) -> Vec<(String, String)> {
     environment
 }
 
-/// Run a command and return what it wrote to standard output, line by line.
+/// Run a command and return what it wrote to standard output, line by line. For the local ones,
+/// which take no time worth a heartbeat.
 fn run(command: &[&str], directory: &Path, token: &str, what: &str) -> Result<Vec<String>, String> {
+    let mut nothing = || Go::On;
+    let mut idle = Tick {
+        every: TIMEOUT,
+        call: &mut nothing,
+    };
+    run_ticking(command, directory, token, what, &mut idle)
+}
+
+/// [`run`] for a command that reaches the network. `tick` is called at its interval while the
+/// command runs, and a tick that says to stop ends the command.
+fn run_ticking(
+    command: &[&str],
+    directory: &Path,
+    token: &str,
+    what: &str,
+    tick: &mut Tick<'_>,
+) -> Result<Vec<String>, String> {
     let command: Vec<String> = command.iter().map(|word| (*word).to_owned()).collect();
     let lines = RefCell::new(Vec::new());
     let ended = stream(
@@ -119,12 +137,12 @@ fn run(command: &[&str], directory: &Path, token: &str, what: &str) -> Result<Ve
         directory,
         &environment(token),
         TIMEOUT,
-        TIMEOUT,
+        tick.every,
         |line| {
             lines.borrow_mut().push(line.to_owned());
             Go::On
         },
-        || Go::On,
+        || (tick.call)(),
         say,
     )
     .map_err(|error| format!("{what}: {error}"))?;
@@ -268,9 +286,10 @@ pub fn deliver(
     gh: &str,
     token: &str,
     deferred: &[Deferred],
+    tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
     let committed = commit_locally(workload, workspace)?;
-    push_and_open(workload, workspace, gh, token, deferred, &committed)
+    push_and_open(workload, workspace, gh, token, deferred, &committed, tick)
 }
 
 /// Push a commit that was made locally, and open the pull request, or for a revision update
@@ -291,12 +310,13 @@ pub fn push_and_open(
     token: &str,
     deferred: &[Deferred],
     committed: &Committed,
+    tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
     let message = read_message(workspace)?;
     let branch = committed.branch.clone();
 
     let helper = format!("credential.helper=!{gh} auth git-credential");
-    run(
+    run_ticking(
         &[
             "git",
             "-c",
@@ -310,6 +330,7 @@ pub fn push_and_open(
         workspace,
         token,
         &format!("could not push {branch}"),
+        tick,
     )?;
 
     let resolution = read_resolution(workspace);
@@ -331,7 +352,7 @@ pub fn push_and_open(
     // done after the push, so a push that was refused leaves the description describing
     // the head the pull request still has.
     if let Some(revision) = workload.revision.as_ref() {
-        update_pull_request(workload, workspace, gh, token, revision, &description)?;
+        update_pull_request(workload, workspace, gh, token, revision, &description, tick)?;
         return Ok(PullRequestOpened {
             url: revision.pull_request_url.clone(),
             number: revision.pull_request_number,
@@ -339,7 +360,7 @@ pub fn push_and_open(
         });
     }
 
-    open_pull_request(workload, workspace, gh, token, &branch, &description)
+    open_pull_request(workload, workspace, gh, token, &branch, &description, tick)
 }
 
 /// Write the description of a pull request to a file beside the workspace, for `gh`.
@@ -363,12 +384,13 @@ fn update_pull_request(
     token: &str,
     revision: &contracts::v1alpha1::Revision,
     description: &Description<'_>,
+    tick: &mut Tick<'_>,
 ) -> Result<(), String> {
     let subject = description.message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
     let repository_name = format!("{}/{}", repository.owner, repository.name);
     let body_path = write_body(workload, workspace, description)?;
-    run(
+    run_ticking(
         &[
             gh,
             "pr",
@@ -384,6 +406,7 @@ fn update_pull_request(
         workspace,
         token,
         "the work was pushed, but could not update the pull request",
+        tick,
     )?;
     Ok(())
 }
@@ -396,12 +419,13 @@ fn open_pull_request(
     token: &str,
     branch: &str,
     description: &Description<'_>,
+    tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
     let subject = description.message.lines().next().unwrap_or_default();
     let repository = workload.repository.as_ref().expect("checked when read");
     let body_path = write_body(workload, workspace, description)?;
     let repository_name = format!("{}/{}", repository.owner, repository.name);
-    let lines = run(
+    let lines = run_ticking(
         &[
             gh,
             "pr",
@@ -420,6 +444,7 @@ fn open_pull_request(
         workspace,
         token,
         "could not open the pull request",
+        tick,
     )?;
 
     let url = lines
