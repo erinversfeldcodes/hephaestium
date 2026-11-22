@@ -50,6 +50,37 @@ if port = whole_number.("HEPH_HEALTH_PORT", 1..65535) do
   config :control_plane, :health, port: port
 end
 
+# The HTTP API behind a GitHub login. Off unless a port is named. A secret is read from its
+# variable, or from the file a `_FILE` variable names (a platform's mounted secret); it is never
+# printed, and a message about it names the variable only.
+secret = fn name ->
+  case {System.get_env(name, ""), System.get_env(name <> "_FILE", "")} do
+    {"", ""} -> nil
+    {value, ""} -> String.trim(value)
+    {_, path} -> path |> File.read!() |> String.trim()
+  end
+end
+
+if port = whole_number.("HEPH_API_PORT", 1..65535) do
+  secret_key_base = secret.("HEPH_API_SECRET_KEY_BASE")
+
+  if secret_key_base in [nil, ""] do
+    raise "HEPH_API_SECRET_KEY_BASE is not set: the API will not start without a key to sign sessions with"
+  end
+
+  config :control_plane, :api,
+    port: port,
+    secret_key_base: secret_key_base,
+    client_id: secret.("HEPH_API_GITHUB_CLIENT_ID"),
+    client_secret: secret.("HEPH_API_GITHUB_CLIENT_SECRET"),
+    base_url: System.get_env("HEPH_API_BASE_URL", ""),
+    allowed_logins:
+      "HEPH_API_ALLOWED_LOGINS"
+      |> System.get_env("")
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.trim/1)
+end
+
 # How Oban's nodes tell each other that work arrived. By default the database does, with
 # LISTEN/NOTIFY, which a pooled connection in transaction mode cannot carry; `pg` uses Erlang's
 # process groups instead and sends nothing through the database.
