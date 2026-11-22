@@ -849,6 +849,38 @@ defmodule ControlPlane.SettleTest do
       assert note =~ "`text\n"
     end
 
+    test "the last failure points to each revision on the dashboard when it is configured, with none of the words",
+         %{id: id} do
+      Application.put_env(:control_plane, :dashboard, url: "https://heph.example.test")
+      on_exit(fn -> Application.delete_env(:control_plane, :dashboard) end)
+
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+      {:ok, _} = Events.append(first.id, event(first.id, 1, started()))
+
+      {:ok, _} =
+        Events.append(first.id, event(first.id, 2, agent_message("Read lib/secret_plan.ex.")))
+
+      Workloads.keep_record(first.id, %{"outcome" => "OUTCOME_FAILED"})
+      Workloads.fail(first.id, "the agent changed nothing, so there is nothing to deliver")
+      {:ok, second} = Workloads.create(revision_workload(first.id, 2), parent: first.id)
+
+      Workloads.keep_record(second.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      complete(second.id)
+      Workloads.settle(id)
+
+      assert {:failed, ["ci"], note} =
+               Enum.find(Settle.run(), &(&1.workload_id == second.id)).result
+
+      assert note =~ "revision 1: failed"
+      assert note =~ "https://heph.example.test/tickets/"
+      assert note =~ "#run-#{first.id}"
+      refute note =~ "secret_plan"
+    end
+
     test "a revision whose agent said nothing is listed as giving no account", %{id: id} do
       {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
       Workloads.keep_record(first.id, %{"outcome" => "OUTCOME_FAILED"})
