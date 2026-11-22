@@ -254,3 +254,17 @@ fn heartbeats_are_written_while_a_revisions_pull_request_is_updated() {
 
     beats_during_delivery(&ran, "the update of the pull request");
 }
+
+#[test]
+fn heartbeats_are_written_while_the_push_is_checked_before_the_agent_starts() {
+    let ran = delivering("wait-push-check", "--dry-run", 0);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    let events = ran.events();
+    let beats = beats_in(&events, 0, position(&events, "workspace_ready"));
+    assert!(
+        beats >= 2,
+        "heartbeats between started and workspace_ready while the dry-run push ran: {beats}"
+    );
+    gapless(&events);
+}

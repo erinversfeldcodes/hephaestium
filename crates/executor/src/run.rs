@@ -98,7 +98,7 @@ pub fn run(
     let spent = Cell::new(0.0_f64);
     // Which agents the run started and what each spent, when it reads its own change.
     let steps = RefCell::new(Vec::<Step>::new());
-    let (outcome, reason) = match prepare(options, &workload, &workspace, &mut stream) {
+    let (outcome, reason) = match prepare(options, &workload, &workspace, secrets, &mut stream) {
         Ok((manifest, since)) => {
             // A review or an evaluation is held to changing nothing, so what the
             // workspace is before the agent runs is kept to compare with what it is after.
@@ -340,6 +340,7 @@ fn prepare<W: Write>(
     options: &Options,
     workload: &Workload,
     workspace: &Path,
+    secrets: &Secrets,
     stream: &mut Stream<'_, W>,
 ) -> Result<(Manifest, String), String> {
     // The clone and the merge of the base can take minutes on a large repository, and the
@@ -347,6 +348,14 @@ fn prepare<W: Write>(
     let commit = beating(options.heartbeat, stream, |tick| {
         clone(options, workload, workspace, tick)?;
         bring_in_base(workload, workspace, tick)?;
+        // A run that will push finds out now whether it can, before any agent is paid for.
+        if let (true, false, Some(token)) = (
+            options.deliver,
+            read_only(workload),
+            secrets.get(secrets::GITHUB_TOKEN),
+        ) {
+            deliver::check_push(workload, workspace, &options.gh, token, tick)?;
+        }
         Ok::<_, String>(
             git_output(&["rev-parse", "HEAD"], workspace)?
                 .trim()
