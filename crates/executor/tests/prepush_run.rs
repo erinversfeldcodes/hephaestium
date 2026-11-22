@@ -150,7 +150,10 @@ fn go(setup: Setup, starts: &[String], edit: impl FnOnce(&mut Value), deliver: b
     }
     let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let source = rig.source.clone();
-    let ran = run_with_env(rig.scratch, &value, None, &refs, &IDENTITY);
+    // The wait between a reader's tries is for an outage; the tests do not wait.
+    let mut environment: Vec<(&str, &str)> = IDENTITY.to_vec();
+    environment.push(("HEPH_READER_RETRY_WAIT_MS", "0"));
+    let ran = run_with_env(rig.scratch, &value, None, &refs, &environment);
     let starts = std::fs::read_to_string(root.join("n"))
         .map_or(0, |text| text.trim().parse().expect("a count"));
     let gate_runs = std::fs::read_to_string(log).map_or(0, |text| text.lines().count());
@@ -292,11 +295,13 @@ fn rounds_used_up_with_a_lens_still_blocking_pushes_nothing_and_says_what_was_fo
 }
 
 #[test]
-fn a_reader_that_leaves_no_verdict_is_no_approval() {
+fn a_reader_that_leaves_no_verdict_is_tried_three_times_and_is_then_no_approval() {
     let went = go(
         setup("prepush-silent"),
-        &[implements("v1"), say(), say()],
-        |_| {},
+        &[implements("v1"), say(), say(), say()],
+        |value| {
+            value["prepushRounds"] = json!(1);
+        },
         true,
     );
 
@@ -304,10 +309,126 @@ fn a_reader_that_leaves_no_verdict_is_no_approval() {
     assert_eq!(outcome, Outcome::Failed, "{reason}");
     assert!(reason.contains("no verdict"), "{reason}");
     assert_eq!(
-        went.starts, 3,
-        "read again in the next round, with nothing to revise by"
+        went.starts, 4,
+        "the implementing agent, and the reader three times"
     );
     assert_eq!(pushed(&went).len(), 0);
+    let tries: Vec<(i32, i32)> = went
+        .ran
+        .record()
+        .steps
+        .iter()
+        .filter(|s| s.kind == StepKind::Review as i32)
+        .map(|s| (s.round, i32::from(s.verdict.is_empty())))
+        .collect();
+    assert_eq!(
+        tries,
+        [(1, 1), (1, 1), (1, 1)],
+        "each try is a step of round 1"
+    );
+}
+
+#[test]
+fn a_reader_that_could_not_run_is_tried_again_in_the_same_round_and_no_round_is_used() {
+    let went = go(
+        setup("prepush-recovers"),
+        &[
+            implements("v1"),
+            "echo 'API Error: Can not reach the API server' >&2; exit 1".to_owned(),
+            reads("rust", "approved", None),
+        ],
+        |value| {
+            value["prepushRounds"] = json!(1);
+        },
+        true,
+    );
+
+    assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
+    assert_eq!(
+        went.starts, 3,
+        "the implementing agent, the reader that failed, the reader again"
+    );
+    assert_eq!(pushed(&went), [BRANCH]);
+    let reviews: Vec<(i32, String)> = went
+        .ran
+        .record()
+        .steps
+        .iter()
+        .filter(|s| s.kind == StepKind::Review as i32)
+        .map(|s| (s.round, s.verdict.clone()))
+        .collect();
+    assert_eq!(
+        reviews,
+        [(1, String::new()), (1, "approved".to_owned())],
+        "both tries are round 1, and only one round was allowed"
+    );
+}
+
+#[test]
+fn a_reader_that_recovers_still_leaves_the_rounds_to_fix_what_it_finds() {
+    let went = go(
+        setup("prepush-recovers-then-blocks"),
+        &[
+            implements("v1"),
+            "exit 1".to_owned(),
+            reads("rust", "needs_revision", Some("an unchecked unwrap")),
+            fixes("v2"),
+            reads("rust", "approved", None),
+        ],
+        |_| {},
+        true,
+    );
+
+    assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
+    assert_eq!(went.starts, 5);
+    assert_eq!(
+        git(
+            &went.source,
+            &["show", &format!("{BRANCH}:web/changed.txt")]
+        ),
+        "v2"
+    );
+}
+
+#[test]
+fn a_verdict_that_was_given_is_never_tried_again() {
+    let went = go(
+        setup("prepush-not-retried"),
+        &[
+            implements("v1"),
+            reads("rust", "needs_revision", Some("an unchecked unwrap")),
+        ],
+        |value| {
+            value["prepushRounds"] = json!(1);
+        },
+        true,
+    );
+
+    assert_eq!(finished(&went.ran.events()).0, Outcome::Failed);
+    assert_eq!(
+        went.starts, 2,
+        "a reader's judgement is not a failure to retry"
+    );
+}
+
+#[test]
+fn a_reader_that_changed_a_file_is_not_tried_again() {
+    let went = go(
+        setup("prepush-editor"),
+        &[
+            implements("v1"),
+            format!("echo edited >> web/changed.txt; {}", say()),
+        ],
+        |value| {
+            value["prepushRounds"] = json!(1);
+        },
+        true,
+    );
+
+    let (outcome, reason) = finished(&went.ran.events());
+    assert_eq!(outcome, Outcome::Failed, "{reason}");
+    assert!(reason.contains("changed the workspace"), "{reason}");
+    assert_eq!(went.starts, 2, "a reader that edits is not a flake");
 }
 
 #[test]

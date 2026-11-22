@@ -548,6 +548,19 @@ fn lenses_needed<'a>(
     Ok(prepush::choose(&workload.lenses, &needed))
 }
 
+/// How long to wait before a reader that could not run is started again: an outage of the API
+/// is waited out and not spent in three attempts at once. `HEPH_READER_RETRY_WAIT_MS`, ten
+/// seconds if it is not set, and a stop is noticed while waiting.
+fn wait_before_trying_again() {
+    let wait = environment("HEPH_READER_RETRY_WAIT_MS")
+        .and_then(|text| text.parse::<u64>().ok())
+        .unwrap_or(10_000);
+    let deadline = std::time::Instant::now() + Duration::from_millis(wait);
+    while std::time::Instant::now() < deadline && !heph::process::cancelled() {
+        std::thread::sleep(Duration::from_millis(100).min(Duration::from_millis(wait)));
+    }
+}
+
 /// What the run says when the rounds were used up and a lens that blocks had not approved.
 fn not_pushed(unsatisfied: &[(String, prepush::Outcome)], rounds: i32) -> String {
     let mut details = Vec::new();
@@ -633,22 +646,41 @@ fn read_before_push<W: Write>(
         // Every chosen lens reads the commit, each with a fresh agent.
         let mut unsatisfied: Vec<(String, prepush::Outcome)> = Vec::new();
         for lens in chosen {
-            let said = prepush::read(&reading, workload, lens, workspace, &head, stream)?;
-            let now = stream.costs().clone();
-            let verdict = said
-                .as_ref()
-                .ok()
-                .and_then(|value| value["verdict"].as_str())
-                .unwrap_or_default();
-            note_step(
-                asking,
-                StepKind::Review,
-                &lens.pack,
-                round,
-                verdict,
-                spent_between(&marked, &now),
-            );
-            marked = now;
+            // A reader that could not run is tried again in this round, so an outage of the
+            // API does not use up a round that is the implementing agent's chance to fix what
+            // the readers find. A verdict that was given is the reader's judgement and is not.
+            let mut tries = 1;
+            let said = loop {
+                let said = prepush::read(&reading, workload, lens, workspace, &head, stream)?;
+                let now = stream.costs().clone();
+                let verdict = said
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value["verdict"].as_str())
+                    .unwrap_or_default();
+                note_step(
+                    asking,
+                    StepKind::Review,
+                    &lens.pack,
+                    round,
+                    verdict,
+                    spent_between(&marked, &now),
+                );
+                marked = now;
+                let again = match &said {
+                    Err(reason) => {
+                        tries < prepush::TRIES
+                            && prepush::retryable(reason)
+                            && !heph::process::cancelled()
+                    }
+                    Ok(_) => false,
+                };
+                if !again {
+                    break said;
+                }
+                tries += 1;
+                wait_before_trying_again();
+            };
             // A lens that does not block is read and reported, and never stops the push.
             let outcome = prepush::outcome(&said);
             if prepush::blocks(lens) && !matches!(outcome, prepush::Outcome::Approved) {
