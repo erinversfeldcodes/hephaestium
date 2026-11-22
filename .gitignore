@@ -9,3 +9,5 @@ target/
 _build/
 deps/
 node_modules/
+dashboard/dist/
+control-plane/tmp/
