@@ -421,7 +421,8 @@ defmodule ControlPlane.Tickets do
   # without a pull request (it failed, timed out or was cancelled), because what its agent
   # learned, that it could not reproduce the bug and what to look at next, is what the person
   # who approved the ticket needs to act on. A first run that completed has its account on its
-  # pull request. A run that stopped to ask has its question instead.
+  # pull request. A run that stopped to ask has its question instead, quoted as data as the
+  # account is, because the agent wrote it.
   defp account(%Workload{state: state} = workload) when state != "blocked" do
     if revision?(workload) or state != "completed", do: Account.section(workload.id)
   end
@@ -434,7 +435,7 @@ defmodule ControlPlane.Tickets do
   defp question("blocked", record) do
     case record["question"] do
       question when question not in [nil, ""] ->
-        "A question for you: #{question}\n\nAnswer it here and apply `#{@ready}` again to start a new workload."
+        "A question for you:\n\n#{Account.block(question)}\n\nAnswer it here and apply `#{@ready}` again to start a new workload."
 
       _ ->
         "Apply `#{@ready}` again to start a new workload."

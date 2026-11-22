@@ -209,7 +209,7 @@ defmodule ControlPlane.RevisionAccountTest do
     assert :ok = Tickets.ended(Workloads.get(id))
 
     body = comment(gh)
-    assert body =~ "A question for you: Which one?"
+    assert body =~ "A question for you:\n\n```text\nWhich one?\n```"
     refute body =~ "The agent's account"
   end
 end

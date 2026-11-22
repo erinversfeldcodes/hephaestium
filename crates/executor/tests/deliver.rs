@@ -200,11 +200,9 @@ fn a_missing_or_not_conventional_message_delivers_nothing_and_says_why() {
 }
 
 #[test]
-fn a_workload_that_changed_nothing_delivers_nothing() {
-    let script = format!(
-        "printf '%s\\n' '{SUBJECT}' > .heph-commit-message; echo '{}'",
-        json!({"agentMessage": {"text": "nothing to do"}})
-    );
+fn a_workload_that_changed_nothing_and_said_nothing_delivers_nothing() {
+    // With no account of why, there is nothing for a person to answer, so it fails.
+    let script = format!("printf '%s\\n' '{SUBJECT}' > .heph-commit-message;");
     let (ran, source, _) = run(
         rig("deliver-nothing", &manifest(&[])),
         &script,
