@@ -20,6 +20,7 @@ defmodule ControlPlane.Application do
         Task.start(fn ->
           ControlPlane.Recovery.run(started_at)
           ControlPlane.Recovery.end_stale_jobs(started_at)
+          ControlPlane.Ledger.backfill()
         end)
       end
 

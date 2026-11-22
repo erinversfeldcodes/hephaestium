@@ -101,6 +101,17 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   and one whose merge GitHub refuses are left for a person, and the ticket says why
   (`Not merged: ...`). A state GitHub has not worked out yet, and a merge that failed
   for a reason that may pass, wait for the next pass. It is attempted once per ticket.
+- The spend ledger
+  ([ADR 0036](../docs/adr/0036-spend-is-kept-as-an-append-only-ledger-by-step-ticket-epic-and-branch.md)).
+  When a workload's record is kept, one row for each cost-bearing step is written to
+  `spend_entries`: the step (the record's `steps`, or 0 for a workload that lists none), its kind,
+  lens and round, the unit, the source and the amount, the parts of a token amount when the
+  runtime gave them, and the repository, ticket, epic (the ticket's parent when the workload was
+  built), pull request and branch. A unit is kept as it was said and never converted. A record
+  kept twice counts once. The table only grows: the database refuses an update, a delete or a
+  truncate. A ledger that could not be written does not fail keeping the record; when the control
+  plane starts, every workload that has a record and no rows is written (that is also how the
+  history before the ledger comes in).
 - Reading a change before it is pushed
   ([ADR 0035](../docs/adr/0035-a-change-is-reviewed-locally-under-every-lens-and-pushed-only-when-each-has-approved-it.md)).
   For a repository whose reviews are asked for (below), a first run's workload and every
