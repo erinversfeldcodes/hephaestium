@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -483,12 +484,14 @@ fn finish_first_run<W: Write>(
         }
         Err(reason) => return Ok((Outcome::Failed, reason)),
     };
+    // A run that reads before it pushes runs the gates itself, because a gate that fails is
+    // handed to the implementing agent to fix, in the same rounds a reader's finding is.
+    if delivering && reads_before_push(workload) {
+        return read_before_push(asking, workload, workspace, manifest, &since, stream);
+    }
     match run_gates(manifest, workspace, &since, secrets, stream)? {
-        Ok(deferred) if delivering && reads_before_push(workload) => read_before_push(
-            asking, workload, workspace, manifest, &since, deferred, stream,
-        ),
         Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
-        Err(reason) => Ok((Outcome::Failed, reason)),
+        Err(failed) => Ok((Outcome::Failed, failed.summary)),
     }
 }
 
@@ -597,16 +600,11 @@ fn read_before_push<W: Write>(
     workspace: &Path,
     manifest: &Manifest,
     since: &str,
-    mut deferred: Vec<deliver::Deferred>,
     stream: &mut Stream<'_, W>,
 ) -> Result<(Outcome, String), Refused> {
     let (options, secrets) = (asking.options, asking.secrets);
     let Some(token) = secrets.get(secrets::GITHUB_TOKEN) else {
         return Ok((Outcome::Failed, "no token to push with".to_owned()));
-    };
-    let committed = match deliver::commit_locally(workload, workspace) {
-        Ok(committed) => committed,
-        Err(reason) => return Ok((Outcome::Failed, reason)),
     };
     // Everything spent so far is the implementation's.
     let mut marked = stream.costs().clone();
@@ -618,6 +616,52 @@ fn read_before_push<W: Write>(
         "",
         spent_between(&BTreeMap::new(), &marked),
     );
+
+    // The gates come first, and a gate that fails is not the end of the run: the agent is
+    // resumed, told what the gate printed as data, and the gates run again, for as many turns
+    // as there are rounds.
+    let mut fixes = 0;
+    let mut deferred = loop {
+        match run_gates(manifest, workspace, since, secrets, stream)? {
+            Ok(deferred) => break deferred,
+            Err(failed) => {
+                if fixes >= workload.prepush_rounds || heph::process::cancelled() {
+                    return Ok((Outcome::Failed, failed.with_output()));
+                }
+                fixes += 1;
+                let asked = prepush::as_revision(workload, fixes, failed.checks);
+                match agent::run(
+                    asking.adapter,
+                    &asked,
+                    workspace,
+                    options.heartbeat,
+                    secrets,
+                    asking.spent,
+                    stream,
+                )? {
+                    End::Done => {}
+                    End::Failed(reason) => return Ok((Outcome::Failed, reason)),
+                    End::TimedOut(reason) => return Ok((Outcome::TimedOut, reason)),
+                    End::Cancelled => return Ok((Outcome::Failed, String::new())),
+                }
+                let now = stream.costs().clone();
+                note_step(
+                    asking,
+                    StepKind::Revision,
+                    "",
+                    fixes,
+                    "",
+                    spent_between(&marked, &now),
+                );
+                marked = now;
+            }
+        }
+    };
+
+    let committed = match deliver::commit_locally(workload, workspace) {
+        Ok(committed) => committed,
+        Err(reason) => return Ok((Outcome::Failed, reason)),
+    };
 
     let reading = Reading {
         adapter: asking.adapter,
@@ -731,7 +775,7 @@ fn read_before_push<W: Write>(
             marked = now;
             match run_gates(manifest, workspace, since, secrets, stream)? {
                 Ok(still_deferred) => deferred = still_deferred,
-                Err(reason) => return Ok((Outcome::Failed, reason)),
+                Err(failed) => return Ok((Outcome::Failed, failed.with_output())),
             }
             if let Err(reason) = deliver::amend_locally(workload, workspace) {
                 return Ok((Outcome::Failed, reason));
@@ -1019,64 +1063,139 @@ fn environment(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// How many of its last lines a gate that failed is remembered by, and how many bytes of them.
+const GATE_TAIL_LINES: usize = 60;
+const GATE_TAIL_BYTES: usize = 4_000;
+
+/// Gates that did not pass: what the run says, and each one that did not with what it printed
+/// last, so the implementing agent can be told.
+struct GatesFailed {
+    summary: String,
+    checks: Vec<contracts::v1alpha1::FailedCheck>,
+}
+
+impl GatesFailed {
+    /// What the run says when it ends on them: the summary, and what each printed.
+    fn with_output(&self) -> String {
+        let mut text = self.summary.clone();
+        for check in self.checks.iter().filter(|check| !check.excerpt.is_empty()) {
+            let _ = write!(text, "\n{} printed:\n{}", check.name, check.excerpt);
+        }
+        text
+    }
+}
+
+/// A gate that did not pass, as the implementing agent is told of it.
+fn failed_gate(name: &str, result: String, excerpt: String) -> contracts::v1alpha1::FailedCheck {
+    contracts::v1alpha1::FailedCheck {
+        name: format!("gate {name}"),
+        result,
+        excerpt,
+    }
+}
+
+/// The last of what a gate printed, cut to what is worth keeping.
+fn gate_tail(tail: &heph::process::Tail) -> String {
+    let text = tail.text();
+    if text.len() <= GATE_TAIL_BYTES {
+        return text;
+    }
+    let mut start = text.len() - GATE_TAIL_BYTES;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_owned()
+}
+
+/// Run one gate. One the workspace could not run, or that timed out, that the repository says a
+/// check on the pull request runs too, is left to that check.
+fn run_one_gate(
+    manifest: &Manifest,
+    name: &str,
+    declared: &heph::manifest::Gate,
+    workspace: &Path,
+    changed: &[String],
+    secrets: &Secrets,
+    printed: &heph::process::Tail,
+) -> Result<gate::GateResult, gate::NotRun> {
+    // A gate's secret is the one the executor holds, or else the environment's.
+    let lookup = |variable: &str| {
+        secrets
+            .gate(variable)
+            .map(str::to_owned)
+            .or_else(|| environment(variable))
+    };
+    let command = gate::command_for(manifest, declared, lookup);
+    match gate::run_named_with_tail(
+        manifest,
+        name,
+        Some(changed),
+        workspace,
+        lookup,
+        say,
+        Some(printed),
+    ) {
+        Err(gate::NotRun::Missing(missing)) => gate::deferred(
+            name,
+            declared,
+            command,
+            0,
+            format!(
+                "what it needs is not set: {}",
+                gate::describe_missing(&missing)
+            ),
+        )
+        .map_or_else(|| Err(gate::NotRun::Missing(missing)), Ok),
+        Ok(result) if result.outcome == gate::Outcome::TimedOut => gate::deferred(
+            name,
+            declared,
+            result.command.clone(),
+            result.duration_ms,
+            format!("timed out after {}s", declared.timeout_seconds),
+        )
+        .map_or(Ok(result), Ok),
+        other => other,
+    }
+}
+
 /// Run every gate the manifest declares in the workspace, in name order, and
 /// say what each did.
 ///
 /// Every gate runs even if an earlier one failed, so a failure shows all that is
 /// wrong at once. The outer error is a failure to write an event. The inner
-/// result is the workload's: the reasons it failed, if any gate did.
+/// result is the workload's: why it failed, if any gate did, and what each that
+/// failed printed last.
 fn run_gates<W: Write>(
     manifest: &Manifest,
     workspace: &Path,
     since: &str,
     secrets: &Secrets,
     stream: &mut Stream<'_, W>,
-) -> Result<Result<Vec<deliver::Deferred>, String>, Refused> {
+) -> Result<Result<Vec<deliver::Deferred>, GatesFailed>, Refused> {
     let changed = match changed_files(workspace, since) {
         Ok(changed) => changed,
-        Err(reason) => return Ok(Err(reason)),
+        Err(reason) => {
+            return Ok(Err(GatesFailed {
+                summary: reason,
+                checks: Vec::new(),
+            }));
+        }
     };
 
     let mut failures = Vec::new();
+    let mut checks: Vec<contracts::v1alpha1::FailedCheck> = Vec::new();
     let mut deferred = Vec::new();
     for (name, declared) in &manifest.gates {
         if heph::process::cancelled() {
             break;
         }
         stream.emit(Kind::GateStarted(GateStarted { name: name.clone() }))?;
-        // A gate's secret is the one the executor holds, or else the environment's.
-        let lookup = |variable: &str| {
-            secrets
-                .gate(variable)
-                .map(str::to_owned)
-                .or_else(|| environment(variable))
-        };
-        let command = gate::command_for(manifest, declared, lookup);
-        let outcome = match gate::run_named(manifest, name, Some(&changed), workspace, lookup, say)
-        {
-            // A gate the workspace could not run, that the repository says a check on
-            // the pull request runs too, is left to that check.
-            Err(gate::NotRun::Missing(missing)) => gate::deferred(
-                name,
-                declared,
-                command,
-                0,
-                format!(
-                    "what it needs is not set: {}",
-                    gate::describe_missing(&missing)
-                ),
-            )
-            .map_or_else(|| Err(gate::NotRun::Missing(missing)), Ok),
-            Ok(result) if result.outcome == gate::Outcome::TimedOut => gate::deferred(
-                name,
-                declared,
-                result.command.clone(),
-                result.duration_ms,
-                format!("timed out after {}s", declared.timeout_seconds),
-            )
-            .map_or(Ok(result), Ok),
-            other => other,
-        };
+        // What the gate prints is shown as it was, and the last of it is kept in case the gate
+        // fails.
+        let printed = heph::process::Tail::new(GATE_TAIL_LINES);
+        let outcome = run_one_gate(
+            manifest, name, declared, workspace, &changed, secrets, &printed,
+        );
         match outcome {
             Ok(result) => {
                 if matches!(
@@ -1084,6 +1203,11 @@ fn run_gates<W: Write>(
                     gate::Outcome::Failed | gate::Outcome::TimedOut
                 ) {
                     failures.push(format!("gate {name} {}", result.outcome));
+                    checks.push(failed_gate(
+                        name,
+                        result.outcome.to_string(),
+                        gate_tail(&printed),
+                    ));
                 }
                 if let (gate::Outcome::Deferred, Some(check), Some(reason)) =
                     (result.outcome, &result.ci_check, &result.reason)
@@ -1102,7 +1226,14 @@ fn run_gates<W: Write>(
                 }))?;
             }
             Err(gate::NotRun::Could(gate::CouldNotRun::Cancelled)) => break,
-            Err(error) => failures.push(format!("gate {name} could not be run: {error}")),
+            Err(error) => {
+                failures.push(format!("gate {name} could not be run: {error}"));
+                checks.push(failed_gate(
+                    name,
+                    "could not be run".to_owned(),
+                    error.to_string(),
+                ));
+            }
         }
     }
     if heph::process::cancelled() {
@@ -1111,7 +1242,10 @@ fn run_gates<W: Write>(
     Ok(if failures.is_empty() {
         Ok(deferred)
     } else {
-        Err(failures.join("; "))
+        Err(GatesFailed {
+            summary: failures.join("; "),
+            checks,
+        })
     })
 }
 

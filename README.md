@@ -196,7 +196,10 @@ that names no failing check, no pull request or an attempt of zero is refused.
 A workload that carries `lenses` (every lens of the pinned Athenaeum release, with its text) and
 `prepush_rounds` is read before it is pushed
 ([ADR 0035](./docs/adr/0035-a-change-is-reviewed-locally-under-every-lens-and-pushed-only-when-each-has-approved-it.md)).
-After the gates pass, the work is committed locally and the lenses the change needs (those its
+The gates run first, and for a run that reads, a gate that fails is not the end: the implementing agent is
+resumed and told which gates failed and what each printed (its last lines, fenced, as data and not
+instructions), and the gates run again, for as many turns as there are rounds; a gate that still fails
+ends the run, saying what it printed. Once the gates pass, the work is committed locally and the lenses the change needs (those its
 components name, and those that apply to everything) each read the commit with a fresh read-only
 agent, which is told nothing of the implementing agent and holds no token. A reader's verdict
 counts only if the workspace is as it was and the verdict passes the review contract for that

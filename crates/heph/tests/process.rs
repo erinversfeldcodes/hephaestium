@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::Scratch;
-use heph::process::{Ended, execute};
+use heph::process::{Ended, Tail, execute, execute_with_tail};
 
 fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
@@ -95,4 +95,85 @@ fn a_command_past_its_deadline_is_stopped_with_everything_it_started() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(!alive(&pid), "the grandchild {pid} outlived its parent");
+}
+
+fn tailed(script: &str, capture_stdout: bool, most: usize) -> (Ended, Option<Vec<u8>>, Tail) {
+    let scratch = Scratch::new("process-tail");
+    let tail = Tail::new(most);
+    let (ended, captured) = execute_with_tail(
+        &words(&["sh", "-c", script]),
+        &scratch.0,
+        Duration::from_secs(30),
+        capture_stdout,
+        &[],
+        |_| {},
+        Some(&tail),
+    )
+    .expect("to run");
+    (ended, captured, tail)
+}
+
+#[test]
+fn a_tail_keeps_the_last_lines_a_command_printed_on_either_stream() {
+    let (ended, _, tail) = tailed(
+        "for i in 1 2 3 4 5; do echo out$i; echo err$i >&2; done; exit 1",
+        false,
+        4,
+    );
+
+    assert_eq!(ended, Ended::Exited(1), "how it ended is as it always was");
+    let text = tail.text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "only the last four are kept: {text}");
+    assert!(
+        text.contains('5'),
+        "the last of what it printed is there: {text}"
+    );
+    assert!(
+        !text.contains("out1") && !text.contains("err1"),
+        "the first is not: {text}"
+    );
+}
+
+#[test]
+fn a_tail_leaves_the_captured_standard_output_whole_and_keeps_only_what_went_to_standard_error() {
+    let (ended, captured, tail) = tailed("echo '{\"a\": 1}'; echo warning >&2", true, 10);
+
+    assert_eq!(ended, Ended::Exited(0));
+    assert_eq!(
+        String::from_utf8(captured.expect("captured"))
+            .expect("UTF-8")
+            .trim(),
+        "{\"a\": 1}"
+    );
+    assert_eq!(tail.text(), "warning");
+}
+
+#[test]
+fn a_tail_of_a_command_that_prints_nothing_is_empty_and_text_that_is_not_utf8_does_not_end_it() {
+    let (_, _, quiet) = tailed("exit 0", false, 5);
+    assert_eq!(quiet.text(), "");
+
+    let (ended, _, odd) = tailed("printf 'caf\\351\\n' >&2", false, 5);
+    assert_eq!(ended, Ended::Exited(0));
+    assert!(odd.text().starts_with("caf"), "{}", odd.text());
+}
+
+#[test]
+fn a_command_that_runs_past_its_deadline_is_stopped_and_its_tail_is_what_it_printed_so_far() {
+    let scratch = Scratch::new("process-tail-timeout");
+    let tail = Tail::new(5);
+    let (ended, _) = execute_with_tail(
+        &words(&["sh", "-c", "echo started >&2; sleep 30"]),
+        &scratch.0,
+        Duration::from_millis(500),
+        false,
+        &[],
+        |_| {},
+        Some(&tail),
+    )
+    .expect("to run");
+
+    assert_eq!(ended, Ended::TimedOut);
+    assert_eq!(tail.text(), "started");
 }
