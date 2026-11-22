@@ -150,7 +150,7 @@ control plane records the maintainer who labelled the ticket. It changes nothing
 `heph run TICKET` is the one command: from inside any project it builds the ticket's
 workload as `heph workload` does, runs the executor on it with delivery, shows what is
 happening one line at a time (the workspace, what the agent says and does, each gate,
-the pull request), and ends with the outcome, the cost and the pull request. The run is
+the pull request), and ends with the outcome, the cost, a line for each step the record lists (what it was, what a reading ended in, and what it spent, each unit written apart) and the pull request. The run is
 kept in a directory of its own outside your project, under
 `~/.local/state/hephaestium/runs/` (or `$XDG_STATE_HOME`), with the workload, the events,
 the executor's output, the run record and the workspace. The workspace (a full

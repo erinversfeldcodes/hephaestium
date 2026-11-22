@@ -314,18 +314,12 @@ fn summarise(record: &Path, directory: &Path) -> Result<Ended, String> {
     if let Some(reason) = value["reason"].as_str().filter(|r| !r.is_empty()) {
         println!("reason: {reason}");
     }
-    let mut cost = Vec::new();
-    for total in value["costs"].as_array().into_iter().flatten() {
-        let amount = total["amount"].as_f64().unwrap_or(0.0);
-        match total["unit"].as_str() {
-            Some("COST_UNIT_USD") => cost.push(format!("${amount:.3}")),
-            Some("COST_UNIT_TOKENS") => cost.push(format!("{amount:.0} tokens")),
-            Some("COST_UNIT_CREDITS") => cost.push(format!("{amount} credits")),
-            _ => {}
-        }
-    }
+    let cost = amounts(&value["costs"]);
     if !cost.is_empty() {
         println!("cost: {}", cost.join(", "));
+    }
+    for step in value["steps"].as_array().into_iter().flatten() {
+        println!("{}", step_line(step));
     }
     if let Some(url) = value["pullRequest"]["url"].as_str() {
         println!("pull request: {url}");
@@ -336,6 +330,50 @@ fn summarise(record: &Path, directory: &Path) -> Result<Ended, String> {
     } else {
         Ended::Otherwise
     })
+}
+
+/// Each amount in a list of cost totals, written in its own unit. Units are never
+/// added together or converted.
+fn amounts(totals: &Value) -> Vec<String> {
+    let mut written = Vec::new();
+    for total in totals.as_array().into_iter().flatten() {
+        let amount = total["amount"].as_f64().unwrap_or(0.0);
+        match total["unit"].as_str() {
+            Some("COST_UNIT_USD") => written.push(format!("${amount:.3}")),
+            Some("COST_UNIT_TOKENS") => written.push(format!("{amount:.0} tokens")),
+            Some("COST_UNIT_CREDITS") => written.push(format!("{amount} credits")),
+            _ => {}
+        }
+    }
+    written
+}
+
+/// The summary line for one step of the run record: what it was, what a review
+/// ended in, and what it spent.
+fn step_line(step: &Value) -> String {
+    let round = step["round"].as_i64().unwrap_or(0);
+    let mut parts = Vec::new();
+    let name = match step["kind"].as_str() {
+        Some("KIND_REVIEW") => {
+            let lens = step["lens"].as_str().unwrap_or_default();
+            parts.push(
+                step["verdict"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("no verdict")
+                    .to_owned(),
+            );
+            format!("review {lens} round {round}")
+        }
+        Some("KIND_REVISION") => format!("revision round {round}"),
+        _ => "implementation".to_owned(),
+    };
+    parts.extend(amounts(&step["costs"]));
+    if parts.is_empty() {
+        format!("  {name}")
+    } else {
+        format!("  {name}: {}", parts.join(", "))
+    }
 }
 
 /// A shortened first line of some text.
