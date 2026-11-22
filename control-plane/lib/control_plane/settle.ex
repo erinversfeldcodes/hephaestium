@@ -548,6 +548,32 @@ defmodule ControlPlane.Settle do
 
   defp attempt(workload), do: get_in(workload.workload, ["revision", "attempt"]) || 0
 
+  # A check GitHub cancelled because its job reached its time limit is a failure of the job, and
+  # not a cancellation: a re-run is cold again, finishes no more than the first did and times
+  # out again, spending the repository's CI minutes to get what the rules forbid, a green by
+  # trying again. GitHub says so only in the job's annotations ("The job has exceeded the
+  # maximum execution time of 15m0s"), so they are read, and the check is treated as `timed_out`,
+  # which is revised or failed like any other. Annotations that cannot be read leave it a
+  # cancellation, as it was.
+  defp timed_out(workload, %{"conclusion" => "cancelled", "id" => id} = run) do
+    case GitHub.get("repos/#{workload.repository}/check-runs/#{id}/annotations") do
+      {:ok, annotations} when is_list(annotations) ->
+        if Enum.any?(annotations, &exceeded_time_limit?/1),
+          do: Map.put(run, "conclusion", "timed_out"),
+          else: run
+
+      _ ->
+        run
+    end
+  end
+
+  defp timed_out(_workload, run), do: run
+
+  defp exceeded_time_limit?(%{"message" => message}) when is_binary(message),
+    do: message =~ ~r/exceeded the maximum execution time/i
+
+  defp exceeded_time_limit?(_), do: false
+
   # The revisions used toward the budget: counted from the attempt the pull request had
   # reached when a maintainer last resumed it, so a resume grants a fresh budget.
   defp used(workload), do: attempt(workload) - workload.budget_base
@@ -562,7 +588,9 @@ defmodule ControlPlane.Settle do
     looked_at = Enum.map(names, &{&1, runs[&1]})
 
     ended =
-      for {name, run} <- looked_at, run != nil and run["status"] == "completed", do: {name, run}
+      for {name, run} <- looked_at,
+          run != nil and run["status"] == "completed",
+          do: {name, timed_out(workload, run)}
 
     bad = for {name, run} <- ended, run["conclusion"] not in @good, do: {name, run}
     cancelled = for {name, run} <- bad, run["conclusion"] == "cancelled", do: {name, run}
