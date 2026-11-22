@@ -130,4 +130,34 @@ defmodule ControlPlane.FirstRunAccountTest do
     assert [_, fence] = Regex.run(~r/\n(`{4,})text\n/, body)
     assert body =~ text <> "\n" <> fence
   end
+
+  # What the executor writes when the agent printed the Claude token it was given: the value is
+  # replaced where the executor holds it, because the control plane holds no secret of the
+  # executor's to compare, so it can only carry what it was sent.
+  @token "sk-ant-oat01-the-claude-token"
+  @marker "[redacted: CLAUDE_CODE_OAUTH_TOKEN]"
+
+  test "the account posted for a run whose agent printed a token holds the marker and no token",
+       %{
+         gh: gh,
+         id: id
+       } do
+    assert :ok =
+             ended(
+               id,
+               ["I ran env to look at the setup: CLAUDE_CODE_OAUTH_TOKEN=#{@marker}"],
+               "OUTCOME_FAILED",
+               "the agent changed nothing, and printed #{@marker}"
+             )
+
+    posted =
+      gh
+      |> StandInGitHub.writes()
+      |> Enum.map_join("\n", fn {_, _, arguments} -> Enum.join(arguments, "\n") end)
+
+    assert posted =~ "CLAUDE_CODE_OAUTH_TOKEN=#{@marker}",
+           "the account was posted, with the marker"
+
+    refute posted =~ @token
+  end
 end

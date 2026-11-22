@@ -28,6 +28,7 @@ use crate::completeness;
 use crate::deliver;
 use crate::gap;
 use crate::prepush::{self, Reading};
+use crate::redact::Redactor;
 use crate::review;
 use crate::secrets::{self, Secrets};
 use crate::stream::{Spent, Stream};
@@ -85,7 +86,8 @@ pub fn run(
         )));
     }
 
-    let mut stream = Stream::new(out, &workload.id);
+    let redactor = secrets.redactor();
+    let mut stream = Stream::new(out, &workload.id).redacting(redactor.clone());
     stream.emit(Kind::Started(Started {
         executor_version: executor_version.to_owned(),
     }))?;
@@ -110,6 +112,7 @@ pub fn run(
                             &reason,
                             options,
                             executor_version,
+                            &redactor,
                         );
                     }
                 }
@@ -177,7 +180,7 @@ pub fn run(
     let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
     record.steps = steps.into_inner();
     keep(&mut record, verdict)?;
-    write_record(&options.record, &record)
+    write_record(&options.record, &record, &redactor)
 }
 
 /// Run the agent that makes the change. A run that reads its own change says which agent is
@@ -324,9 +327,10 @@ fn finish_failed(
     reason: &str,
     options: &Options,
     executor_version: &str,
+    redactor: &Redactor,
 ) -> Result<(), Refused> {
     let record = stream.finish(workload, Outcome::Failed, reason, executor_version)?;
-    write_record(&options.record, &record)
+    write_record(&options.record, &record, redactor)
 }
 
 /// Make the workspace and run the manifest's bootstrap steps in it.
@@ -1425,8 +1429,27 @@ fn clone(options: &Options, workload: &Workload, workspace: &Path) -> Result<(),
 
 /// Where what a command says about itself goes: standard error, because
 /// standard output carries only events.
+///
+/// What it says has the value of every secret taken out, once [`keep_out_of_the_log`] has
+/// said which they are.
 pub fn say(message: &str) {
-    eprintln!("{message}");
+    eprintln!("{}", for_the_log(message));
+}
+
+static LOGGED: std::sync::OnceLock<Redactor> = std::sync::OnceLock::new();
+
+/// Take the value of every secret `secrets` holds out of everything [`say`] writes from now on.
+/// Called once, before anything is run; a second call changes nothing.
+pub fn keep_out_of_the_log(secrets: &Secrets) {
+    let _ = LOGGED.set(secrets.redactor());
+}
+
+/// `message` as the executor's own log says it.
+#[must_use]
+pub fn for_the_log(message: &str) -> String {
+    LOGGED
+        .get()
+        .map_or_else(|| message.to_owned(), |redactor| redactor.text(message))
 }
 
 fn git(args: &[&str], directory: &Path, what: &str) -> Result<(), String> {
@@ -1486,8 +1509,16 @@ fn bootstrap(
     }
 }
 
-fn write_record(path: &Path, record: &RunRecord) -> Result<(), Refused> {
-    let text = serde_json::to_string_pretty(record).map_err(|e| Refused(e.to_string()))?;
+/// Write the record, with the value of every secret held taken out of it.
+fn write_record(path: &Path, record: &RunRecord, redactor: &Redactor) -> Result<(), Refused> {
+    let mut text = serde_json::to_string_pretty(record).map_err(|e| Refused(e.to_string()))?;
+    if !redactor.is_empty() {
+        let mut value = serde_json::to_value(record).map_err(|e| Refused(e.to_string()))?;
+        // A record that holds no secret is written as it was made.
+        if redactor.json(&mut value) {
+            text = serde_json::to_string_pretty(&value).map_err(|e| Refused(e.to_string()))?;
+        }
+    }
     fs::write(path, text + "\n").map_err(|e| {
         Refused(format!(
             "the record could not be written to {}: {e}",
