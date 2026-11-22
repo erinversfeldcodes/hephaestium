@@ -219,6 +219,10 @@ mix deps.get
 mix test
 ```
 
+Tests that run at the same time (two worktrees, two agents) need databases of their own, because
+one test truncates tables: `MIX_TEST_PARTITION=2 mix test` uses `hephaestium_test2`, made and
+migrated by the `test` alias.
+
 The executor that is run is `HEPH_EXECUTOR` (the one called `executor` on the path
 if it is not set), and each run keeps its files, as `heph run` does, under
 `HEPH_RUNS_DIR`. A run's checkout (`work/`) is deleted when the run completes, and a run that did
