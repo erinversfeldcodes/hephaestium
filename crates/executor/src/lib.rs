@@ -9,6 +9,7 @@ pub mod completeness;
 pub mod deliver;
 pub mod gap;
 pub mod prepush;
+pub mod redact;
 pub mod review;
 pub mod run;
 pub mod secrets;

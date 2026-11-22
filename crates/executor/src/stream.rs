@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::redact::Redactor;
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::{
@@ -74,6 +75,7 @@ pub struct Stream<'a, W: Write> {
     skills: Vec<SkillLoaded>,
     gates: Vec<GateRun>,
     pull_request: Option<PullRequestOpened>,
+    redactor: Redactor,
 }
 
 impl<'a, W: Write> Stream<'a, W> {
@@ -88,7 +90,16 @@ impl<'a, W: Write> Stream<'a, W> {
             skills: Vec::new(),
             gates: Vec::new(),
             pull_request: None,
+            redactor: Redactor::default(),
         }
+    }
+
+    /// Take the value of every secret `redactor` holds out of each event before it is written,
+    /// so that nothing the agent or a gate prints can carry one into the stream.
+    #[must_use]
+    pub fn redacting(mut self, redactor: Redactor) -> Self {
+        self.redactor = redactor;
+        self
     }
 
     /// What has been spent so far, for each unit and source, so that what a step spent is
@@ -129,7 +140,14 @@ impl<'a, W: Write> Stream<'a, W> {
         self.next += 1;
         self.started_at.get_or_insert(time);
 
-        let line = serde_json::to_string(&event).map_err(std::io::Error::other)?;
+        let mut line = serde_json::to_string(&event).map_err(std::io::Error::other)?;
+        if !self.redactor.is_empty() {
+            let mut value = serde_json::to_value(&event).map_err(std::io::Error::other)?;
+            // An event that holds no secret is written as it was made.
+            if self.redactor.json(&mut value) {
+                line = serde_json::to_string(&value).map_err(std::io::Error::other)?;
+            }
+        }
         writeln!(self.out, "{line}")?;
         self.out.flush()
     }

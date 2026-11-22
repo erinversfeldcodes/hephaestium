@@ -182,7 +182,13 @@ pushed, and opened as a pull request; that step alone holds the token that can p
 Each secret (that token, and `CLAUDE_CODE_OAUTH_TOKEN` for a Claude Code agent) is the
 variable of its name or the contents of the file its `_FILE` variable names, kept
 outside any repository with mode 600; the executor takes it at start and removes both
-from its environment. It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
+from its environment. The exact value of every secret it holds (those two, the read-only token,
+and the secrets gates declare) is replaced by `[redacted: NAME]` in every string of every event, in
+the run record and in what the executor says on its own error output, whatever the agent or a gate
+printed; a value shorter than eight characters is not replaced, and a secret printed in pieces,
+encoded or changed in any way is not found. What a gate or an agent itself writes to the error
+output the executor passes through, and what a gate printed that is shown to the implementing
+agent, are not redacted. It exits 0 if the workload ran to an outcome, whatever it was, and 1 if it could not
 be run.
 
 A workload with a `revision` section is a revision of a pull request an earlier workload

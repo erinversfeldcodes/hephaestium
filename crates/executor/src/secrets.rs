@@ -47,6 +47,18 @@ impl Secrets {
         self.gate.get(name).map(String::as_str)
     }
 
+    /// What takes every held value out of text: the named secrets by their names, and a
+    /// gate's by the name it declares.
+    #[must_use]
+    pub fn redactor(&self) -> crate::redact::Redactor {
+        crate::redact::Redactor::new(
+            self.named
+                .iter()
+                .chain(self.gate.iter())
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        )
+    }
+
     /// Take each named secret from the environment, from the variable or from
     /// the file its `_FILE` variable names, and remove both from this process's
     /// environment.
