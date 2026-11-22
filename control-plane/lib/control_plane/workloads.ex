@@ -237,7 +237,12 @@ defmodule ControlPlane.Workloads do
 
     Repo.update_all(
       from(w in Workload, where: w.id == ^id and w.state not in ^@terminal),
-      set: [state: "failed", reason: reason, finished_at: now, updated_at: now]
+      set: [
+        state: "failed",
+        reason: ControlPlane.Clean.deep(reason),
+        finished_at: now,
+        updated_at: now
+      ]
     )
 
     :ok
@@ -247,7 +252,7 @@ defmodule ControlPlane.Workloads do
   @spec keep_record(Ecto.UUID.t(), map()) :: :ok
   def keep_record(id, record) do
     Repo.update_all(from(w in Workload, where: w.id == ^id),
-      set: [record: record, updated_at: DateTime.utc_now()]
+      set: [record: ControlPlane.Clean.deep(record), updated_at: DateTime.utc_now()]
     )
 
     write_ledger(id)
