@@ -18,11 +18,15 @@ defmodule ControlPlane.TicketLabels do
 
   @quiet "ededed"
 
+  @doc "The label a maintainer applies to approve a ticket."
+  @spec ready() :: String.t()
+  def ready, do: "heph:ready"
+
   @doc "The labels, with the colour (hex, no leading `#`) and description each carries."
   @spec all() :: [label()]
   def all do
     [
-      %{name: "heph:ready", colour: "a1b4a9", description: "Approved for an agent run"},
+      %{name: ready(), colour: "a1b4a9", description: "Approved for an agent run"},
       %{name: "heph:running", colour: @quiet, description: ""},
       %{name: "heph:done", colour: @quiet, description: ""},
       %{name: "heph:failed", colour: @quiet, description: ""},

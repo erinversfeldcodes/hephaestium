@@ -33,14 +33,11 @@ defmodule ControlPlane.Settle do
     ReviewApproval,
     Reviews,
     Tickets,
+    Workload,
     Workloads
   }
 
   @good ["success", "skipped", "neutral"]
-
-  def one(_workload), do: raise("not built")
-  def stale(_repository), do: raise("not built")
-  def keep_current(_workload), do: raise("not built")
 
   @doc "Look at every workload awaiting settlement. Returns what became of each."
   @spec run() :: [%{workload_id: String.t(), result: term()}]
@@ -49,6 +46,26 @@ defmodule ControlPlane.Settle do
       %{workload_id: workload.id, result: settle_safely(workload)}
     end
   end
+
+  @doc """
+  Settle one workload, if it still awaits settlement: what `run/0` does for each, for the one a
+  webhook named. It is read again here, so a delivery that arrives after the workload was
+  settled, or twice, does nothing.
+  """
+  @spec one(%Workload{} | nil) :: term()
+  def one(%Workload{id: id}) do
+    case Workloads.get(id) do
+      %Workload{state: "completed", settled_at: nil, record: %{"pullRequest" => %{"url" => url}}} =
+          workload
+      when is_binary(url) ->
+        settle_safely(workload)
+
+      _ ->
+        :not_awaiting
+    end
+  end
+
+  def one(nil), do: :gone
 
   # One workload that cannot be settled is that workload's result and nothing more: the
   # others behind it are still settled, and the job does not crash for every ticket
@@ -72,14 +89,27 @@ defmodule ControlPlane.Settle do
   green is left, because looking again would announce its failure again.
   """
   @spec stale() :: [%{workload_id: String.t(), result: :unsettled}]
-  def stale do
-    since = DateTime.add(DateTime.utc_now(), -14 * 86_400, :second)
+  def stale, do: Enum.flat_map(settled_since(), &keep_current/1)
 
-    for workload <- Workloads.settled_pull_requests(since), stale?(workload) do
+  @doc "`stale/0` for the pull requests of one repository, which is what a push to its base moves."
+  @spec stale(String.t()) :: [%{workload_id: String.t(), result: :unsettled}]
+  def stale(repository),
+    do:
+      for(w <- settled_since(), w.repository == repository, result <- keep_current(w), do: result)
+
+  @doc "`stale/0` for one settled workload: it is made awaiting again if its base has moved on."
+  @spec keep_current(%Workload{}) :: [%{workload_id: String.t(), result: :unsettled}]
+  def keep_current(%Workload{} = workload) do
+    if stale?(workload) do
       Workloads.unsettle(workload.id)
-      %{workload_id: workload.id, result: :unsettled}
+      [%{workload_id: workload.id, result: :unsettled}]
+    else
+      []
     end
   end
+
+  defp settled_since,
+    do: Workloads.settled_pull_requests(DateTime.add(DateTime.utc_now(), -14 * 86_400, :second))
 
   defp stale?(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload),

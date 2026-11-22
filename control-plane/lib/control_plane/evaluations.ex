@@ -151,8 +151,30 @@ defmodule ControlPlane.Evaluations do
     |> Enum.flat_map(&look_for_merge/1)
   end
 
-  def merged_workload(_workload), do: raise("not built")
-  def roll_up_parent(_repository, _parent), do: raise("not built")
+  @doc """
+  `merged/1` for one settled workload: its ticket is judged if its pull request has merged and
+  the ticket has not been judged. What a merge's webhook calls.
+  """
+  @spec merged_workload(%Workload{}) :: [result()]
+  def merged_workload(%Workload{} = workload) do
+    judged? =
+      [workload.repository]
+      |> Workloads.evaluations()
+      |> Enum.any?(&(&1.ticket_number == workload.ticket_number))
+
+    if enabled?(workload.repository) and not judged?, do: look_for_merge(workload), else: []
+  end
+
+  @doc """
+  The roll-up of one epic, when its sub-issues are all closed: what the epic pass does for
+  each open epic, for the parent of a ticket that closed.
+  """
+  @spec roll_up_parent(String.t(), %ControlPlane.Ticket{}) :: [result()]
+  def roll_up_parent(repository, %ControlPlane.Ticket{} = parent) do
+    if enabled?(repository) and finished_epic?(parent),
+      do: roll_up(repository, parent.key),
+      else: []
+  end
 
   defp look_for_merge(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload) do

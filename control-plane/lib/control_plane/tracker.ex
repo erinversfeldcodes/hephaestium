@@ -47,7 +47,9 @@ defmodule ControlPlane.Tracker do
 
   def approved_tickets(repository, label), do: call(repository, :approved_tickets, [label])
   def ticket(repository, key), do: call(repository, :ticket, [key])
-  def parent(_repository, _key), do: raise("not built")
+
+  @doc "The ticket this one is a sub-ticket of, or `{:ok, nil}` when it has none."
+  def parent(repository, key), do: call(repository, :parent, [key])
 
   def ticket_history(repository, key, opts \\ []),
     do: call(repository, :ticket_history, [key, opts])
