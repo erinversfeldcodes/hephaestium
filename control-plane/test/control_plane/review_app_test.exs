@@ -142,6 +142,39 @@ defmodule ControlPlane.ReviewAppTest do
     end
   end
 
+  describe "a key held in the environment rather than a file" do
+    test "signs as the key does, and the key is the one named by the variable", %{
+      pem: pem,
+      public: public
+    } do
+      configure(app_id: "5862313", key: pem)
+
+      assert ReviewApp.enabled?()
+      assert {:ok, jwt} = ReviewApp.assertion(1_700_000_000)
+      [header, claims, signature] = String.split(jwt, ".")
+
+      assert :public_key.verify(
+               header <> "." <> claims,
+               :sha256,
+               Base.url_decode64!(signature, padding: false),
+               public
+             )
+    end
+
+    test "a value that is not a key is refused without repeating it" do
+      configure(app_id: "5862313", key: "not a key, secret-looking-text")
+
+      assert {:error, message} = ReviewApp.assertion(1_700_000_000)
+      refute message =~ "secret-looking-text"
+    end
+
+    test "when both are given the key in the environment is used", %{pem: pem} do
+      configure(app_id: "5862313", key: pem, key_file: "/nonexistent/app.pem")
+
+      assert {:ok, _jwt} = ReviewApp.assertion(1_700_000_000)
+    end
+  end
+
   describe "enabled?" do
     test "needs both the App and its key" do
       configure([])

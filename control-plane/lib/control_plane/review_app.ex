@@ -3,8 +3,9 @@ defmodule ControlPlane.ReviewApp do
   The GitHub App that approves a pull request when every lens that blocks has approved
   its head commit, and what it takes to act as it: a token for the repository.
 
-  The App has a private key in a file the operator names (`HEPH_REVIEW_APP_KEY_FILE`), and
-  an id (`HEPH_REVIEW_APP_ID`). The key signs a short-lived assertion that names the App;
+  The App has a private key in a file the operator names (`HEPH_REVIEW_APP_KEY_FILE`), or
+  held in a variable itself (`HEPH_REVIEW_APP_KEY`) where the platform keeps secrets as
+  variables, and an id (`HEPH_REVIEW_APP_ID`). The variable wins when both are set. The key signs a short-lived assertion that names the App;
   GitHub exchanges the assertion for a token that works on one repository for about an
   hour. The token is kept in memory until shortly before it ends and is handed to `gh`
   through its environment, so it is in no argument and no log. The key is read each time a
@@ -26,7 +27,8 @@ defmodule ControlPlane.ReviewApp do
   @doc "Whether an approval can be submitted at all: the App and its key are both named."
   @spec enabled?() :: boolean()
   def enabled? do
-    present?(settings()[:app_id]) and present?(settings()[:key_file])
+    present?(settings()[:app_id]) and
+      (present?(settings()[:key]) or present?(settings()[:key_file]))
   end
 
   @doc """
@@ -162,18 +164,30 @@ defmodule ControlPlane.ReviewApp do
   defp inspect_reason(_), do: "the request failed"
 
   defp read_key do
-    file = settings()[:key_file]
+    if present?(settings()[:key]) do
+      parse_key(settings()[:key], "the review App's key in HEPH_REVIEW_APP_KEY")
+    else
+      read_key_file(settings()[:key_file])
+    end
+  end
 
-    with {:ok, pem} <- File.read(file),
-         [entry | _] <- :public_key.pem_decode(pem),
+  defp read_key_file(file) do
+    case File.read(file) do
+      {:ok, pem} ->
+        parse_key(pem, "the file #{file}")
+
+      {:error, reason} ->
+        {:error, "the review App's key file #{file} could not be read (#{reason})"}
+    end
+  end
+
+  # What was read is never repeated, only where it came from.
+  defp parse_key(pem, source) do
+    with [entry | _] <- :public_key.pem_decode(pem),
          key when is_tuple(key) <- decode(entry) do
       {:ok, key}
     else
-      {:error, reason} when is_atom(reason) ->
-        {:error, "the review App's key file #{file} could not be read (#{reason})"}
-
-      _ ->
-        {:error, "the file #{file} does not hold a private key the review App can sign with"}
+      _ -> {:error, "#{source} does not hold a private key the review App can sign with"}
     end
   end
 

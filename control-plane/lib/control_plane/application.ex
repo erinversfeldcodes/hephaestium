@@ -14,6 +14,8 @@ defmodule ControlPlane.Application do
       {Oban, Application.fetch_env!(:control_plane, Oban)}
     ]
 
+    children = children ++ health_listener(Application.get_env(:control_plane, :health))
+
     with {:ok, supervisor} <-
            Supervisor.start_link(children, strategy: :one_for_one, name: ControlPlane.Supervisor) do
       if recover_on_start?(Application.get_env(:control_plane, :recover_on_start)) do
@@ -26,6 +28,17 @@ defmodule ControlPlane.Application do
 
       {:ok, supervisor}
     end
+  end
+
+  # The listener the platform's health check calls. Not started unless a port is set, so a
+  # control plane run by hand opens no port it did not open before.
+  defp health_listener(nil), do: []
+
+  defp health_listener(settings) do
+    [
+      {Bandit,
+       plug: ControlPlane.Health.Plug, scheme: :http, port: Keyword.fetch!(settings, :port)}
+    ]
   end
 
   @doc """

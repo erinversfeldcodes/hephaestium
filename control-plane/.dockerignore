@@ -1,0 +1,14 @@
+# Nothing from the machine the image is built on goes into it: not its builds, its
+# dependencies, its databases, its keys or its tests.
+_build
+deps
+test
+.git
+.env
+.env.*
+*.pem
+Dockerfile
+.dockerignore
+fly.toml
+erl_crash.dump
+*.ez
