@@ -52,4 +52,121 @@ describe("the API client", () => {
     expect(init?.body).toBeUndefined();
     expect(init?.credentials).toBe("same-origin");
   });
+
+  describe("tickets", () => {
+    const row = {
+      repository: "o/r",
+      number: 3,
+      title: "A title",
+      workloads: 2,
+      settled_at: "2026-11-20T11:00:00Z",
+      latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
+    };
+
+    it("reads the list, in camel case, and asks only for the list", async () => {
+      const fetcher = respond(200, { tickets: [row, { ...row, number: 4, title: null, settled_at: null }] });
+
+      const tickets = await createClient(fetcher).tickets();
+
+      expect(tickets).toHaveLength(2);
+      expect(tickets[0]).toEqual({
+        repository: "o/r",
+        number: 3,
+        title: "A title",
+        workloads: 2,
+        settledAt: "2026-11-20T11:00:00Z",
+        latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
+      });
+      expect(tickets[1]).toMatchObject({ title: null, settledAt: null });
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/tickets?limit=200");
+    });
+
+    it("raises on a row that is not the shape promised", async () => {
+      await expect(createClient(respond(200, { tickets: [{ ...row, number: "3" }] })).tickets()).rejects.toBeInstanceOf(ApiError);
+      await expect(createClient(respond(200, { tickets: "none" })).tickets()).rejects.toBeInstanceOf(ApiError);
+    });
+
+    it("raises on 401 so the page can offer the sign-in", async () => {
+      await expect(createClient(respond(401, {})).tickets()).rejects.toMatchObject({ status: 401 });
+    });
+  });
+
+  describe("a ticket", () => {
+    const body = {
+      repository: "o/r",
+      number: 3,
+      title: "A title",
+      url: "https://github.com/o/r/issues/3",
+      workloads: [
+        {
+          id: "w",
+          repository: "o/r",
+          ticket_number: 3,
+          kind: "implementation",
+          state: "blocked",
+          reason: "something an agent said",
+          parent_id: null,
+          approved_by: "octocat",
+          started_at: "2026-11-20T10:00:00Z",
+          finished_at: null,
+          settled_at: null,
+          created_at: "2026-11-20T09:00:00Z",
+        },
+      ],
+      spend: { totals: { usd: 2 }, by_kind: { implementation: { usd: 2 } }, workloads: 1, parts: null },
+    };
+
+    it("reads the ticket, its runs and its spend, and leaves the run's reason unread", async () => {
+      const fetcher = respond(200, body);
+
+      const ticket = await createClient(fetcher).ticket("o/r", 3);
+
+      expect(ticket).toEqual({
+        repository: "o/r",
+        number: 3,
+        title: "A title",
+        url: "https://github.com/o/r/issues/3",
+        workloads: [
+          {
+            id: "w",
+            kind: "implementation",
+            state: "blocked",
+            approvedBy: "octocat",
+            createdAt: "2026-11-20T09:00:00Z",
+            startedAt: "2026-11-20T10:00:00Z",
+            finishedAt: null,
+          },
+        ],
+        spend: { totals: { usd: 2 }, byKind: { implementation: { usd: 2 } }, workloads: 1 },
+      });
+      expect(JSON.stringify(ticket)).not.toContain("something an agent said");
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/tickets/o/r/3");
+    });
+
+    it("is null when the API has no such ticket", async () => {
+      expect(await createClient(respond(404, { error: "not found" })).ticket("o/r", 3)).toBeNull();
+    });
+
+    it("raises on another failure or a shape not promised", async () => {
+      await expect(createClient(respond(500, {})).ticket("o/r", 3)).rejects.toMatchObject({ status: 500 });
+      await expect(createClient(respond(200, { ...body, workloads: [{}] })).ticket("o/r", 3)).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
+  describe("spend by day", () => {
+    it("reads the days for a repository, with the repository and the days in the request", async () => {
+      const fetcher = respond(200, { days: [{ day: "2026-11-20", totals: { usd: 1, tokens: 5 } }] });
+
+      expect(await createClient(fetcher).spendDays("o/r", 14)).toEqual([
+        { day: "2026-11-20", totals: { usd: 1, tokens: 5 } },
+      ]);
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/spend/days?repository=o%2Fr&days=14");
+    });
+
+    it("raises on a total that is not a number", async () => {
+      const fetcher = respond(200, { days: [{ day: "2026-11-20", totals: { usd: "1" } }] });
+
+      await expect(createClient(fetcher).spendDays("o/r", 14)).rejects.toBeInstanceOf(ApiError);
+    });
+  });
 });
