@@ -33,6 +33,22 @@ pub struct Reading<'a> {
     pub spent: &'a Cell<f64>,
 }
 
+/// How many times a reader is started for one lens in one round when it could not review: the
+/// first time, and twice more.
+pub const TRIES: u32 = 3;
+
+/// Whether a reader that gave no verdict is worth starting again. It is when it could not run
+/// or left nothing usable: an agent that could not reach its API, crashed, timed out or wrote a
+/// verdict that does not pass the contract may do better next time. It is not when it changed
+/// a file, which is a fault and not a flake and has changed the work it was to read, nor when
+/// the budget is spent or it was stopped, which another try cannot mend.
+#[must_use]
+pub fn retryable(reason: &str) -> bool {
+    !["changed the workspace", "budget", "was stopped"]
+        .iter()
+        .any(|fault| reason.contains(fault))
+}
+
 /// The workload as a reader is asked about it: a review, with no pull request, of `commit`.
 /// It carries nothing of the run that made the commit: it is never a revision, and it does
 /// not itself read under lenses.

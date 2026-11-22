@@ -204,7 +204,11 @@ commit and lens. What a lens that blocks found goes back to the implementing age
 the gates run again, and the commit is rewritten, for as many rounds as the workload allows;
 nothing is pushed until every lens that blocks has approved the commit about to be pushed, and a
 change still blocked when the rounds are used up is not pushed (the run fails, naming what was
-found, and its workspace is kept). A lens whose text says `blocking: false` is read and never stops
+found, and its workspace is kept). A reader that could not run (its agent could not reach the API, crashed, timed out or left no
+verdict that passes the contract) is started again, up to twice more, in the same round after
+`HEPH_READER_RETRY_WAIT_MS` (ten seconds by default), so an outage does not use up the rounds;
+a verdict that was given, a reader that changed a file and one that met the budget are never
+retried. A lens whose text says `blocking: false` is read and never stops
 the push. Every agent spends from the workload's one budget, and the run record's `steps` lists the
 implementation, each reading and each revision with its own cost.
 
