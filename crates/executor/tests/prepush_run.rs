@@ -26,7 +26,7 @@ const STYLE: &str = "---\nname: style\napplies: always\nblocking: false\n---\nLo
 fn manifest_for(scratch: &Path) -> String {
     manifest(&[]).replace("root = \".\"\n", "root = \".\"\npack = \"rust\"\n")
         + &format!(
-            "\n[gates.marker]\nrun = [\"sh\", \"-c\", \"echo ran >> {log}; ! grep -q broken web/changed.txt\"]\ntimeout_seconds = 30\n",
+            "\n[gates.marker]\nrun = [\"sh\", \"-c\", \"echo ran >> {log}; if grep -q broken web/changed.txt; then echo 'the marker gate found the word broken' >&2; exit 1; fi\"]\ntimeout_seconds = 30\n",
             log = scratch.join("gates.log").display()
         )
 }
@@ -578,4 +578,110 @@ fn a_run_that_delivers_nothing_reads_nothing() {
     assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
     assert_eq!(went.starts, 1, "there is no push to read for");
     assert_eq!(went.ran.record().steps.len(), 0);
+}
+
+#[test]
+fn a_gate_that_fails_is_fixed_by_the_agent_and_the_fixed_change_is_read_and_pushed() {
+    let went = go(
+        setup("gate-fixed"),
+        &[
+            implements("broken"),
+            format!("{}; {}", cost(0.125), fixes("v2")),
+            reads("rust", "approved", None),
+        ],
+        |value| {
+            value["limits"]["budget"]["amount"] = json!(10.0);
+        },
+        true,
+    );
+
+    assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
+    assert_eq!(finished(&went.ran.events()).0, Outcome::Completed);
+    assert_eq!(
+        went.starts, 3,
+        "the implementing agent, again for the gate, and a reader"
+    );
+    assert_eq!(
+        went.gate_runs, 2,
+        "the gates ran again on what the agent changed"
+    );
+    assert_eq!(pushed(&went), [BRANCH]);
+    assert_eq!(
+        git(
+            &went.source,
+            &["show", &format!("{BRANCH}:web/changed.txt")]
+        ),
+        "v2"
+    );
+    assert_eq!(
+        git(
+            &went.source,
+            &["rev-list", "--count", &format!("main..{BRANCH}")]
+        ),
+        "1"
+    );
+
+    let steps = went.ran.record().steps;
+    let shape: Vec<(i32, i32)> = steps.iter().map(|s| (s.kind, s.round)).collect();
+    assert_eq!(
+        shape,
+        [
+            (StepKind::Implementation as i32, 0),
+            (StepKind::Revision as i32, 1),
+            (StepKind::Review as i32, 1),
+        ]
+    );
+    let fixing: f64 = steps[1].costs.iter().map(|c| c.amount).sum();
+    assert!(
+        (fixing - 0.125).abs() < 1e-9,
+        "the fix turn's own cost: {fixing}"
+    );
+}
+
+#[test]
+fn a_gate_that_still_fails_after_the_rounds_ends_the_run_with_what_it_printed() {
+    let went = go(
+        setup("gate-never-fixed"),
+        &[implements("broken"), fixes("broken"), fixes("broken")],
+        |_| {},
+        true,
+    );
+
+    let (outcome, reason) = finished(&went.ran.events());
+    assert_eq!(outcome, Outcome::Failed, "{reason}");
+    assert!(reason.contains("gate marker"), "{reason}");
+    assert!(
+        reason.contains("the marker gate found the word broken"),
+        "what the gate printed is in the reason: {reason}"
+    );
+    assert_eq!(
+        went.starts, 3,
+        "two fixes, as many as there are rounds, and no reader"
+    );
+    assert_eq!(pushed(&went).len(), 0);
+    assert!(
+        went.ran
+            .record()
+            .steps
+            .iter()
+            .all(|s| s.kind != StepKind::Review as i32),
+        "nothing was read, because the gates never passed"
+    );
+}
+
+#[test]
+fn a_gate_that_fails_is_not_given_to_the_agent_when_the_run_reads_nothing_before_the_push() {
+    let went = go(
+        setup("gate-no-reading"),
+        &[implements("broken"), fixes("v2")],
+        |value| {
+            value["lenses"] = json!([]);
+            value["prepushRounds"] = json!(0);
+        },
+        true,
+    );
+
+    let (outcome, reason) = finished(&went.ran.events());
+    assert_eq!(outcome, Outcome::Failed, "{reason}");
+    assert_eq!(went.starts, 1, "the run ended, as it did before");
 }

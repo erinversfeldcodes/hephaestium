@@ -5,12 +5,13 @@
 //! waiting for it fails, the whole group is killed, so a command cannot leave a
 //! process behind that outlives it.
 
-use std::io::Read as _;
+use std::collections::VecDeque;
+use std::io::{BufRead as _, Read as _, Write as _};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process_group};
@@ -104,6 +105,62 @@ pub fn execute(
     execute_with_env(argv, directory, timeout, capture_stdout, &[], notify)
 }
 
+/// The last lines a command printed, kept while it runs so that a caller can say what a command
+/// that failed had said last. It is shared: clones see the same lines.
+#[derive(Debug, Clone)]
+pub struct Tail {
+    lines: Arc<Mutex<VecDeque<String>>>,
+    most: usize,
+}
+
+impl Tail {
+    /// A tail that keeps the last `most` lines.
+    #[must_use]
+    pub fn new(most: usize) -> Self {
+        Self {
+            lines: Arc::new(Mutex::new(VecDeque::new())),
+            most,
+        }
+    }
+
+    fn push(&self, line: String) {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.push_back(line);
+            while lines.len() > self.most {
+                lines.pop_front();
+            }
+        }
+    }
+
+    /// The lines kept, oldest first, joined with newlines.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.lines.lock().map_or_else(
+            |_| String::new(),
+            |lines| {
+                lines
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+        )
+    }
+}
+
+/// Copy what a command prints, a line at a time, to this process's standard error, as the
+/// command would have printed it there itself, and into the tail.
+fn tee(output: impl std::io::Read + Send + 'static, tail: Tail) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(output).split(b'\n') {
+            let Ok(bytes) = line else { break };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let _ = writeln!(std::io::stderr(), "{text}");
+            tail.push(text);
+        }
+    })
+}
+
 /// [`execute`], with these variables set in the command's environment on top of
 /// this process's own.
 ///
@@ -122,6 +179,37 @@ pub fn execute_with_env(
     environment: &[(String, String)],
     notify: impl Fn(&str),
 ) -> Result<(Ended, Option<Vec<u8>>), std::io::Error> {
+    execute_with_tail(
+        argv,
+        directory,
+        timeout,
+        capture_stdout,
+        environment,
+        notify,
+        None,
+    )
+}
+
+/// [`execute_with_env`], keeping the last lines the command printed in `tail`. What it prints
+/// still goes to this process's standard error, a line at a time, as it would have; its
+/// standard output, when it is not the one captured, goes there too.
+///
+/// # Errors
+///
+/// As for [`execute_with_env`].
+///
+/// # Panics
+///
+/// If `argv` is empty, as for [`execute`].
+pub fn execute_with_tail(
+    argv: &[String],
+    directory: &Path,
+    timeout: Duration,
+    capture_stdout: bool,
+    environment: &[(String, String)],
+    notify: impl Fn(&str),
+    tail: Option<&Tail>,
+) -> Result<(Ended, Option<Vec<u8>>), std::io::Error> {
     let (program, arguments) = argv
         .split_first()
         .expect("a command to have a program: the schema requires at least one element");
@@ -136,9 +224,15 @@ pub fn execute_with_env(
         .current_dir(directory)
         .envs(environment.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
         .process_group(0);
-    if capture_stdout {
+    // What it prints is kept in a tail when there is one, and is otherwise left to go to this
+    // process's standard error itself.
+    if tail.is_some() {
+        command.stderr(Stdio::piped());
+    } else {
+        command.stderr(Stdio::inherit());
+    }
+    if capture_stdout || tail.is_some() {
         command.stdout(Stdio::piped());
     } else {
         command.stdout(Stdio::from(std::io::stderr()));
@@ -157,6 +251,15 @@ pub fn execute_with_env(
         }
     };
 
+    let mut tees = Vec::new();
+    if let Some(tail) = tail {
+        if let Some(standard_error) = child.stderr.take() {
+            tees.push(tee(standard_error, tail.clone()));
+        }
+        if !capture_stdout && let Some(standard_output) = child.stdout.take() {
+            tees.push(tee(standard_output, tail.clone()));
+        }
+    }
     let reader = child.stdout.take().map(|mut standard_output| {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -191,6 +294,9 @@ pub fn execute_with_env(
 
     stop_everything_started_by(&child);
     let captured = reader.map(|reader| reader.join().unwrap_or_default());
+    for tee in tees {
+        let _ = tee.join();
+    }
 
     Ok((ended, captured))
 }
