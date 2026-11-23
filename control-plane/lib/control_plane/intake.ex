@@ -27,7 +27,6 @@ defmodule ControlPlane.Intake do
   }
 
   @label TicketLabels.ready()
-  @writers [:admin, :maintain, :write]
 
   @type result :: :started | :resumed | {:evaluating, String.t()} | {:skipped, term()}
 
@@ -192,9 +191,11 @@ defmodule ControlPlane.Intake do
   # Whether a login may write to the repository.
   defp writer(repo, login, reason) do
     case CodeHost.permission(repo, login) do
-      {:ok, permission} when permission in @writers -> {:ok, true}
-      {:ok, _} -> {:ok, false, reason}
-      {:error, message} -> {:github_error, message}
+      {:ok, permission} ->
+        if CodeHost.writer?(permission), do: {:ok, true}, else: {:ok, false, reason}
+
+      {:error, message} ->
+        {:github_error, message}
     end
   end
 

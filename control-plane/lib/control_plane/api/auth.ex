@@ -3,8 +3,9 @@ defmodule ControlPlane.Api.Auth do
   The login with GitHub's user authorization (the web flow), the only routes that need no
   session. The person is sent to GitHub with a state that is kept in a cookie; GitHub sends
   them back with a code and the same state; the state is checked and spent, the code is
-  exchanged for a user token, the token is used to read the login and dropped, and the login
-  must be on the allowlist for a session to be made. A login that is not on it is refused and
+  exchanged for a user token, the token is used to read the login, and the login must be on
+  the allowlist for a session to be made. Only then is the token kept, sealed in the session's
+  own cookie, so that a reply can be made as the person; a refused login keeps nothing. A login that is not on it is refused and
   nothing is made.
   """
 
@@ -53,7 +54,7 @@ defmodule ControlPlane.Api.Auth do
     with {:ok, token} <- github.exchange_code(code, redirect_uri(settings), settings),
          {:ok, login} <- github.login(token) do
       if Settings.allowed?(settings, login) do
-        conn |> Session.start(login, settings) |> redirect("/")
+        conn |> Session.start(login, settings, token) |> redirect("/")
       else
         refuse(conn, 403, "this login is not allowed to sign in")
       end

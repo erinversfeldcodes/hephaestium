@@ -13,7 +13,8 @@ defmodule ControlPlane.Api.Router do
   exist only while the executor link is on, and are of two kinds that never stand in for each
   other:
 
-    * `:session_write`: a person's own device tokens. These need the session cookie and a
+    * `:session_write`: a person's own device tokens, and their reply to an agent's question
+      (made as them, with the user token their login gave). These need the session cookie and a
       CSRF token, and ignore any bearer token.
     * `:worker`: an executor's. These need a device token as a bearer token, and ignore any
       cookie, so a browser can never be made to act as an executor and a token is no way to
@@ -37,6 +38,7 @@ defmodule ControlPlane.Api.Router do
     Csrf,
     DeviceTokens,
     Endpoints,
+    Reply,
     Session,
     Settings,
     Static,
@@ -111,13 +113,18 @@ defmodule ControlPlane.Api.Router do
       handler: {Endpoints, :spend_days}
     },
     %{method: "GET", path: ~w(api questions), access: :session, handler: {Endpoints, :questions}},
+    %{
+      method: "POST",
+      path: ~w(api tickets :owner :name :number reply),
+      access: :session_write,
+      handler: {Reply, :create}
+    },
 
     # The executor link. Present only while it is on.
     %{
       method: "GET",
       path: ~w(api csrf),
       access: :session,
-      link: true,
       handler: {DeviceTokens, :csrf}
     },
     %{

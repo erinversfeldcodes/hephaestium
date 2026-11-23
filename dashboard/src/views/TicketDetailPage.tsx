@@ -1,6 +1,7 @@
 import type { Client } from "../api";
 import { amount, amounts, when } from "../format";
 import { Shown, useRemote } from "../useRemote";
+import { QuestionPanel } from "./QuestionPanel";
 
 export function TicketDetailPage({
   client,
@@ -24,6 +25,8 @@ export function TicketDetailPage({
               {detail.title ?? `Ticket #${detail.number}`} <small>{`${detail.repository} #${detail.number}`}</small>
             </h2>
             {detail.url !== null && <a href={detail.url}>On GitHub</a>}
+
+            <QuestionPanel client={client} repository={repository} number={number} />
 
             <section aria-labelledby="runs-heading">
               <h3 id="runs-heading">Runs</h3>

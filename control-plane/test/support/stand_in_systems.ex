@@ -68,6 +68,10 @@ defmodule ControlPlane.StandInTracker do
   def comment_on_ticket(p, k, b), do: S.ask(:tracker, :comment_on_ticket, [p, k, b])
   @impl true
   def close_ticket(p, k), do: S.ask(:tracker, :close_ticket, [p, k])
+  @impl true
+  def comment_as(p, k, c, b), do: S.ask(:tracker, :comment_as, [p, k, c, b])
+  @impl true
+  def add_label_as(p, k, c, l), do: S.ask(:tracker, :add_label_as, [p, k, c, l])
 end
 
 defmodule ControlPlane.StandInCodeHost do

@@ -1,4 +1,4 @@
-import type { Client, SpendDay, TicketDetail, TicketSummary } from "./api";
+import type { Client, Question, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
 
 export const summary: TicketSummary = {
   repository: "erinversfeldcodes/gazebolang",
@@ -41,6 +41,17 @@ export const detail: TicketDetail = {
   },
 };
 
+export const question: Question = {
+  workload: "w-3",
+  repository: "erinversfeldcodes/gazebolang",
+  ticket: 12,
+  title: "Teach the parser about guards",
+  question: "Which database should the guards be stored in?",
+  askedAt: "2026-11-20T11:00:00Z",
+};
+
+export const replied: ReplyResult = { commented: true, approved: true, error: null };
+
 export const days: SpendDay[] = [
   { day: "2026-11-20", totals: { usd: 0.25, tokens: 2000 } },
   { day: "2026-11-19", totals: { usd: 1.25, tokens: 10345 } },
@@ -53,6 +64,8 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     tickets: async () => [summary],
     ticket: async () => detail,
     spendDays: async () => days,
+    question: async () => null,
+    reply: async () => replied,
     ...overrides,
   };
 }
