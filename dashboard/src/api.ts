@@ -31,12 +31,23 @@ export interface TicketSummary {
   readonly title: string | null;
   readonly workloads: number;
   readonly settledAt: string | null;
+  /** The latest run, or null for an approved ticket that has no run yet. */
   readonly latest: {
     readonly id: string;
     readonly state: string;
     readonly kind: string;
     readonly at: string;
-  };
+  } | null;
+  /** Present while the ticket waits for a run to start: no workload yet, or a queued one. */
+  readonly waiting: Waiting | null;
+}
+
+/** A ticket waiting for work to start. `since` is null where the control plane does not hold the time. */
+export interface Waiting {
+  readonly since: string | null;
+  readonly approvedBy: string | null;
+  /** True for a queued workload that no worker has claimed, as no executor of its approver is connected. */
+  readonly noWorker: boolean;
 }
 
 export interface Run {
@@ -378,18 +389,24 @@ function parseSession(body: unknown): Session {
 function parseTickets(body: unknown): readonly TicketSummary[] {
   return list(fields(body)["tickets"]).map((raw) => {
     const row = fields(raw);
-    const latest = fields(row["latest"]);
+    const latest = row["latest"] === null || row["latest"] === undefined ? null : fields(row["latest"]);
+    const waiting = row["waiting"] === null || row["waiting"] === undefined ? null : fields(row["waiting"]);
     return {
       repository: text(row["repository"]),
       number: count(row["number"]),
       title: maybeText(row["title"]),
       workloads: count(row["workloads"]),
       settledAt: maybeText(row["settled_at"]),
-      latest: {
+      latest: latest && {
         id: text(latest["id"]),
         state: text(latest["state"]),
         kind: text(latest["kind"]),
         at: text(latest["at"]),
+      },
+      waiting: waiting && {
+        since: maybeText(waiting["since"]),
+        approvedBy: maybeText(waiting["approved_by"]),
+        noWorker: waiting["no_worker"] === true,
       },
     };
   });

@@ -322,9 +322,9 @@ describe("a question waiting for a person", () => {
 describe("the board", () => {
   const rows = [
     summary,
-    { ...summary, number: 13, title: "Waiting one", latest: { ...summary.latest, state: "queued" } },
-    { ...summary, number: 14, title: "Asked one", latest: { ...summary.latest, state: "blocked" } },
-    { ...summary, number: 5, title: "Other repo", repository: "o/other", latest: { ...summary.latest, state: "completed" } },
+    { ...summary, number: 13, title: "Waiting one", latest: { ...summary.latest!, state: "queued" } },
+    { ...summary, number: 14, title: "Asked one", latest: { ...summary.latest!, state: "blocked" } },
+    { ...summary, number: 5, title: "Other repo", repository: "o/other", latest: { ...summary.latest!, state: "completed" } },
   ];
 
   it("has a lane for each repository and a column for each state, with each ticket in its column", async () => {
@@ -332,7 +332,7 @@ describe("the board", () => {
 
     const lane = await screen.findByRole("region", { name: "erinversfeldcodes/gazebolang" });
     expect(within(within(lane).getByRole("group", { name: "Working" })).getByRole("link", { name: "Teach the parser about guards" })).toBeInTheDocument();
-    expect(within(within(lane).getByRole("group", { name: "Queued" })).getByRole("link", { name: "Waiting one" })).toBeInTheDocument();
+    expect(within(within(lane).getByRole("group", { name: "Waiting" })).getByRole("link", { name: "Waiting one" })).toBeInTheDocument();
     expect(within(within(lane).getByRole("group", { name: "Blocked" })).getByRole("link", { name: "Asked one" })).toBeInTheDocument();
     expect(within(lane).queryByRole("link", { name: "Other repo" })).not.toBeInTheDocument();
     const other = screen.getByRole("region", { name: "o/other" });
@@ -340,6 +340,26 @@ describe("the board", () => {
       "href",
       "/tickets/o/other/5",
     );
+  });
+
+  it("shows approved tickets with no run in the waiting column with how long they waited, and a queued one that no worker has claimed", async () => {
+    const since = new Date(Date.now() - 5 * 60_000).toISOString();
+    const waitingRows = [
+      { ...summary, number: 20, title: "Approved, no run", latest: null, workloads: 0, waiting: { since, approvedBy: "maint", noWorker: false } },
+      { ...summary, number: 21, title: "Approved, time unknown", latest: null, workloads: 0, waiting: { since: null, approvedBy: "maint", noWorker: false } },
+      { ...summary, number: 22, title: "Queued, unclaimed", latest: { ...summary.latest!, state: "queued" }, waiting: { since, approvedBy: "maint", noWorker: true } },
+      { ...summary, number: 23, title: "Queued, a worker is there", latest: { ...summary.latest!, state: "queued" }, waiting: { since, approvedBy: "maint", noWorker: false } },
+    ];
+    render(<BoardPage client={fakeClient({ tickets: async () => waitingRows })} />);
+
+    const lane = await screen.findByRole("region", { name: "erinversfeldcodes/gazebolang" });
+    const column = within(lane).getByRole("group", { name: "Waiting" });
+    const item = (name: string) => within(column).getByRole("link", { name }).closest("li") as HTMLElement;
+    expect(item("Approved, no run")).toHaveTextContent("waiting 5 minutes");
+    expect(item("Approved, no run")).not.toHaveTextContent("no worker");
+    expect(item("Approved, time unknown")).toHaveTextContent("wait unknown");
+    expect(item("Queued, unclaimed")).toHaveTextContent("no worker has claimed it");
+    expect(item("Queued, a worker is there")).not.toHaveTextContent("no worker has claimed it");
   });
 
   it("marks, and only, the tickets where a person is needed, without the question's text", async () => {
@@ -366,7 +386,7 @@ describe("the board", () => {
 
   it("says when there is nothing, loading, and failure like the other pages", async () => {
     const { unmount } = render(<BoardPage client={fakeClient({ tickets: async () => [] })} />);
-    expect(await screen.findByText("No ticket has had a run yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No ticket is waiting or has had a run yet.")).toBeInTheDocument();
     unmount();
 
     render(<BoardPage client={fakeClient({ tickets: async () => Promise.reject(new ApiError(500, "x")) })} />);

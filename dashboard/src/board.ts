@@ -1,10 +1,10 @@
 import type { TicketSummary } from "./api";
 
-export type ColumnId = "queued" | "working" | "blocked" | "failed" | "completed" | "done" | "unknown";
+export type ColumnId = "waiting" | "working" | "blocked" | "failed" | "completed" | "done" | "unknown";
 
 /** The columns, from a ticket approved and waiting to a ticket settled. */
 export const columns: readonly { readonly id: ColumnId; readonly title: string }[] = [
-  { id: "queued", title: "Queued" },
+  { id: "waiting", title: "Waiting" },
   { id: "working", title: "Working" },
   { id: "blocked", title: "Blocked" },
   { id: "failed", title: "Failed" },
@@ -19,9 +19,10 @@ export const columns: readonly { readonly id: ColumnId; readonly title: string }
  */
 export function columnOf(ticket: TicketSummary): ColumnId {
   if (ticket.settledAt !== null) return "done";
+  if (ticket.latest === null) return "waiting";
   switch (ticket.latest.state) {
     case "queued":
-      return "queued";
+      return "waiting";
     case "preparing":
     case "running":
     case "gating":
@@ -54,4 +55,19 @@ export function lanes(tickets: readonly TicketSummary[]): readonly Lane[] {
     byRepository.set(ticket.repository, cards);
   }
   return [...byRepository].map(([repository, cards]) => ({ repository, cards }));
+}
+
+/**
+ * How long a waiting ticket has waited, as a person reads it: where the control plane holds no
+ * time, or the time is not one, the wait is unknown. It is never guessed.
+ */
+export function waitedFor(since: string | null, now: Date): string {
+  const start = since === null ? Number.NaN : Date.parse(since);
+  if (Number.isNaN(start)) return "wait unknown";
+  const minutes = Math.max(0, Math.floor((now.getTime() - start) / 60_000));
+  if (minutes < 1) return "waiting less than a minute";
+  if (minutes < 60) return `waiting ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `waiting ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  return `waiting ${Math.floor(hours / 24)} days`;
 }

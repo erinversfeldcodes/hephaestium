@@ -88,6 +88,11 @@ defmodule ControlPlane.ApiTest do
     id
   end
 
+  defp set_state(id, state) do
+    import Ecto.Query
+    Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^id), set: [state: state])
+  end
+
   # A workload with events, kept in the database.
   defp seed(number \\ 12, state_events \\ [Fixtures.started(), Fixtures.workspace_ready()]) do
     id = Ecto.UUID.generate()
@@ -474,6 +479,58 @@ defmodule ControlPlane.ApiTest do
       assert ticket["workloads"] == 1
       assert ticket["latest"]["id"] == id
       assert ticket["latest"]["state"] == "running"
+    end
+
+    test "an approved ticket with no workload is on the board, waiting since its approval" do
+      approved_at =
+        DateTime.utc_now() |> DateTime.add(-600, :second) |> DateTime.truncate(:second)
+
+      :ok = ControlPlane.WaitingTickets.put(@repository, 40, "octocat", approved_at)
+      _started = seed(41)
+
+      %{"tickets" => tickets} = get_as("/api/tickets") |> json()
+
+      waiting = Enum.find(tickets, &(&1["number"] == 40))
+      assert waiting["latest"] == nil
+      assert waiting["workloads"] == 0
+      assert waiting["waiting"]["approved_by"] == "octocat"
+      {:ok, since, _} = DateTime.from_iso8601(waiting["waiting"]["since"])
+      assert DateTime.compare(since, approved_at) == :eq
+      assert waiting["waiting"]["no_worker"] == false
+      assert Enum.find(tickets, &(&1["number"] == 41))["waiting"] == nil
+    end
+
+    test "a ticket with a queued workload says no worker has claimed it when no token is connected" do
+      id = seed(42)
+      set_state(id, "queued")
+
+      ticket =
+        get_as("/api/tickets")
+        |> json()
+        |> Map.fetch!("tickets")
+        |> Enum.find(&(&1["number"] == 42))
+
+      assert ticket["latest"]["state"] == "queued"
+      assert ticket["waiting"]["no_worker"] == true
+
+      assert String.starts_with?(
+               ticket["waiting"]["since"],
+               String.trim_trailing(ticket["latest"]["at"], "Z") |> String.slice(0, 19)
+             )
+    end
+
+    test "a queued workload whose approver has a connected token is not said to be unclaimed" do
+      seed_kind(43, %{"approval" => %{"approvedBy" => "octocat"}}, "queued")
+      {:ok, %{record: record}} = ControlPlane.DeviceTokens.issue("octocat", "laptop")
+      ControlPlane.DeviceTokens.seen(record)
+
+      ticket =
+        get_as("/api/tickets")
+        |> json()
+        |> Map.fetch!("tickets")
+        |> Enum.find(&(&1["number"] == 43))
+
+      assert ticket["waiting"]["no_worker"] == false
     end
 
     test "a ticket with its workloads and what it spent" do

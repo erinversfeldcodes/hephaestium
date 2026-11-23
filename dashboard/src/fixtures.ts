@@ -7,6 +7,7 @@ export const summary: TicketSummary = {
   workloads: 2,
   settledAt: null,
   latest: { id: "w-2", state: "running", kind: "review", at: "2026-11-20T10:00:00Z" },
+  waiting: null,
 };
 
 export const detail: TicketDetail = {

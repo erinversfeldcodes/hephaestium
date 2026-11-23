@@ -7,7 +7,7 @@ defmodule ControlPlane.Api.Read do
 
   import Ecto.Query
 
-  alias ControlPlane.{Account, Event, Repo, Workload, Workloads}
+  alias ControlPlane.{Account, DeviceTokens, Event, Repo, WaitingTickets, Workload, Workloads}
 
   @max_page 500
 
@@ -15,11 +15,55 @@ defmodule ControlPlane.Api.Read do
   def max_page, do: @max_page
 
   @doc """
-  The tickets that have workloads, the most recently active first: each with its title, how
-  many workloads it has had and the latest of them with its state.
+  The board's tickets, the most recently active first: each with its title, how many workloads
+  it has had and the latest of them with its state. An approved ticket with no workload yet is
+  among them with no `latest` and no workloads. A ticket that waits, with no workload or with a
+  queued one, has `waiting`: since when, and for a queued workload whether no worker has
+  claimed it, which is so when no executor of the ticket's approver is connected. A time the
+  control plane does not hold is nil, and the age is unknown.
   """
   @spec tickets(non_neg_integer(), non_neg_integer()) :: [map()]
   def tickets(limit, offset) do
+    rows = with_workloads(limit + offset)
+    waiting = for w <- WaitingTickets.list(limit + offset), do: waiting_ticket(w)
+
+    page =
+      (rows ++ waiting)
+      |> Enum.sort_by(& &1.sort_at, {:desc, DateTime})
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
+
+    connected =
+      for %{waiting: %{approved_by: login, no_worker: :unknown}} <- page,
+          is_binary(login),
+          uniq: true,
+          into: %{},
+          do: {login, DeviceTokens.connected?(login)}
+
+    Enum.map(page, fn row ->
+      row |> Map.delete(:sort_at) |> Map.update!(:waiting, &worker_known(&1, connected))
+    end)
+  end
+
+  defp worker_known(%{no_worker: :unknown, approved_by: login} = waiting, connected),
+    do: %{waiting | no_worker: not Map.get(connected, login, false)}
+
+  defp worker_known(waiting, _connected), do: waiting
+
+  defp waiting_ticket(w) do
+    %{
+      repository: w.repository,
+      number: w.ticket_number,
+      title: w.title,
+      workloads: 0,
+      settled_at: nil,
+      latest: nil,
+      waiting: %{since: w.approved_at, approved_by: w.approved_by, no_worker: false},
+      sort_at: w.approved_at
+    }
+  end
+
+  defp with_workloads(limit) do
     latest =
       from w in Workload,
         distinct: [w.repository, w.ticket_number],
@@ -37,14 +81,14 @@ defmodule ControlPlane.Api.Read do
               w.workload
             ),
           settled_at: w.settled_at,
+          approver: fragment("?->'approval'->>'approvedBy'", w.workload),
           workloads: fragment("count(*) over (partition by ?, ?)", w.repository, w.ticket_number)
         }
 
     Repo.all(
       from l in subquery(latest),
         order_by: [desc: l.inserted_at, asc: l.repository, asc: l.number],
-        limit: ^limit,
-        offset: ^offset
+        limit: ^limit
     )
     |> Enum.map(fn row ->
       %{
@@ -58,10 +102,23 @@ defmodule ControlPlane.Api.Read do
           state: row.state,
           kind: row.kind || "implementation",
           at: row.inserted_at
-        }
+        },
+        waiting: queued(row),
+        sort_at: utc(row.inserted_at)
       }
     end)
   end
+
+  # A queued workload is waiting for a worker; whether any executor of its approver is
+  # connected is read once for the page, after it is cut.
+  defp queued(%{state: "queued", approver: approver, inserted_at: at}),
+    do: %{since: utc(at), approved_by: approver, no_worker: :unknown}
+
+  defp queued(_row), do: nil
+
+  # Workloads keep their insert time without a zone; it is UTC.
+  defp utc(%NaiveDateTime{} = at), do: DateTime.from_naive!(at, "Etc/UTC")
+  defp utc(%DateTime{} = at), do: at
 
   @doc "A ticket's workloads, oldest first, or nil when it has none."
   @spec ticket(String.t(), integer()) :: map() | nil
