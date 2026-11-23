@@ -48,9 +48,20 @@ const EXCERPTS_CAP: usize = 24_000;
 
 /// What the agent is told: the ticket, and that the runtime opens the pull
 /// request after its own checks; for a revision, also which checks failed.
-fn prompt(workload: &Workload) -> String {
+fn prompt(workload: &Workload, workspace: &Path) -> String {
     if let Some(review) = workload.review.as_ref() {
-        return crate::review::prompt(workload, review);
+        // The implementer's description is not in the diff, so a lens that reads
+        // only the diff cannot see the proof it holds.
+        let description =
+            match std::fs::read_to_string(workspace.join(crate::deliver::DESCRIPTION_FILE)) {
+                Ok(text) => Some(text),
+                // A change read before it is pushed may have none; that is not a failure.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => Some(format!(
+                    "(the description could not be read: {error}; say so in the verdict's notes)"
+                )),
+            };
+        return crate::review::prompt(workload, review, description.as_deref());
     }
     if let Some(completeness) = workload.completeness.as_ref() {
         return crate::completeness::prompt(workload, completeness);
@@ -234,7 +245,7 @@ impl Adapter for ClaudeCode {
             format!("CLAUDE_CONFIG_DIR={}", directory.display()),
             "claude".to_owned(),
             "-p".to_owned(),
-            prompt(workload),
+            prompt(workload, workspace),
             "--output-format".to_owned(),
             "stream-json".to_owned(),
             "--verbose".to_owned(),

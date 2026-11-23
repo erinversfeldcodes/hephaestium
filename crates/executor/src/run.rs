@@ -348,6 +348,25 @@ fn prepare<W: Write>(
     let commit = beating(options.heartbeat, stream, |tick| {
         clone(options, secrets, workload, workspace, tick)?;
         bring_in_base(workload, workspace, tick)?;
+        // A review of a pushed commit works in a fresh clone, which does not hold the file the
+        // implementer wrote their account in, so the account is read from the pull request.
+        if let Some(review) = workload
+            .review
+            .as_ref()
+            .filter(|review| !review.pull_request_url.is_empty())
+        {
+            let token = secrets
+                .get(secrets::GITHUB_TOKEN)
+                .or_else(|| secrets.get(secrets::READ_TOKEN))
+                .unwrap_or_default();
+            deliver::fetch_description(
+                &review.pull_request_url,
+                workspace,
+                &options.gh,
+                token,
+                tick,
+            )?;
+        }
         // A run that will push finds out now whether it can, before any agent is paid for.
         if let (true, false, Some(token)) = (
             options.deliver,
