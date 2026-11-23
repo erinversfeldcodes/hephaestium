@@ -10,7 +10,7 @@ Each step says who does it. Steps marked **you** create an account, change the G
 hold a secret, and nobody else can do them. Everything else runs in CI.
 
 Anything in this document that was inferred rather than read from the code or observed is
-marked *(inferred)* or *(unverified)*. Nothing here has been run against Fly, Neon or GitHub.
+marked *(inferred)* or *(unverified)*. The first live run has been made; points it did not exercise are still marked.
 
 ## What is deployed
 
@@ -51,17 +51,14 @@ What the hosted skeleton therefore has, as of this change:
 
 | Needed | State |
 | --- | --- |
-| `gh` in the image | Added to the image (Debian's package, 2.46 *(unverified: the version the image gets is whatever Debian's repository has when it is built)*). It was missing. |
+| `gh` in the image | In the image: GitHub's own release, pinned by version and checked against its checksum (`GH_VERSION` in `control-plane/Dockerfile`). Debian's package is not used, because its `gh` lacks `--slurp`. |
 | An identity for `gh` | **Only a token in `GH_TOKEN`.** An installation token lasts about an hour, so the deployed value has to be a fine-grained personal access token, which is a person's identity, not an App's. This differs from what ADR 0037 recommends (an App that mints short-lived tokens). Use a dedicated machine account, not your own, so that the labels and comments the control plane writes are not yours. A label the control plane applies as you would be read by intake as your approval. |
-| `heph` in the image | **Not in the image.** Intake builds every workload with `heph workload`, so a hosted control plane receives webhooks and cannot turn an approved ticket into a workload: `heph could not be run`. |
+| `heph` in the image | In the image at `/usr/local/bin/heph`, and `HEPH_BIN` points to it. Intake builds every workload with `heph workload`. |
 
-The last two are findings, not fixed here, because each is a build of its own: the first is a
-token source for every `gh` call (an App key, a per-repository installation token, an App
-decided on, ADR 0037's open question about which identity the control plane writes as), and the
-second is building and shipping the `heph` binary in the image. Until both exist, the hosted
-control plane serves the login, the dashboard, the executor link and the webhook receiver, and
-the replies; it does not take a ticket in. Say so when you verify: the proof in
-[the checklist](#verify) stops at "the delivery was kept".
+The identity for `gh` is still a finding, not fixed: a token source for every `gh` call (an App
+key, a per-repository installation token, an App decided on, ADR 0037's open question about
+which identity the control plane writes as). Until it exists the deployed `GH_TOKEN` is a
+fine-grained personal access token.
 
 ## Prerequisites (you)
 
@@ -259,10 +256,25 @@ Against production, in this order. Each step names what a pass looks like.
    `heph worker --control-plane https://<host>`. It prints nothing and stays running with no
    error; a `204` claim every 25 seconds is normal; the Workers page shows the token
    connected now. A wrong token ends with "does not accept the device token".
-7. **A webhook delivery**: in the App's Advanced tab, redeliver the `ping`-or-latest delivery; it
-   shows `202`. Then label a ticket in a listed repository `heph:ready`: the delivery shows `202`
-   and `fly logs` has no `missed delivery`. *(The delivery being kept is the proof available now.
-   Acting on it needs `heph` in the image, see the first section; expect a failed job.)*
+
+   Two things about the machine the worker runs on:
+
+   - If the worker will work on a private repository, run `gh auth setup-git` once first, so
+     that `git` uses `gh`'s credentials for clones and pushes; without it the worker's `git`
+     is refused on the private repository.
+   - If `heph` is not installed, run it from the repository's build output:
+     `cargo build --release -p heph`, then `target/release/heph worker --control-plane https://<host>`
+     from the repository root.
+7. **A webhook delivery**: open the App's settings, the Advanced tab, and its Recent Deliveries
+   list. Redeliver the `ping` or the latest delivery. The response column shows the status the
+   control plane answered:
+   - `202`: the signature was valid and the delivery was kept (`accepted`) or deliberately
+     dropped (`ignored`, for an event or repository not listed). This is a pass.
+   - `401`: the signature did not verify; the secret in the App differs from `HEPH_WEBHOOK_SECRET`.
+   - `503`: the control plane has no webhook secret.
+
+   Then label a ticket in a listed repository `heph:ready`: a new delivery shows `202` and
+   `fly logs` has no `missed delivery`.
 8. **A reply shows the person as the actor**: when a run has ended blocked with a question,
    answer it on the dashboard. On GitHub the ticket's event list shows the `labeled` event with
    *you* as the actor, and the comment is yours. This is the check ADR 0037 asks for before the
@@ -320,4 +332,5 @@ In the order they are likely:
 5. A claim ends early through the public address: the proxy's idle timeout.
 6. A webhook delivery is `401`: the secret differs between the App and the Actions secret. `503`:
    the control plane has no secret (variable not set).
-7. A job fails with `gh could not be run` or `heph could not be run`: the findings at the top.
+7. A job fails with `gh could not be run` or `heph could not be run`: the binary is missing or
+   not executable on the machine the job ran on; both are in the image.
