@@ -8,6 +8,7 @@
 # Erlang runtime from the build stage, linked against that release's libraries.
 ARG BUILDER=hexpm/elixir:1.19.5-erlang-28.4.3-debian-trixie-20260824-slim@sha256:0e25a8d44495bf0e62d968745427c146ff500aaaff6e962fafc6b07f9b6cd310
 ARG NODE=node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
+ARG RUST=rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7
 ARG RUNNER=debian:trixie-20260824-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 
 # The dashboard is built to static files; nothing of Node goes into the final image.
@@ -18,6 +19,21 @@ RUN npm ci
 COPY dashboard/index.html dashboard/tsconfig.json dashboard/vite.config.ts ./
 COPY dashboard/src src
 RUN npm run build
+
+# `heph` is what intake runs to turn an approved ticket into a workload. It is built from the
+# Rust sources alone, so a change to the dashboard or the control plane does not rebuild it, and
+# on the same Debian release as the runtime image, so it links the libraries that image has. The
+# cache mounts keep the dependencies compiled between builds that do change the Rust.
+FROM ${RUST} AS heph
+WORKDIR /src
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY proto proto
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p heph \
+    && cp target/release/heph /heph
 
 FROM ${BUILDER} AS build
 
@@ -53,12 +69,17 @@ WORKDIR /app
 # Not root: nothing the control plane does needs it.
 RUN useradd --system --home /app --shell /usr/sbin/nologin heph
 COPY --from=build --chown=heph:heph /app/_build/prod/rel/control_plane ./
+COPY --from=heph /heph /usr/local/bin/heph
 COPY --from=dashboard --chown=heph:heph /dashboard/dist /app/dashboard
 USER heph
 
 # The API serves the dashboard from here when it is on (HEPH_API_PORT); with the API off,
 # nothing reads it.
 ENV HEPH_API_STATIC_DIR=/app/dashboard
+
+# Intake runs this to build a workload (see config/runtime.exs). It reads the ticket through
+# `gh` and needs no checkout of the repository and no model key.
+ENV HEPH_BIN=/usr/local/bin/heph
 
 # The release is configured at start from environment variables (see config/runtime.exs);
 # no setting, key or credential is part of the image.
