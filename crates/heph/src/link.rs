@@ -213,6 +213,17 @@ impl Client {
             .map(|_| ())
     }
 
+    /// Give the workload back: its operator stopped this machine's executor, so the run did not
+    /// end and nothing about the ticket changed.
+    ///
+    /// # Errors
+    ///
+    /// As for any request.
+    pub fn release(&self, id: &str) -> Result<(), Failure> {
+        self.post(&format!("/worker/workloads/{id}/release"), None)
+            .map(|_| ())
+    }
+
     fn post(&self, path: &str, body: Option<&str>) -> Result<(u16, String), Failure> {
         let request = self
             .agent

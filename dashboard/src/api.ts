@@ -1,7 +1,7 @@
-// The dashboard reads the control plane's API, and writes one thing: a person's reply to an
-// agent's question. Every request is a GET (through `get`) except the reply's POST, which is
-// made in `reply` alone, to the one address a ticket's reply has, with the CSRF token the API
-// gave for the session. A person's session is the cookie the browser already holds.
+// The dashboard reads the control plane's API, and writes two things: a person's reply to an
+// agent's question, and their own device tokens (making one, revoking one). Every request is a
+// GET (through `get`) except those POSTs, which are made through `write` alone, each to the one
+// address it has, with the CSRF token the API gave for the session. A person's session is the cookie the browser already holds.
 //
 // What the API answers is checked as it is read: a body that is not the shape promised is an
 // error, never a half-built value for a page to trip over. A workload's `reason` is not read
@@ -104,6 +104,28 @@ export interface AgentText {
   readonly question: string | null;
 }
 
+/** One of a person's device tokens. The token itself is never here: it is shown once, on making. */
+export interface DeviceToken {
+  readonly id: string;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly lastSeenAt: string | null;
+  readonly revokedAt: string | null;
+  /** Whether a worker with this token is connected now. */
+  readonly connected: boolean;
+}
+
+/** A device token just made. `secret` is the only time it can be read. */
+export interface IssuedToken {
+  readonly token: DeviceToken;
+  readonly secret: string;
+}
+
+/** What a write to a device token did: its value, or the reason it was not done. */
+export type Written<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: string };
+
 export interface Client {
   /** Who is signed in, or null when nobody is. Any other failure raises. */
   session(): Promise<Session | null>;
@@ -123,6 +145,12 @@ export interface Client {
   reply(repository: string, number: number, body: string): Promise<ReplyResult>;
   /** What the agent said in one run. It is asked for only when a person asks to read it. */
   agentText(workloadId: string): Promise<AgentText>;
+  /** The signed-in person's device tokens, newest first as the API gives them. */
+  deviceTokens(): Promise<readonly DeviceToken[]>;
+  /** Make a device token. Never raises for a refusal. */
+  makeDeviceToken(name: string): Promise<Written<IssuedToken>>;
+  /** Revoke one of the person's device tokens. Never raises for a refusal. */
+  revokeDeviceToken(id: string): Promise<Written<null>>;
 }
 
 type Fetcher = typeof fetch;
@@ -190,7 +218,40 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
 
     agentText: (workloadId) =>
       read(`/api/workloads/${encodeURIComponent(workloadId)}/account`, parseAgentText),
+
+    deviceTokens: () => read("/api/device-tokens", parseDeviceTokens),
+
+    makeDeviceToken: (name) =>
+      write("/api/device-tokens", { name }, (body) => {
+        const secret = text(fields(body)["token"]);
+        if (secret === "") throw shapeError();
+        return { token: parseDeviceToken(body), secret };
+      }),
+
+    revokeDeviceToken: (id) =>
+      write(`/api/device-tokens/${encodeURIComponent(id)}/revoke`, {}, () => null),
   };
+
+  async function write<T>(path: string, payload: unknown, parse: (body: unknown) => T): Promise<Written<T>> {
+    const token = await csrfToken();
+    if (token === null) return { ok: false, error: "Your session cannot make this change: sign in again." };
+    try {
+      const response = await fetcher(path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", "x-csrf-token": token },
+        body: JSON.stringify(payload),
+      });
+      const body: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error = body !== null && typeof body === "object" ? (body as Fields)["error"] : null;
+        return { ok: false, error: typeof error === "string" ? error : "The change was not made." };
+      }
+      return { ok: true, value: parse(body) };
+    } catch {
+      return { ok: false, error: "The change could not be sent, and may not have been made." };
+    }
+  }
 
   async function csrfToken(): Promise<string | null> {
     const response = await get("/api/csrf");
@@ -353,4 +414,21 @@ function parseDays(body: unknown): readonly SpendDay[] {
     const day = fields(raw);
     return { day: text(day["day"]), totals: totals(day["totals"]) };
   });
+}
+
+function parseDeviceToken(body: unknown): DeviceToken {
+  // Only these fields are read: a token's secret is not a field of what a list can show.
+  const row = fields(body);
+  return {
+    id: text(row["id"]),
+    name: text(row["name"]),
+    createdAt: text(row["createdAt"]),
+    lastSeenAt: maybeText(row["lastSeenAt"]),
+    revokedAt: maybeText(row["revokedAt"]),
+    connected: row["connected"] === true,
+  };
+}
+
+function parseDeviceTokens(body: unknown): readonly DeviceToken[] {
+  return list(fields(body)["tokens"]).map(parseDeviceToken);
 }

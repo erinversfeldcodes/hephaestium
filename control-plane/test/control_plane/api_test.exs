@@ -334,6 +334,7 @@ defmodule ControlPlane.ApiTest do
       {"POST", ["worker", "workloads", ":id", "events"]},
       {"POST", ["worker", "workloads", ":id", "heartbeat"]},
       {"POST", ["worker", "workloads", ":id", "record"]},
+      {"POST", ["worker", "workloads", ":id", "release"]},
       {"POST", ["webhooks", ":source"]}
     ]
 

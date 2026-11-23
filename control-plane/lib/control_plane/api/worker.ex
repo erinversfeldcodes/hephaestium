@@ -16,6 +16,8 @@ defmodule ControlPlane.Api.Worker do
   | `POST /worker/workloads/:id/heartbeat` | Keeps the lease while nothing else is sent. |
   | `POST /worker/workloads/:id/record` | The run record, at the end. |
 
+  | `POST /worker/workloads/:id/release` | The operator stopped the executor: the workload is given back, to be queued again or failed as a lapse would decide. |
+
   A request about a workload the token does not hold, because the lease lapsed, was let go or
   was never its, is 409.
   """
@@ -104,6 +106,18 @@ defmodule ControlPlane.Api.Worker do
       end
     else
       _ -> json(conn, 400, %{error: "the record must be a JSON object"})
+    end
+  end
+
+  def release(conn, %{"id" => id}, _settings, token) do
+    DeviceTokens.seen(token)
+
+    with {:ok, id} <- cast(id),
+         {:ok, result} <- Leases.give_back(token, id) do
+      json(conn, 200, %{result: Atom.to_string(result)})
+    else
+      :error -> json(conn, 400, %{error: "not a workload id"})
+      {:error, :not_held} -> not_held(conn)
     end
   end
 
