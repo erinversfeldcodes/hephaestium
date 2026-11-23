@@ -48,6 +48,17 @@ export interface Run {
   readonly finishedAt: string | null;
 }
 
+/** One run, as the run's page shows it. Its `reason` is not here: see the note at the top. */
+export interface RunDetail {
+  readonly id: string;
+  readonly repository: string;
+  readonly ticket: number;
+  readonly kind: string;
+  readonly state: string;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+}
+
 export interface TicketDetail {
   readonly repository: string;
   readonly number: number;
@@ -91,6 +102,8 @@ export interface Client {
   session(): Promise<Session | null>;
   /** The tickets that have had runs, the most recently active first. */
   tickets(): Promise<readonly TicketSummary[]>;
+  /** One run, or null when there is none by that id. */
+  workload(id: string): Promise<RunDetail | null>;
   /** One ticket, or null when it has had no run. */
   ticket(repository: string, number: number): Promise<TicketDetail | null>;
   /** What a repository spent on each of the last days, newest first. */
@@ -127,6 +140,13 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
     },
 
     tickets: () => read("/api/tickets?limit=200", parseTickets),
+
+    async workload(id) {
+      const response = await get(`/api/workloads/${encodeURIComponent(id)}`);
+      if (response.status === 404) return null;
+      if (!response.ok) throw new ApiError(response.status, response.statusText);
+      return parseRun(await response.json());
+    },
 
     async ticket(repository, number) {
       const response = await get(`/api/tickets/${repository}/${number}`);
@@ -231,6 +251,19 @@ function parseTickets(body: unknown): readonly TicketSummary[] {
       },
     };
   });
+}
+
+function parseRun(body: unknown): RunDetail {
+  const run = fields(body);
+  return {
+    id: text(run["id"]),
+    repository: text(run["repository"]),
+    ticket: count(run["ticket_number"]),
+    kind: text(run["kind"]),
+    state: text(run["state"]),
+    startedAt: maybeText(run["started_at"]),
+    finishedAt: maybeText(run["finished_at"]),
+  };
 }
 
 function parseTicket(body: unknown): TicketDetail {

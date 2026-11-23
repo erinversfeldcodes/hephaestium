@@ -23,7 +23,12 @@ defmodule ControlPlane.WebhookConfigTest do
   alias ControlPlane.Webhooks.Delivery
 
   @runtime Path.expand("../../config/runtime.exs", __DIR__)
-  @names ["HEPH_WEBHOOK_SECRET_FILE", "HEPH_API_PORT", "HEPH_API_SECRET_KEY_BASE"]
+  @names [
+    "HEPH_WEBHOOK_SECRET_FILE",
+    "HEPH_WEBHOOK_SECRET",
+    "HEPH_API_PORT",
+    "HEPH_API_SECRET_KEY_BASE"
+  ]
   @api [{"HEPH_API_PORT", "4000"}, {"HEPH_API_SECRET_KEY_BASE", String.duplicate("k", 40)}]
 
   defp configured(environment) do
@@ -52,6 +57,30 @@ defmodule ControlPlane.WebhookConfigTest do
     test "is on with a secret file and the API, and holds the path and never the secret" do
       assert configured([{"HEPH_WEBHOOK_SECRET_FILE", "/run/secrets/hook"} | @api]) ==
                [secret_file: "/run/secrets/hook"]
+    end
+
+    test "is on with the secret in a variable, as Fly keeps secrets, and holds the name and never the secret" do
+      assert configured([{"HEPH_WEBHOOK_SECRET", "super-secret"} | @api]) ==
+               [secret_variable: "HEPH_WEBHOOK_SECRET"]
+    end
+
+    test "is refused when the secret is given both as a variable and as a file" do
+      error =
+        assert_raise RuntimeError, fn ->
+          configured([
+            {"HEPH_WEBHOOK_SECRET", "super-secret"},
+            {"HEPH_WEBHOOK_SECRET_FILE", "/run/secrets/hook"} | @api
+          ])
+        end
+
+      assert error.message =~ "HEPH_WEBHOOK_SECRET"
+      refute error.message =~ "super-secret"
+    end
+
+    test "a variable needs the API too" do
+      assert_raise RuntimeError, ~r/needs HEPH_API_PORT/, fn ->
+        configured([{"HEPH_WEBHOOK_SECRET", "super-secret"}])
+      end
     end
 
     test "is refused without the API, which is where the route is" do
@@ -97,6 +126,23 @@ defmodule ControlPlane.WebhookConfigTest do
 
       error = assert_raise ArgumentError, fn -> Webhooks.check!() end
       refute Exception.message(error) =~ "super-secret"
+    end
+
+    test "does not start with a secret variable that is empty, and says which" do
+      System.put_env("HEPH_WEBHOOK_SECRET", "  ")
+      on_exit(fn -> System.delete_env("HEPH_WEBHOOK_SECRET") end)
+      Application.put_env(:control_plane, :webhooks, secret_variable: "HEPH_WEBHOOK_SECRET")
+
+      error = assert_raise ArgumentError, fn -> Webhooks.check!() end
+      assert Exception.message(error) =~ "HEPH_WEBHOOK_SECRET"
+    end
+
+    test "starts with a good secret variable" do
+      System.put_env("HEPH_WEBHOOK_SECRET", "super-secret")
+      on_exit(fn -> System.delete_env("HEPH_WEBHOOK_SECRET") end)
+      Application.put_env(:control_plane, :webhooks, secret_variable: "HEPH_WEBHOOK_SECRET")
+
+      assert Webhooks.check!() == :ok
     end
 
     test "starts with a good secret file" do

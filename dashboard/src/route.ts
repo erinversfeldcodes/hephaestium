@@ -1,6 +1,7 @@
 export type Route =
   | { readonly page: "tickets" }
   | { readonly page: "board" }
+  | { readonly page: "run"; readonly id: string }
   | { readonly page: "ticket"; readonly repository: string; readonly number: number }
   | { readonly page: "spend"; readonly repository: string | null }
   | { readonly page: "not-found" };
@@ -21,6 +22,10 @@ export function parseRoute(pathname: string, search: string): Route {
 
   if (segments[0] === "board" && segments.length === 1) return { page: "board" };
 
+  if (segments[0] === "runs" && segments.length === 2 && /^[A-Za-z0-9_-]+$/.test(segments[1] ?? "")) {
+    return { page: "run", id: segments[1] ?? "" };
+  }
+
   if (segments[0] === "spend" && segments.length === 1) {
     return { page: "spend", repository: new URLSearchParams(search).get("repository") };
   }
@@ -34,4 +39,8 @@ export function ticketPath(repository: string, number: number): string {
 
 export function spendPath(repository: string | null): string {
   return repository === null ? "/spend" : `/spend?repository=${encodeURIComponent(repository)}`;
+}
+
+export function runPath(id: string): string {
+  return `/runs/${id}`;
 }
