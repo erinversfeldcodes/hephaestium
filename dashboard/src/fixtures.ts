@@ -1,4 +1,4 @@
-import type { Client, Question, RunDetail, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
+import type { Client, DeviceToken, Question, RunDetail, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
 
 export const summary: TicketSummary = {
   repository: "erinversfeldcodes/gazebolang",
@@ -67,6 +67,25 @@ export const days: SpendDay[] = [
   { day: "2026-11-19", totals: { usd: 1.25, tokens: 10345 } },
 ];
 
+export const deviceTokens: DeviceToken[] = [
+  {
+    id: "t-1",
+    name: "laptop",
+    createdAt: "2026-11-18T08:00:00Z",
+    lastSeenAt: "2026-11-23T09:00:00Z",
+    revokedAt: null,
+    connected: true,
+  },
+  {
+    id: "t-2",
+    name: "desk",
+    createdAt: "2026-11-10T08:00:00Z",
+    lastSeenAt: null,
+    revokedAt: null,
+    connected: false,
+  },
+];
+
 /** A client whose answers are these fixtures, unless a test says otherwise. */
 export function fakeClient(overrides: Partial<Client> = {}): Client {
   return {
@@ -79,6 +98,15 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     workload: async () => runDetail,
     reply: async () => replied,
     agentText: async () => ({ account: null, question: null }),
+    deviceTokens: async () => deviceTokens,
+    makeDeviceToken: async (name) => ({
+      ok: true,
+      value: {
+        token: { id: "t-3", name, createdAt: "2026-11-23T10:00:00Z", lastSeenAt: null, revokedAt: null, connected: false },
+        secret: "heph_secret_once",
+      },
+    }),
+    revokeDeviceToken: async () => ({ ok: true, value: null }),
     ...overrides,
   };
 }
