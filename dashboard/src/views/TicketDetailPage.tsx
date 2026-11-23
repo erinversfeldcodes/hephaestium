@@ -1,5 +1,7 @@
 import type { Client } from "../api";
 import { amount, amounts, when } from "../format";
+import { Link } from "../Link";
+import { runPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
 import { QuestionPanel } from "./QuestionPanel";
 
@@ -44,7 +46,9 @@ export function TicketDetailPage({
                 <tbody>
                   {detail.workloads.map((run) => (
                     <tr key={run.id}>
-                      <td>{run.kind}</td>
+                      <td>
+                        <Link to={runPath(run.id)}>{run.kind}</Link>
+                      </td>
                       <td>
                         <span className="state" data-state={run.state}>
                           {run.state}

@@ -3,6 +3,7 @@ import type { Client, Session } from "./api";
 import { Link, NavigateContext } from "./Link";
 import { parseRoute, spendPath, type Route } from "./route";
 import { BoardPage } from "./views/BoardPage";
+import { RunPage } from "./views/RunPage";
 import { SpendPage } from "./views/SpendPage";
 import { TicketDetailPage } from "./views/TicketDetailPage";
 import { TicketListPage } from "./views/TicketListPage";
@@ -81,6 +82,8 @@ function Page({ client, route }: { readonly client: Client; readonly route: Rout
       return <TicketListPage client={client} />;
     case "board":
       return <BoardPage client={client} />;
+    case "run":
+      return <RunPage client={client} id={route.id} />;
     case "ticket":
       return <TicketDetailPage client={client} repository={route.repository} number={route.number} />;
     case "spend":
