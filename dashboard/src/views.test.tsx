@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, type ReplyResult } from "./api";
 import { days, detail, fakeClient, question, replied, summary } from "./fixtures";
 import { SpendPage } from "./views/SpendPage";
+import { BoardPage } from "./views/BoardPage";
 import { TicketDetailPage } from "./views/TicketDetailPage";
 import { TicketListPage } from "./views/TicketListPage";
 
@@ -250,5 +251,60 @@ describe("a question waiting for a person", () => {
 
     expect(await screen.findByRole("region", { name: "Runs" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+});
+
+describe("the board", () => {
+  const rows = [
+    summary,
+    { ...summary, number: 13, title: "Waiting one", latest: { ...summary.latest, state: "queued" } },
+    { ...summary, number: 14, title: "Asked one", latest: { ...summary.latest, state: "blocked" } },
+    { ...summary, number: 5, title: "Other repo", repository: "o/other", latest: { ...summary.latest, state: "completed" } },
+  ];
+
+  it("has a lane for each repository and a column for each state, with each ticket in its column", async () => {
+    render(<BoardPage client={fakeClient({ tickets: async () => rows })} />);
+
+    const lane = await screen.findByRole("region", { name: "erinversfeldcodes/gazebolang" });
+    expect(within(within(lane).getByRole("group", { name: "Working" })).getByRole("link", { name: "Teach the parser about guards" })).toBeInTheDocument();
+    expect(within(within(lane).getByRole("group", { name: "Queued" })).getByRole("link", { name: "Waiting one" })).toBeInTheDocument();
+    expect(within(within(lane).getByRole("group", { name: "Blocked" })).getByRole("link", { name: "Asked one" })).toBeInTheDocument();
+    expect(within(lane).queryByRole("link", { name: "Other repo" })).not.toBeInTheDocument();
+    const other = screen.getByRole("region", { name: "o/other" });
+    expect(within(within(other).getByRole("group", { name: "Completed" })).getByRole("link", { name: "Other repo" })).toHaveAttribute(
+      "href",
+      "/tickets/o/other/5",
+    );
+  });
+
+  it("marks, and only, the tickets where a person is needed, without the question's text", async () => {
+    const asked = { ...question, ticket: 14 };
+    render(<BoardPage client={fakeClient({ tickets: async () => rows, questions: async () => [asked] })} />);
+
+    const card = (await screen.findByRole("link", { name: "Asked one" })).closest("li");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText("Person needed")).toBeInTheDocument();
+    expect(screen.getAllByText("Person needed")).toHaveLength(1);
+    expect(screen.queryByText(question.question)).not.toBeInTheDocument();
+  });
+
+  it("still shows the board when the questions cannot be read, and says so", async () => {
+    render(
+      <BoardPage
+        client={fakeClient({ tickets: async () => rows, questions: async () => Promise.reject(new ApiError(500, "x")) })}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: "Asked one" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("could not be read");
+  });
+
+  it("says when there is nothing, loading, and failure like the other pages", async () => {
+    const { unmount } = render(<BoardPage client={fakeClient({ tickets: async () => [] })} />);
+    expect(await screen.findByText("No ticket has had a run yet.")).toBeInTheDocument();
+    unmount();
+
+    render(<BoardPage client={fakeClient({ tickets: async () => Promise.reject(new ApiError(500, "x")) })} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be read");
   });
 });

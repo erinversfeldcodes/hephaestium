@@ -1,5 +1,6 @@
 export type Route =
   | { readonly page: "tickets" }
+  | { readonly page: "board" }
   | { readonly page: "ticket"; readonly repository: string; readonly number: number }
   | { readonly page: "spend"; readonly repository: string | null }
   | { readonly page: "not-found" };
@@ -17,6 +18,8 @@ export function parseRoute(pathname: string, search: string): Route {
       return { page: "ticket", repository: `${owner}/${name}`, number };
     }
   }
+
+  if (segments[0] === "board" && segments.length === 1) return { page: "board" };
 
   if (segments[0] === "spend" && segments.length === 1) {
     return { page: "spend", repository: new URLSearchParams(search).get("repository") };

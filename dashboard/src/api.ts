@@ -97,6 +97,8 @@ export interface Client {
   spendDays(repository: string, days: number): Promise<readonly SpendDay[]>;
   /** The question waiting for a person on a ticket, or null when none is. */
   question(repository: string, number: number): Promise<Question | null>;
+  /** Every question waiting for a person, on any ticket. */
+  questions(): Promise<readonly Question[]>;
   /** Answer a ticket's question as the signed-in person. Never raises for a refusal. */
   reply(repository: string, number: number, body: string): Promise<ReplyResult>;
 }
@@ -113,6 +115,8 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
     if (!response.ok) throw new ApiError(response.status, response.statusText);
     return parse(await response.json());
   }
+
+  const allQuestions = () => read("/api/questions", parseQuestions);
 
   return {
     async session() {
@@ -134,9 +138,11 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
     spendDays: (repository, days) =>
       read(`/api/spend/days?repository=${encodeURIComponent(repository)}&days=${days}`, parseDays),
 
+    questions: allQuestions,
+
     async question(repository, number) {
-      const questions = await read("/api/questions", parseQuestions);
-      return questions.find((q) => q.repository === repository && q.ticket === number) ?? null;
+      const waiting = await allQuestions();
+      return waiting.find((q) => q.repository === repository && q.ticket === number) ?? null;
     },
 
     async reply(repository, number, body) {

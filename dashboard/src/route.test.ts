@@ -9,6 +9,7 @@ describe("the dashboard's routes", () => {
       repository: "erinversfeldcodes/gazebolang",
       number: 12,
     });
+    expect(parseRoute("/board", "")).toEqual({ page: "board" });
     expect(parseRoute("/spend", "")).toEqual({ page: "spend", repository: null });
     expect(parseRoute("/spend", "?repository=erinversfeldcodes/gazebolang")).toEqual({
       page: "spend",
@@ -17,7 +18,7 @@ describe("the dashboard's routes", () => {
   });
 
   it("does not take an address that is no page for one", () => {
-    for (const path of ["/nope", "/tickets", "/tickets/a/b", "/tickets/a/b/x", "/tickets/a/b/0", "/tickets/a/b/1/2"]) {
+    for (const path of ["/nope", "/board/x", "/tickets", "/tickets/a/b", "/tickets/a/b/x", "/tickets/a/b/0", "/tickets/a/b/1/2"]) {
       expect(parseRoute(path, "")).toEqual({ page: "not-found" });
     }
   });
