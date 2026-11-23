@@ -182,6 +182,13 @@ defmodule ControlPlane.Api.Router do
       link: true,
       handler: {Worker, :record}
     },
+    %{
+      method: "POST",
+      path: ~w(worker workloads :id release),
+      access: :worker,
+      link: true,
+      handler: {Worker, :release}
+    },
 
     # A code host's webhooks. Present only while they are on.
     %{

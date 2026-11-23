@@ -10,7 +10,8 @@ defmodule ControlPlane.Leases do
   lapsed is refused even in the seconds before it is cleaned up. The same lock is held to put
   a workload back, so an event and a lapse cannot both win.
 
-  A lost workload (its lease lapsed) is put back on the queue only while nothing could have been
+  A lost workload (its lease lapsed), or one its executor gives back because its operator
+  stopped it, is put back on the queue only while nothing could have been
   published. What the lost run said stays kept, because the stream of events is append-only and
   is the evidence of what happened, and the run that follows goes on from the next number: the stream has no event that says delivery began, and the workload has been put
   back fewer times than the link allows. Otherwise it is failed as a lost run is on the local
@@ -257,6 +258,39 @@ defmodule ControlPlane.Leases do
 
         Tickets.ended(Workloads.get(workload_id))
         :ok
+
+      {:error, :not_held} ->
+        {:error, :not_held}
+    end
+  end
+
+  @doc """
+  The executor's operator stopped it, so it gives the workload back instead of ending it. The
+  lapse rules apply at once: the workload goes back on the queue, or is failed when delivery
+  had begun (it may have pushed) or it has been put back as often as the link allows. Nothing
+  about the ticket changed, so the stop is not a verdict on the work.
+  """
+  @spec give_back(%DeviceToken{}, Ecto.UUID.t()) ::
+          {:ok, :requeued | :failed | :ended} | {:error, held_error()}
+  def give_back(token, workload_id) do
+    handled =
+      Repo.transaction(fn ->
+        lock!(workload_id)
+        hold!(workload_id, token)
+        decide(workload_id, Repo.get(WorkloadLease, workload_id))
+      end)
+
+    case handled do
+      {:ok, :requeued} ->
+        {:ok, :requeued}
+
+      {:ok, {:failed, _}} ->
+        Tickets.ended(Workloads.get(workload_id))
+        {:ok, :failed}
+
+      {:ok, :ended} ->
+        Tickets.ended(Workloads.get(workload_id))
+        {:ok, :ended}
 
       {:error, :not_held} ->
         {:error, :not_held}
