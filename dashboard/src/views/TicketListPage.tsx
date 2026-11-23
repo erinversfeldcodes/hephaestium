@@ -17,7 +17,8 @@ export function TicketListPage({ client }: { readonly client: Client }) {
           return rows.length === 0 ? (
             <p>No ticket has had a run yet.</p>
           ) : (
-            <table>
+            <div className="table-scroll">
+<table>
               <thead>
                 <tr>
                   <th>Ticket</th>
@@ -49,6 +50,7 @@ export function TicketListPage({ client }: { readonly client: Client }) {
                 ))}
               </tbody>
             </table>
+</div>
           );
         }}
       </Shown>

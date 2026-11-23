@@ -47,4 +47,28 @@ describe("the stylesheet", () => {
   it("has a phone breakpoint at 40rem", () => {
     expect(stylesheet).toMatch(/@media \(max-width: 40rem\)/);
   });
+
+  // The declarations of the first rule whose selector is exactly this one, or null.
+  function declarations(css: string, selector: string): string | null {
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return stripped.match(new RegExp(`(?:^|[}\\s])${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? null;
+  }
+
+  it("scrolls a table inside its container, and keeps cells and pills whole", () => {
+    expect(declarations(stylesheet, ".table-scroll")).toMatch(/overflow-x:\s*auto/);
+    expect(declarations(stylesheet, ".table-scroll th,\n.table-scroll td")).toMatch(/white-space:\s*nowrap/);
+    expect(declarations(stylesheet, ".state")).toMatch(/white-space:\s*nowrap/);
+  });
+
+  it("the table check fails on a planted violation", () => {
+    const planted = stylesheet.replace(/(\.table-scroll \{[^}]*?)overflow-x:\s*auto;/, "$1");
+    expect(planted).not.toBe(stylesheet);
+    expect(declarations(planted, ".table-scroll")).not.toMatch(/overflow-x:\s*auto/);
+  });
+
+  it("sets card titles and table links in the foreground colour, with the accent on hover", () => {
+    expect(declarations(stylesheet, "td a,\n.column li > a")).toMatch(/color:\s*var\(--fg\)/);
+    expect(declarations(stylesheet, "td a:hover,\n.column li > a:hover")).toMatch(/color:\s*var\(--accent-text\)/);
+  });
 });

@@ -44,6 +44,9 @@ export function BoardPage({ client }: { readonly client: Client }) {
                               <Link to={ticketPath(ticket.repository, ticket.number)}>
                                 {ticket.title ?? `#${ticket.number}`}
                               </Link>{" "}
+                              <span className="state" data-state={ticket.latest?.state ?? "waiting"}>
+                                {ticket.latest?.state ?? "waiting"}
+                              </span>{" "}
                               <small>{`#${ticket.number}`}</small>
                               {waiting.has(`${ticket.repository}#${ticket.number}`) && (
                                 <strong className="needed"> Person needed</strong>

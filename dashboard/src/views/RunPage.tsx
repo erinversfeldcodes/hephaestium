@@ -107,7 +107,8 @@ export function RunPage({
             all.length === 0 ? (
               <p>This run has kept no gates.</p>
             ) : (
-              <table aria-label="Gates">
+              <div className="table-scroll">
+<table aria-label="Gates">
                 <thead>
                   <tr>
                     <th>Gate</th>
@@ -129,6 +130,7 @@ export function RunPage({
                   ))}
                 </tbody>
               </table>
+</div>
             )
           }
         </Shown>

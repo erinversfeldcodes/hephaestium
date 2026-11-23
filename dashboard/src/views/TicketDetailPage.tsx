@@ -110,7 +110,8 @@ function ReviewEffortPanel({ effort }: { readonly effort: ReviewEffort }) {
         {effort.localRounds} rounds before the push, {effort.reviews} reviews
         and {effort.revisions} revisions after it.
       </p>
-      <table aria-label="Findings by lens">
+      <div className="table-scroll">
+<table aria-label="Findings by lens">
         <thead>
           <tr>
             <th>Lens</th>
@@ -132,6 +133,7 @@ function ReviewEffortPanel({ effort }: { readonly effort: ReviewEffort }) {
           ))}
         </tbody>
       </table>
+</div>
       {effort.lenses.map((lens) =>
         lens.findings.length === 0 ? null : (
           <ul key={lens.lens} aria-label={`${lens.lens} findings`}>
@@ -178,7 +180,8 @@ export function TicketDetailPage({
 
             <section aria-labelledby="runs-heading">
               <h3 id="runs-heading">Runs</h3>
-              <table>
+              <div className="table-scroll">
+<table>
                 <thead>
                   <tr>
                     <th>Kind</th>
@@ -208,6 +211,7 @@ export function TicketDetailPage({
                   ))}
                 </tbody>
               </table>
+</div>
             </section>
 
             <section aria-labelledby="words-heading">
@@ -233,12 +237,12 @@ export function TicketDetailPage({
 
             <section aria-labelledby="spend-heading">
               <h3 id="spend-heading">Spend</h3>
-              <p>{amounts(detail.spend.totals)}</p>
-              <dl>
+              <p className="figure">{amounts(detail.spend.totals)}</p>
+              <dl className="spend">
                 {Object.entries(detail.spend.byKind).map(([kind, totals]) => (
                   <div key={kind}>
                     <dt>{kind}</dt>
-                    <dd>{Object.entries(totals).map(([unit, value]) => amount(unit, value)).join(" and ")}</dd>
+                    <dd className="figure">{Object.entries(totals).map(([unit, value]) => amount(unit, value)).join(" and ")}</dd>
                   </div>
                 ))}
               </dl>

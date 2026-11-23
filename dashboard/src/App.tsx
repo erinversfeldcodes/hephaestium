@@ -56,8 +56,8 @@ export function App({ client }: { readonly client: Client }) {
         <h1>Hephaestium</h1>
         {state.kind === "signed-in" && (
           <nav aria-label="Pages">
-            <Link to="/board">Board</Link> <Link to="/">Tickets</Link> <Link to={spendPath(null)}>Spend</Link>{" "}
-            <Link to="/workers">Workers</Link>
+            <Link to="/board" current={route.page === "board"}>Board</Link> <Link to="/" current={route.page === "tickets" || route.page === "ticket" || route.page === "run"}>Tickets</Link> <Link to={spendPath(null)} current={route.page === "spend"}>Spend</Link>{" "}
+            <Link to="/workers" current={route.page === "workers"}>Workers</Link>
           </nav>
         )}
         {state.kind === "signed-in" && (
