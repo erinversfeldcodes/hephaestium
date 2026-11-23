@@ -44,11 +44,14 @@ RUN mix release
 FROM ${RUNNER}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates \
+    && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates gh \
     && rm -rf /var/lib/apt/lists/*
 
 ENV LANG=C.UTF-8
 WORKDIR /app
+
+# `gh` is how the control plane reads and writes GitHub (it takes GH_TOKEN from the environment),
+# and how a person's reply is made as them. The package is Debian's, at the release's version.
 
 # Not root: nothing the control plane does needs it.
 RUN useradd --system --home /app --shell /usr/sbin/nologin heph

@@ -2,10 +2,18 @@
 # (it holds the dashboard), to a single machine:
 #   fly deploy --config control-plane/fly.toml --ha=false
 #
-# Secrets are set with `fly secrets set`, never written here:
+# Secrets are set with `fly secrets set`, never written here (the runbook in
+# docs/runbook-hosted-control-plane.md lists each, with how to make it):
 #   DATABASE_URL                  Neon's pooled connection string
 #   HEPH_MIGRATION_DATABASE_URL   Neon's direct (not pooled) connection string
+#   HEPH_API_SECRET_KEY_BASE      signs sessions; seals the user token cookie
+#   HEPH_API_GITHUB_CLIENT_ID, HEPH_API_GITHUB_CLIENT_SECRET   the App's user authorization
+#   HEPH_API_ALLOWED_LOGINS       who may sign in (not secret, but per deployment)
+#   HEPH_WEBHOOK_SECRET           the App's webhook secret, read from the variable
+#   GH_TOKEN                      what `gh` reads and writes GitHub with (see the runbook)
+#   HEPH_REPOSITORIES             the repositories taken in, owner/name, comma-separated
 #   HEPH_REVIEW_APP_ID, HEPH_REVIEW_APP_KEY   the review App, when it is used
+# A staging app has its own copy of this file's settings: change `app` and HEPH_API_BASE_URL.
 app = "hephaestium-control-plane"
 # Neon has no region in Africa; Frankfurt is the nearest to both a person in South Africa
 # and a Neon project created in eu-central-1.
@@ -16,6 +24,15 @@ primary_region = "fra"
 
 [env]
   HEPH_HEALTH_PORT = "8080"
+  # The API: login, dashboard, /worker/*, /webhooks/github. The dashboard's files are found
+  # through HEPH_API_STATIC_DIR, which the image sets.
+  HEPH_API_PORT = "4000"
+  # Where the API is reached from outside, with no trailing slash. A placeholder: set it to the
+  # app's address (https://<app>.fly.dev, or a domain) before the first deploy. The GitHub
+  # App's callback is exactly this plus /auth/callback.
+  HEPH_API_BASE_URL = "https://hephaestium-control-plane.fly.dev"
+  # Executors on developers' machines run the workloads over the API.
+  HEPH_EXECUTOR_LINK = "workers"
   HEPH_DB_SSL = "true"
   # Neon's pooler cannot carry LISTEN/NOTIFY; see the README's section on the notifier.
   HEPH_OBAN_NOTIFIER = "pg"
@@ -26,8 +43,35 @@ primary_region = "fra"
   # replaced. A non-zero exit stops the deploy and the running version stays.
   release_command = "/app/bin/migrate"
 
-# Nothing is served to the public yet, so there is no http_service. The platform still asks
-# the machine whether it is healthy, over the private network.
+# The API is the public surface. The health listener (8080) is deliberately not exposed: the
+# platform checks it over the private network.
+[http_service]
+  internal_port = 4000
+  force_https = true
+  # One machine, always on: it holds the Oban queues, the webhook intake and the executors'
+  # long polls, and a stopped machine would drop webhooks.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  # `POST /worker/claim` waits up to 25 seconds (HEPH_CLAIM_WAIT_SECONDS) for work, and an
+  # event stream sends a keepalive every 15 seconds. Fly's proxy has an idle timeout that is
+  # not set in this file and is believed to be above both (not verified: the first claim
+  # through the public address shows it). If a claim is cut short, lower
+  # HEPH_CLAIM_WAIT_SECONDS.
+  #
+  # The API's own check, so a machine whose API is down is not left in rotation. `/` is the
+  # dashboard's page, which needs no session and no database, and is a 200 while the image's
+  # HEPH_API_STATIC_DIR is set.
+  [[http_service.checks]]
+    method = "get"
+    path = "/"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# The platform also asks the machine whether the database answers, over the private network.
 [checks]
   [checks.health]
     type = "http"
