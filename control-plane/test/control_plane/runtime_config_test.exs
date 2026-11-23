@@ -52,6 +52,59 @@ defmodule ControlPlane.RuntimeConfigTest do
     assert config[:url] == "ecto://u:p@localhost/hephaestium_test"
   end
 
+  describe "the log level (#292)" do
+    defp logging(env, environment) do
+      names = ["HEPH_LOG_LEVEL", "DATABASE_URL"]
+      previous = for name <- names, do: {name, System.get_env(name)}
+
+      try do
+        for name <- names, do: System.delete_env(name)
+        System.put_env("DATABASE_URL", "ecto://u:p@localhost/x")
+        for {name, value} <- environment, do: System.put_env(name, value)
+
+        config = Config.Reader.read!(@runtime, env: env, target: :host)
+
+        %{
+          level: get_in(config, [:logger, :level]),
+          query_log: get_in(config, [:control_plane, ControlPlane.Repo, :log])
+        }
+      after
+        for {name, value} <- previous do
+          if value, do: System.put_env(name, value), else: System.delete_env(name)
+        end
+      end
+    end
+
+    test "a release logs at info and does not log queries there" do
+      result = logging(:prod, [])
+
+      assert result.level == :info
+      # Ecto logs a query at its `log` level; it is below info when it is debug.
+      assert result.query_log == :debug
+    end
+
+    test "the variable changes a release's level" do
+      assert logging(:prod, [{"HEPH_LOG_LEVEL", "debug"}]).level == :debug
+      assert logging(:prod, [{"HEPH_LOG_LEVEL", "warning"}]).level == :warning
+      assert logging(:prod, [{"HEPH_LOG_LEVEL", "error"}]).level == :error
+    end
+
+    test "an invalid level stops the start and names the variable" do
+      error =
+        assert_raise RuntimeError, fn -> logging(:prod, [{"HEPH_LOG_LEVEL", "loud"}]) end
+
+      assert error.message =~ "HEPH_LOG_LEVEL must be debug, info, warning or error"
+    end
+
+    test "development and tests keep their level unless the variable is set" do
+      for env <- [:dev, :test] do
+        assert logging(env, []).level == nil
+        assert logging(env, [{"HEPH_LOG_LEVEL", ""}]).level == nil
+        assert logging(env, [{"HEPH_LOG_LEVEL", "warning"}]).level == :warning
+      end
+    end
+  end
+
   describe "the review App" do
     defp review_app(environment) do
       names = ["HEPH_REVIEW_APP_ID", "HEPH_REVIEW_APP_KEY_FILE"]
