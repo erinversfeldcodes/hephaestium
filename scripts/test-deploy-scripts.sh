@@ -74,6 +74,7 @@ case "$method $url" in
   *"connection_uri"*"pooled=true"*) body='{"uri":"postgresql://u:SECRETPW@ep-a-pooler.eu.neon.tech/neondb?sslmode=require"}' ;;
   *"connection_uri"*"pooled=false"*) body='{"uri":"postgresql://u:SECRETPW@ep-a.eu.neon.tech/neondb?sslmode=require"}' ;;
   "GET https://"*"/api/session") status=${SESSION_STATUS:-401} ;;
+  "GET https://"*"/") status=${ROOT_STATUS:-200} ;;
 esac
 if [[ -n $out && $out != /dev/null ]]; then printf '%s' "$body" >"$out"; elif [[ -z $out ]]; then printf '%s' "$body"; fi
 [[ $write == *http_code* ]] && printf '%s' "$status"
@@ -205,6 +206,11 @@ echo '{"branches":[{"id":"br-x","name":"other"}]}' >"$FIXTURES/branches.json"
 run deploy-control-plane.sh preview --branch feat/x
 [[ $status -ne 0 ]] && grep -q "parent branch 'production' does not exist" "$scratch/out" && ! grep -q "secrets set" "$CALLS"
 expect "a missing parent branch stops the deploy before any secret is set" $?
+
+reset
+ROOT_STATUS=502 run deploy-control-plane.sh preview --branch feat/x
+[[ $status -ne 0 ]] && grep -q "did not answer 200 (last answer: 502, through the address 66.241.124.36)" "$scratch/out"
+expect "a page that never answers 200 fails the deploy and says what it did answer, and by which address" $?
 
 reset
 SESSION_STATUS=200 run deploy-control-plane.sh preview --branch feat/x

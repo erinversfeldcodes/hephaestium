@@ -181,10 +181,17 @@ v4=$(fly ips list --app "$app" 2>/dev/null | awk '$1 == "v4" { print $2; exit }'
 resolve=()
 [[ -z $v4 ]] || resolve=(--resolve "${host}:443:${v4}")
 attempt=0
-until [[ $(curl -s ${resolve[@]+"${resolve[@]}"} -o /dev/null -w '%{http_code}' "${base_url}/") == 200 ]]; do
+last=none
+reason=""
+until [[ $last == 200 ]]; do
   attempt=$((attempt + 1))
-  ((attempt < 20)) || die "${base_url}/ did not answer 200"
-  sleep "${DEPLOY_CHECK_SLEEP:-5}"
+  if ((attempt > 20)); then
+    die "${base_url}/ did not answer 200 (last answer: ${last}, through the address ${v4:-from DNS})${reason:+; curl said: ${reason}}"
+  fi
+  last=$(curl -sS ${resolve[@]+"${resolve[@]}"} -m 10 -o /dev/null -w '%{http_code}' "${base_url}/" 2>"${TMPDIR:-/tmp}/deploy-check.$$") || true
+  reason=$(tr '\n' ' ' <"${TMPDIR:-/tmp}/deploy-check.$$")
+  rm -f "${TMPDIR:-/tmp}/deploy-check.$$"
+  [[ $last == 200 ]] || sleep "${DEPLOY_CHECK_SLEEP:-5}"
 done
 code=$(curl -s ${resolve[@]+"${resolve[@]}"} -o /dev/null -w '%{http_code}' "${base_url}/api/session")
 [[ $code == 401 ]] || die "${base_url}/api/session answered ${code}, not 401"
