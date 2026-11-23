@@ -252,6 +252,8 @@ reset
 echo hephaestium-control-plane >>"$FIXTURES/apps-existing"
 (
   export HEPH_REPOSITORIES="a/b, c/d" HEPH_REVIEW_APP_ID=42 HEPH_ATHENAEUM_REF=v1 HEPH_REVISIONS=3 HEPH_RERUNS=1
+  # Each setting is exported inside its own subshell so it cannot leak into the next case.
+  # shellcheck disable=SC2030
   export HEPH_REVIEWS=a/b HEPH_COMPLETENESS=a/b HEPH_CLOSURES=a/b HEPH_AUTOMERGE=c/d
   export HEPH_REVIEW_APP_KEY="-----BEGIN KEY-----
 PLANTEDKEYBODY
@@ -285,6 +287,7 @@ done
 reset
 echo hephaestium-control-plane >>"$FIXTURES/apps-existing"
 (
+  # shellcheck disable=SC2031
   export HEPH_REVIEWS="o/r,x/y"
   run deploy-control-plane.sh production
 )
