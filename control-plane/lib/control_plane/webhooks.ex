@@ -57,17 +57,26 @@ defmodule ControlPlane.Webhooks do
 
       :error ->
         raise ArgumentError,
-              "HEPH_WEBHOOK_SECRET_FILE does not name a readable, non-empty file: webhooks cannot be verified without a secret"
+              "HEPH_WEBHOOK_SECRET_FILE does not name a readable, non-empty file (or HEPH_WEBHOOK_SECRET is empty): webhooks cannot be verified without a secret"
     end
   end
 
   defp secret do
-    with file when is_binary(file) <- (settings() || [])[:secret_file],
-         {:ok, text} <- File.read(file),
+    with {:ok, text} <- secret_text(settings() || []),
          secret when secret != "" <- String.trim(text) do
       {:ok, secret}
     else
       _ -> :error
+    end
+  end
+
+  # Where the secret is: a file, or the variable of a name. It is read on every call, so a
+  # rotated file needs no restart.
+  defp secret_text(settings) do
+    cond do
+      is_binary(settings[:secret_file]) -> File.read(settings[:secret_file])
+      is_binary(settings[:secret_variable]) -> System.fetch_env(settings[:secret_variable])
+      true -> :error
     end
   end
 
