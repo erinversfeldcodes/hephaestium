@@ -94,6 +94,7 @@ fn helper(scratch: &Scratch) -> std::path::PathBuf {
     let script = format!(
         "#!/bin/sh\n\
          echo \"$@\" >> {asked}\n\
+         echo \"${{GIT_TERMINAL_PROMPT:-unset}}\" >> {asked}-prompt\n\
          [ \"$1 $2 $3\" = 'auth git-credential get' ] || exit 0\n\
          [ -n \"$GH_TOKEN\" ] || exit 1\n\
          printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"\n",
@@ -175,6 +176,14 @@ fn a_missing_credential_fails_the_clone_at_once_and_says_so() {
     assert!(ran.took < Duration::from_secs(30), "took {:?}", ran.took);
     assert!(ran.reason.contains("could not clone"), "{}", ran.reason);
     assert!(ran.reason.contains("token"), "{}", ran.reason);
+    // Git has no terminal here, so a missing prompt guard would still fail quickly; what shows
+    // the guard is that the helper, which git starts, sees prompting switched off.
+    let prompt = std::fs::read_to_string(ran.scratch.path("helper-asked-prompt"))
+        .expect("the helper to be asked");
+    assert!(
+        prompt.lines().all(|line| line == "0") && !prompt.is_empty(),
+        "git must run with GIT_TERMINAL_PROMPT=0: {prompt:?}"
+    );
 }
 
 /// A run that clones, does work and delivers, against a remote that serves its repository to a
