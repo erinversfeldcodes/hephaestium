@@ -246,6 +246,54 @@ expect "production reads the default branch of the production project and makes 
 grep -q "^fly deploy --config control-plane/fly.toml --app hephaestium-control-plane --ha=false --yes --env HEPH_API_BASE_URL=https://hephaestium-control-plane.fly.dev" "$CALLS"
 expect "production deploys the one file" $?
 
+# The settings that are passed only when set.
+settings="HEPH_ATHENAEUM_REF=v1 HEPH_REVISIONS=3 HEPH_RERUNS=1 HEPH_REVIEWS=a/b HEPH_COMPLETENESS=a/b HEPH_CLOSURES=a/b HEPH_AUTOMERGE=c/d"
+reset
+echo hephaestium-control-plane >>"$FIXTURES/apps-existing"
+(
+  export HEPH_REPOSITORIES="a/b, c/d" HEPH_REVIEW_APP_ID=42 HEPH_ATHENAEUM_REF=v1 HEPH_REVISIONS=3 HEPH_RERUNS=1
+  # Each setting is exported inside its own subshell so it cannot leak into the next case.
+  # shellcheck disable=SC2030
+  export HEPH_REVIEWS=a/b HEPH_COMPLETENESS=a/b HEPH_CLOSURES=a/b HEPH_AUTOMERGE=c/d
+  export HEPH_REVIEW_APP_KEY="-----BEGIN KEY-----
+PLANTEDKEYBODY
+-----END KEY-----"
+  run deploy-control-plane.sh production
+)
+grep -q '^deployed ' "$scratch/out"
+expect "production deploys with every optional setting" $?
+secrets_line=$(tr '\n' ' ' <"$CALLS")
+for pair in $settings HEPH_REVIEW_APP_ID=42; do
+  [[ $secrets_line == *" ${pair} "* || $secrets_line == *" ${pair}" ]]
+  expect "production passes ${pair%%=*} when set" $?
+done
+[[ $secrets_line == *" HEPH_REVIEW_APP_KEY="* ]]
+expect "production passes the review key when set" $?
+! grep -q "PLANTEDKEYBODY" "$scratch/out"
+expect "the review key is never printed" $?
+grep -q "^    secrets set: .*HEPH_REVIEW_APP_KEY" "$scratch/out"
+expect "the summary line names the review key without its value" $?
+
+reset
+echo hephaestium-control-plane >>"$FIXTURES/apps-existing"
+run deploy-control-plane.sh production
+secrets_line=$(grep "secrets set" "$CALLS")
+for name in HEPH_ATHENAEUM_REF HEPH_REVISIONS HEPH_RERUNS HEPH_REVIEWS HEPH_COMPLETENESS HEPH_CLOSURES \
+  HEPH_AUTOMERGE HEPH_REVIEW_APP_ID HEPH_REVIEW_APP_KEY; do
+  [[ $secrets_line != *"${name}="* ]]
+  expect "production leaves ${name} out when not set" $?
+done
+
+reset
+echo hephaestium-control-plane >>"$FIXTURES/apps-existing"
+(
+  # shellcheck disable=SC2031
+  export HEPH_REVIEWS="o/r,x/y"
+  run deploy-control-plane.sh production
+)
+! grep -q '^deployed ' "$scratch/out" && grep -q "HEPH_REVIEWS names x/y" "$scratch/out" && ! grep -q "secrets set" "$CALLS"
+expect "a list naming a repository outside HEPH_REPOSITORIES stops the deploy before anything is set" $?
+
 # ---- cleanup --------------------------------------------------------------------------------
 reset
 echo '{"branches":[{"id":"br-parent","name":"production"},{"id":"br-p","name":"preview/feat-x"}]}' >"$FIXTURES/branches.json"
