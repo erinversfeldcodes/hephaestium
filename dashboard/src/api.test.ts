@@ -83,6 +83,15 @@ describe("the API client", () => {
       expect(await createClient(fetcher).question("o/r", 12)).toBeNull();
     });
 
+    it("lists every waiting question, with GET only", async () => {
+      const fetcher = respond(200, { questions: [row, { ...row, ticket: 7 }] });
+
+      const all = await createClient(fetcher).questions();
+
+      expect(all.map((q) => q.ticket)).toEqual([12, 7]);
+      expect(vi.mocked(fetcher).mock.calls[0]?.[1]?.method).toBe("GET");
+    });
+
     it("raises on a row that is not the shape promised", async () => {
       await expect(
         createClient(respond(200, { questions: [{ ...row, question: 3 }] })).question("o/r", 12),
