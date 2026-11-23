@@ -108,8 +108,52 @@ fn environment(token: &str) -> Vec<(String, String)> {
             ) || name.starts_with("GIT_")
         })
         .collect();
-    environment.push(("GH_TOKEN".to_owned(), token.to_owned()));
+    // A prompt would wait for a person no run has, so a missing or refused credential must
+    // fail at once instead.
+    environment.retain(|(name, _)| name != "GIT_TERMINAL_PROMPT");
+    environment.push(("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()));
+    if !token.is_empty() {
+        environment.push(("GH_TOKEN".to_owned(), token.to_owned()));
+    }
     environment
+}
+
+/// How a git command that reaches the repository's host proves who it is: `gh`'s credential
+/// helper, given the token. With no token the helper has nothing to give and the command
+/// fails at once, with a reason that says so.
+#[derive(Clone, Copy)]
+pub struct Credential<'a> {
+    /// The `gh` program the helper is.
+    pub gh: &'a str,
+    /// The token, if the run holds one.
+    pub token: Option<&'a str>,
+}
+
+impl Credential<'_> {
+    /// Run `git` with `args` in `directory`, authenticating with this credential and never
+    /// prompting.
+    ///
+    /// # Errors
+    ///
+    /// Returns `what` and why git failed, naming the credential when there is none.
+    pub fn git(
+        self,
+        args: &[&str],
+        directory: &Path,
+        what: &str,
+        tick: &mut Tick<'_>,
+    ) -> Result<(), String> {
+        let helper = format!("credential.helper=!{} auth git-credential", self.gh);
+        let mut command = vec!["git", "-c", "credential.helper=", "-c", &helper];
+        command.extend(args);
+        let token = self.token.unwrap_or_default();
+        let what = if self.token.is_some() {
+            what.to_owned()
+        } else {
+            format!("{what}: the run holds no GitHub token for the credential helper to give")
+        };
+        run_ticking(&command, directory, token, &what, tick).map(|_| ())
+    }
 }
 
 /// How many of a command's last lines of standard error are kept, before the useful ones are

@@ -346,7 +346,7 @@ fn prepare<W: Write>(
     // The clone and the merge of the base can take minutes on a large repository, and the
     // bootstrap steps longer, so each is waited for with a heartbeat written at the interval.
     let commit = beating(options.heartbeat, stream, |tick| {
-        clone(options, workload, workspace, tick)?;
+        clone(options, secrets, workload, workspace, tick)?;
         bring_in_base(workload, workspace, tick)?;
         // A run that will push finds out now whether it can, before any agent is paid for.
         if let (true, false, Some(token)) = (
@@ -553,6 +553,7 @@ fn finish_first_run<W: Write>(
         return Ok((Outcome::Blocked, blocked_reason(workload)));
     }
     let carried = carry_if(
+        credential(options, secrets),
         delivering,
         workload,
         workspace,
@@ -1061,6 +1062,7 @@ fn resolve_merge<W: Write>(
 /// Carry the work onto the base branch when it is about to be delivered, and leave it
 /// where it is otherwise: a run that opens no pull request has no ground to be on.
 fn carry_if<W: Write>(
+    credential: deliver::Credential<'_>,
     delivering: bool,
     workload: &Workload,
     workspace: &Path,
@@ -1071,7 +1073,7 @@ fn carry_if<W: Write>(
     if delivering {
         // Fetching the base branch reaches the network and can take minutes.
         beating(heartbeat, stream, |tick| {
-            carry_onto_base(workload, workspace, &since, tick)
+            carry_onto_base(credential, workload, workspace, &since, tick)
         })
         .map_err(Refused::from)
     } else {
@@ -1090,6 +1092,7 @@ fn carry_if<W: Write>(
 /// conflict markers where both changed the same lines, goes to the agent to resolve.
 /// Returns where the work now stands.
 fn carry_onto_base(
+    credential: deliver::Credential<'_>,
     workload: &Workload,
     workspace: &Path,
     since: &str,
@@ -1103,11 +1106,11 @@ fn carry_onto_base(
         .as_ref()
         .expect("checked when read")
         .base_branch;
-    git_ticking(
+    credential.git(
         &["fetch", "--quiet", "origin", base],
         workspace,
         "could not fetch the base branch",
-        Some(tick.reborrow()),
+        tick,
     )?;
     let tip = git_output(&["rev-parse", "FETCH_HEAD"], workspace)?
         .trim()
@@ -1556,8 +1559,20 @@ fn changed_files(workspace: &Path, base: &str) -> Result<Vec<String>, String> {
     Ok(changed)
 }
 
+/// The credential the run's git commands that reach the host use: the token that pushes, or
+/// failing that the read-only one, which is all a run that pushes nothing holds.
+fn credential<'a>(options: &'a Options, secrets: &'a Secrets) -> deliver::Credential<'a> {
+    deliver::Credential {
+        gh: &options.gh,
+        token: secrets
+            .get(secrets::GITHUB_TOKEN)
+            .or_else(|| secrets.get(secrets::READ_TOKEN)),
+    }
+}
+
 fn clone(
     options: &Options,
+    secrets: &Secrets,
     workload: &Workload,
     workspace: &Path,
     tick: &mut Tick<'_>,
@@ -1573,11 +1588,11 @@ fn clone(
     fs::create_dir_all(&options.work_dir)
         .map_err(|e| format!("could not create {}: {e}", options.work_dir.display()))?;
     let target = workspace.display().to_string();
-    git_ticking(
+    credential(options, secrets).git(
         &["clone", "--no-checkout", "--", &source, &target],
         &options.work_dir,
         "could not clone",
-        Some(tick.reborrow()),
+        tick,
     )?;
     git_ticking(
         &[
