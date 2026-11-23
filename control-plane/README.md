@@ -307,6 +307,7 @@ the app, the Neon project and the secrets is done by hand once, and is not part 
 | `HEPH_LEASE_SECONDS` | With the link on: how long a claimed workload stays held after the last event or heartbeat (120). |
 | `HEPH_CLAIM_WAIT_SECONDS` | With the link on: how long a claim waits for a workload before answering that there is none (25; keep it under the idle time of any proxy in front). |
 | `HEPH_API_STATIC_DIR` | A directory holding the built dashboard (`index.html` and its assets), which the API then serves on its own listener. The image sets it. Off if not set: the API then answers exactly as it did without it. The control plane does not start if it is set to a directory with no `index.html`. |
+| `HEPH_WEBHOOK_SECRET` | The webhook secret itself, for a platform that keeps secrets as variables (Fly). Turns on `POST /webhooks/github` as the file variable does, is read for each delivery, and is refused together with `HEPH_WEBHOOK_SECRET_FILE`. |
 | `HEPH_WEBHOOK_SECRET_FILE` | The path of a file holding the webhook secret, which turns on `POST /webhooks/github` (see below). Off if not set; it needs `HEPH_API_PORT`, and the control plane does not start if the file is empty or cannot be read. The file is read again for each delivery, so the secret can be rotated without a restart. |
 | `HEPH_API_BASE_URL` | The address the API is served at, such as `https://heph.example`. The callback is `<base>/auth/callback`. Cookies are marked secure unless this is `http://`. |
 
@@ -347,10 +348,14 @@ minutes.
 
 Wiring the GitHub App for the first time (the live flow has not been exercised against github.com):
 set the App's callback URL to exactly `<HEPH_API_BASE_URL>/auth/callback`; the flow asks for no
-OAuth scopes and reads only the login, so the App needs no user permissions for it; turn off
-"Expire user authorization tokens" only if you want it, since the token is dropped as soon as the
-login is read; check that a login that is on the list reaches `GET /api/session` and one that is
-not gets `403`.
+OAuth scopes. The user token the login is given is kept, sealed with a key made from
+`HEPH_API_SECRET_KEY_BASE`, in a cookie of its own that lives as long as the session, because the
+dashboard's reply to an agent's question is made with it, as the person; nothing else reads it and
+signing out drops it. The App therefore needs Issues write for that reply (a user token can do no
+more than the App and the person may). The token is not refreshed: with "Expire user authorization
+tokens" on, a reply made after it has lapsed is a `401` that asks the person to sign in again. The
+full list of the App's settings is in [the runbook](../docs/runbook-hosted-control-plane.md). Check
+that a login that is on the list reaches `GET /api/session` and one that is not gets `403`.
 
 ### The executor link
 
