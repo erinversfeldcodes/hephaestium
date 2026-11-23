@@ -182,6 +182,18 @@ describe("the API client", () => {
       latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
     };
 
+    it("reads a waiting ticket that has no run, with its wait", async () => {
+      const waiting = { since: "2026-11-23T10:00:00Z", approved_by: "maint", no_worker: true };
+      const tickets = await createClient(
+        respond(200, { tickets: [{ ...row, latest: null, workloads: 0, settled_at: null, waiting }] }),
+      ).tickets();
+
+      expect(tickets[0]).toMatchObject({
+        latest: null,
+        waiting: { since: "2026-11-23T10:00:00Z", approvedBy: "maint", noWorker: true },
+      });
+    });
+
     it("reads the list, in camel case, and asks only for the list", async () => {
       const fetcher = respond(200, { tickets: [row, { ...row, number: 4, title: null, settled_at: null }] });
 
@@ -195,6 +207,7 @@ describe("the API client", () => {
         workloads: 2,
         settledAt: "2026-11-20T11:00:00Z",
         latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
+        waiting: null,
       });
       expect(tickets[1]).toMatchObject({ title: null, settledAt: null });
       expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/tickets?limit=200");

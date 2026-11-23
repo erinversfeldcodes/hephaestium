@@ -11,8 +11,10 @@ export function TicketListPage({ client }: { readonly client: Client }) {
     <section aria-labelledby="tickets-heading">
       <h2 id="tickets-heading">Tickets</h2>
       <Shown state={tickets}>
-        {(rows) =>
-          rows.length === 0 ? (
+        {(all) => {
+          // A ticket waiting for its first run is on the board; this list is of runs.
+          const rows = all.flatMap((ticket) => (ticket.latest ? [{ ...ticket, latest: ticket.latest }] : []));
+          return rows.length === 0 ? (
             <p>No ticket has had a run yet.</p>
           ) : (
             <table>
@@ -47,8 +49,8 @@ export function TicketListPage({ client }: { readonly client: Client }) {
                 ))}
               </tbody>
             </table>
-          )
-        }
+          );
+        }}
       </Shown>
     </section>
   );

@@ -130,6 +130,52 @@ defmodule ControlPlane.IntakeTest do
            ]
   end
 
+  describe "the waiting tickets" do
+    defp waiting, do: Repo.all(ControlPlane.WaitingTicket)
+
+    test "a blocked ticket waits, with its approval time, until a workload is made", %{gh: gh} do
+      blocked = put_in(built(12, "maint", @approved_at), ["ticket", "blockedBy"], ["5"])
+      StandInGitHub.heph_prints(gh, blocked)
+
+      assert [%{result: {:skipped, {:blocked_by, [5]}}}] = results()
+
+      assert [%{ticket_number: 12, approved_by: "maint", approved_at: approved_at}] = waiting()
+      assert DateTime.to_iso8601(approved_at) == @approved_at
+
+      StandInGitHub.heph_prints(gh, built(12, "maint", @approved_at))
+      assert [%{result: :started}] = results()
+      assert waiting() == []
+    end
+
+    test "an approval that stops standing is not kept", %{gh: gh} do
+      StandInGitHub.heph_prints(
+        gh,
+        put_in(built(12, "maint", @approved_at), ["ticket", "blockedBy"], ["5"])
+      )
+
+      results()
+      assert [_] = waiting()
+
+      labelled(gh, 12, [{"stranger", @approved_at}])
+      assert [%{result: {:skipped, :approver_cannot_write}}] = results()
+      assert waiting() == []
+    end
+
+    test "a ticket that closed is not kept", %{gh: gh} do
+      StandInGitHub.heph_prints(
+        gh,
+        put_in(built(12, "maint", @approved_at), ["ticket", "blockedBy"], ["5"])
+      )
+
+      results()
+      assert [_] = waiting()
+
+      issue(gh, 12, %{"state" => "closed"})
+      assert results() == []
+      assert waiting() == []
+    end
+  end
+
   describe "a ticket that is not approved" do
     test "because the label was applied by someone who cannot write", %{gh: gh} do
       labelled(gh, 12, [{"stranger", @approved_at}])

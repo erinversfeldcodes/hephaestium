@@ -23,6 +23,7 @@ defmodule ControlPlane.Intake do
     TicketLabels,
     Tickets,
     Tracker,
+    WaitingTickets,
     Workloads
   }
 
@@ -35,9 +36,14 @@ defmodule ControlPlane.Intake do
   def run(repo) do
     case Tracker.approved_tickets(repo, @label) do
       {:ok, tickets} ->
-        for ticket <- tickets do
-          %{ticket: ticket.key, result: consider(repo, ticket)}
-        end
+        results =
+          for ticket <- tickets do
+            %{ticket: ticket.key, result: consider(repo, ticket)}
+          end
+
+        # A ticket that is no longer open and approved is not waiting any more.
+        :ok = WaitingTickets.keep_only(repo, Enum.map(tickets, & &1.key))
+        results
 
       {:error, message} ->
         {:error, message}
@@ -52,9 +58,15 @@ defmodule ControlPlane.Intake do
   @spec ticket(String.t(), term()) :: result() | {:error, String.t()}
   def ticket(repo, key) do
     case Tracker.ticket(repo, key) do
-      {:ok, %{state: :open} = ticket} -> consider(repo, ticket)
-      {:ok, _closed} -> {:skipped, :ticket_closed}
-      {:error, message} -> {:error, message}
+      {:ok, %{state: :open} = ticket} ->
+        consider(repo, ticket)
+
+      {:ok, _closed} ->
+        :ok = WaitingTickets.clear(repo, key)
+        {:skipped, :ticket_closed}
+
+      {:error, message} ->
+        {:error, message}
     end
   end
 
@@ -69,12 +81,18 @@ defmodule ControlPlane.Intake do
          {:ok, plan} <- plan(repo, number) do
       act(plan, repo, ticket, approval)
     else
-      {:ok, false, reason} -> {:skipped, reason}
-      {:skip, reason} -> {:skipped, reason}
+      {:ok, false, reason} -> {:skipped, no_longer_waiting(repo, number, reason)}
+      {:skip, reason} -> {:skipped, no_longer_waiting(repo, number, reason)}
       {:github_error, message} -> {:skipped, {:github_error, message}}
       {:could_not_build, message} -> {:skipped, {:could_not_build, message}}
       other -> {:skipped, {:unexpected, inspect(other)}}
     end
+  end
+
+  # An approval that does not stand, or a ticket already started, is not waiting for a workload.
+  defp no_longer_waiting(repo, number, reason) do
+    :ok = WaitingTickets.clear(repo, number)
+    reason
   end
 
   # A new workload, unless the ticket's pull request is open: then that pull request is
@@ -123,10 +141,15 @@ defmodule ControlPlane.Intake do
   defp act(:build, repo, ticket, approval) do
     number = ticket.key
 
+    # The approval stands and there is no workload yet: the ticket waits until one is made.
+    :ok = WaitingTickets.put(repo, number, approval.login, approval.at)
+
     with {:ok, workload} <- build(repo, number, approval),
+         :ok <- WaitingTickets.put(repo, number, approval.login, approval.at, title(workload)),
          :ok <- unblocked(workload),
          {:ok, workload} <- Prepush.add(judged_afterwards(workload, repo), repo),
          {:ok, record} <- create(workload),
+         :ok <- WaitingTickets.clear(repo, number),
          {:ok, _job} <- Runner.enqueue(record.id) do
       :started
     else
@@ -138,7 +161,8 @@ defmodule ControlPlane.Intake do
     end
   end
 
-  defp act({:resume, workload, change}, _repo, ticket, approval) do
+  defp act({:resume, workload, change}, repo, ticket, approval) do
+    :ok = WaitingTickets.clear(repo, ticket.key)
     :ok = Workloads.resume(workload, approval.at)
     _ = Tickets.resumed(workload, ticket.labels, approval.login, change.url)
     :resumed
@@ -146,7 +170,9 @@ defmodule ControlPlane.Intake do
 
   # The judgement is built for this approval, not the ticket's first one: a pass that sees an
   # approval looks for a workload that carries it, and without one asks again.
-  defp act({:evaluate, workload}, _repo, _issue, approval) do
+  defp act({:evaluate, workload}, repo, issue, approval) do
+    :ok = WaitingTickets.clear(repo, issue.key)
+
     case Evaluations.after_merge(workload, %{login: approval.login, text: approval.text}) do
       {:started, id} -> {:evaluating, id}
       {:skipped, reason} -> {:skipped, reason}
@@ -163,6 +189,9 @@ defmodule ControlPlane.Intake do
       _ -> :ok
     end
   end
+
+  defp title(%{"ticket" => %{"title" => title}}) when is_binary(title), do: title
+  defp title(_workload), do: nil
 
   defp blocker_number(number) when is_integer(number), do: number
   defp blocker_number(number) when is_binary(number), do: String.to_integer(number)
