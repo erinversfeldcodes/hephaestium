@@ -23,6 +23,18 @@
 # production:      NEON_PRODUCTION_API_KEY NEON_PRODUCTION_PROJECT_ID HEPH_WEBHOOK_SECRET
 #                  CONTROL_PLANE_GH_TOKEN HEPH_API_ALLOWED_LOGINS HEPH_REPOSITORIES
 #                  (HEPH_REVIEW_APP_ID and HEPH_REVIEW_APP_KEY together, optional;
+#                   each of these is passed to the control plane only when set, so a deployment
+#                   that leaves one out keeps the behaviour it has without it:
+#                     HEPH_ATHENAEUM_REF  the Athenaeum release lenses and skills are read from
+#                     HEPH_REVISIONS      revisions a pull request gets
+#                     HEPH_RERUNS         re-runs of a cancelled check
+#                     HEPH_REVIEWS        repositories whose pull requests are reviewed
+#                     HEPH_COMPLETENESS   repositories whose merged tickets are judged
+#                     HEPH_CLOSURES       repositories where a ticket is closed on its verdict
+#                     HEPH_AUTOMERGE      repositories whose approved, green pull requests merge
+#                   HEPH_REVIEWS, HEPH_COMPLETENESS, HEPH_CLOSURES and HEPH_AUTOMERGE are lists
+#                   of repositories and may name only repositories in HEPH_REPOSITORIES;
+#                   HEPH_REVIEW_APP_KEY is a secret and is never printed;
 #                   FLY_APP, default hephaestium-control-plane; HEPH_API_BASE_URL, default
 #                   https://<app>.fly.dev; NEON_DATABASE and NEON_ROLE, default neondb and
 #                   neondb_owner)
@@ -92,6 +104,26 @@ case $mode in
     if [[ -n ${HEPH_REVIEW_APP_ID:-} || -n ${HEPH_REVIEW_APP_KEY:-} ]]; then
       require HEPH_REVIEW_APP_ID HEPH_REVIEW_APP_KEY
     fi
+    # A setting that names repositories may name only ones the control plane takes in: any other
+    # would be a repository that is reviewed or merged but whose tickets never arrive.
+    for list in HEPH_REVIEWS HEPH_COMPLETENESS HEPH_CLOSURES HEPH_AUTOMERGE; do
+      [[ -n ${!list:-} ]] || continue
+      outside=()
+      IFS=, read -ra named <<<"${!list}"
+      IFS=, read -ra taken <<<"$HEPH_REPOSITORIES"
+      for repo in ${named[@]+"${named[@]}"}; do
+        repo=$(echo "$repo" | tr -d '[:space:]')
+        [[ -n $repo ]] || continue
+        found=0
+        for in_list in ${taken[@]+"${taken[@]}"}; do
+          [[ $(echo "$in_list" | tr -d '[:space:]') == "$repo" ]] && found=1
+        done
+        ((found)) || outside+=("$repo")
+      done
+      if ((${#outside[@]})); then
+        die "${list} names ${outside[*]}, not in HEPH_REPOSITORIES. Nothing was created or changed."
+      fi
+    done
     app=${FLY_APP:-hephaestium-control-plane}
     if [[ $app == heph-cp-pr-* ]]; then
       die "FLY_APP '${app}' is a preview's name; production never deploys onto one"
@@ -151,11 +183,19 @@ if [[ $mode == production ]]; then
   if [[ -n ${HEPH_REVIEW_APP_ID:-} ]]; then
     secrets+=("HEPH_REVIEW_APP_ID=${HEPH_REVIEW_APP_ID}" "HEPH_REVIEW_APP_KEY=${HEPH_REVIEW_APP_KEY}")
   fi
+  for name in HEPH_ATHENAEUM_REF HEPH_REVISIONS HEPH_RERUNS HEPH_REVIEWS HEPH_COMPLETENESS \
+    HEPH_CLOSURES HEPH_AUTOMERGE; do
+    [[ -z ${!name:-} ]] || secrets+=("${name}=${!name}")
+  done
 fi
 
 # Staged, so the machine is restarted once, by the deploy that follows, with all of them.
 fly secrets set --stage --app "$app" "${secrets[@]}" >/dev/null || die "could not set the secrets on ${app}"
-echo "    secrets set: $(printf '%s\n' "${secrets[@]}" | cut -d= -f1 | tr '\n' ' ')"
+# Names only, taken from each element and not from its lines: a value that spans lines, as the review
+# key does, would otherwise print its body.
+names=()
+for entry in "${secrets[@]}"; do names+=("${entry%%=*}"); done
+echo "    secrets set: ${names[*]}"
 
 # A new app has no public address until one is allocated, and a deploy allocates one only the first
 # time it runs and only if the config then has a service. An address is asked for here, once each,

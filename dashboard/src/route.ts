@@ -4,6 +4,7 @@ export type Route =
   | { readonly page: "run"; readonly id: string }
   | { readonly page: "ticket"; readonly repository: string; readonly number: number }
   | { readonly page: "spend"; readonly repository: string | null }
+  | { readonly page: "workers" }
   | { readonly page: "not-found" };
 
 /** The page an address names. */
@@ -21,6 +22,8 @@ export function parseRoute(pathname: string, search: string): Route {
   }
 
   if (segments[0] === "board" && segments.length === 1) return { page: "board" };
+
+  if (segments[0] === "workers" && segments.length === 1) return { page: "workers" };
 
   if (segments[0] === "runs" && segments.length === 2 && /^[A-Za-z0-9_-]+$/.test(segments[1] ?? "")) {
     return { page: "run", id: segments[1] ?? "" };

@@ -6,6 +6,7 @@ import { BoardPage } from "./views/BoardPage";
 import { RunPage } from "./views/RunPage";
 import { SpendPage } from "./views/SpendPage";
 import { TicketDetailPage } from "./views/TicketDetailPage";
+import { WorkersPage } from "./views/WorkersPage";
 import { TicketListPage } from "./views/TicketListPage";
 
 type State =
@@ -55,7 +56,8 @@ export function App({ client }: { readonly client: Client }) {
         <h1>Hephaestium</h1>
         {state.kind === "signed-in" && (
           <nav aria-label="Pages">
-            <Link to="/board">Board</Link> <Link to="/">Tickets</Link> <Link to={spendPath(null)}>Spend</Link>
+            <Link to="/board">Board</Link> <Link to="/">Tickets</Link> <Link to={spendPath(null)}>Spend</Link>{" "}
+            <Link to="/workers">Workers</Link>
           </nav>
         )}
         {state.kind === "signed-in" && (
@@ -88,6 +90,8 @@ function Page({ client, route }: { readonly client: Client; readonly route: Rout
       return <TicketDetailPage client={client} repository={route.repository} number={route.number} />;
     case "spend":
       return <SpendPage client={client} repository={route.repository} />;
+    case "workers":
+      return <WorkersPage client={client} />;
     case "not-found":
       return <p>There is no such page.</p>;
   }
