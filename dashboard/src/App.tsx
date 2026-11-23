@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Client, Session } from "./api";
 import { Link, NavigateContext } from "./Link";
 import { parseRoute, spendPath, type Route } from "./route";
+import { BoardPage } from "./views/BoardPage";
 import { SpendPage } from "./views/SpendPage";
 import { TicketDetailPage } from "./views/TicketDetailPage";
 import { TicketListPage } from "./views/TicketListPage";
@@ -53,7 +54,7 @@ export function App({ client }: { readonly client: Client }) {
         <h1>Hephaestium</h1>
         {state.kind === "signed-in" && (
           <nav aria-label="Pages">
-            <Link to="/">Tickets</Link> <Link to={spendPath(null)}>Spend</Link>
+            <Link to="/board">Board</Link> <Link to="/">Tickets</Link> <Link to={spendPath(null)}>Spend</Link>
           </nav>
         )}
         {state.kind === "signed-in" && (
@@ -78,6 +79,8 @@ function Page({ client, route }: { readonly client: Client; readonly route: Rout
   switch (route.page) {
     case "tickets":
       return <TicketListPage client={client} />;
+    case "board":
+      return <BoardPage client={client} />;
     case "ticket":
       return <TicketDetailPage client={client} repository={route.repository} number={route.number} />;
     case "spend":

@@ -130,4 +130,14 @@ describe("the dashboard", () => {
     }
     expect(fetcher.mock.calls.map(([url]) => String(url))).toContain("/api/tickets/o/r/1");
   });
+
+  it("opens the board from the navigation", async () => {
+    const user = userEvent.setup();
+    render(<App client={fakeClient()} />);
+
+    await user.click(await screen.findByRole("link", { name: "Board" }));
+
+    expect(window.location.pathname).toBe("/board");
+    expect(await screen.findByRole("group", { name: "Working" })).toBeInTheDocument();
+  });
 });
