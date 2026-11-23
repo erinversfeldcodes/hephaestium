@@ -60,7 +60,7 @@ describe("a ticket", () => {
     expect(await screen.findByRole("heading", { name: /Teach the parser about guards/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "On GitHub" })).toHaveAttribute("href", detail.url);
 
-    const runs = screen.getAllByRole("row").slice(1);
+    const runs = within(screen.getByRole("region", { name: "Runs" })).getAllByRole("row").slice(1);
     expect(runs).toHaveLength(2);
     expect(within(runs[0]!).getByText("implementation")).toBeInTheDocument();
     expect(within(runs[0]!).getByText("succeeded")).toBeInTheDocument();

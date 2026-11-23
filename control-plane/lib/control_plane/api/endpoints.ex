@@ -58,6 +58,29 @@ defmodule ControlPlane.Api.Endpoints do
     end
   end
 
+  def gates(conn, %{"id" => id}, _settings, _login) do
+    case find(id) do
+      nil -> not_found(conn)
+      workload -> json(conn, 200, %{gates: Read.gates(workload)})
+    end
+  end
+
+  def verdicts(conn, params, _settings, _login) do
+    with {:ok, repository, number} <- ticket_params(params) do
+      json(conn, 200, %{verdicts: Read.verdicts(repository, number)})
+    else
+      _ -> not_found(conn)
+    end
+  end
+
+  def review_effort(conn, params, _settings, _login) do
+    with {:ok, repository, number} <- ticket_params(params) do
+      json(conn, 200, Read.review_effort(repository, number))
+    else
+      _ -> not_found(conn)
+    end
+  end
+
   def account(conn, %{"id" => id}, _settings, _login) do
     case find(id) do
       nil -> not_found(conn)
