@@ -37,6 +37,18 @@ case "$1 $2" in
   "apps create") echo "$3" >>"$FIXTURES/apps-existing" ;;
   "apps list") cat "$FIXTURES/apps-list.json" ;;
   "machines list") cat "$FIXTURES/machines-$4.json" 2>/dev/null || echo '[]' ;;
+  "ips list" | "ips allocate-v4" | "ips allocate-v6")
+    app="" prev=""
+    for word in "$@"; do
+      [[ $prev == --app ]] && app=$word
+      prev=$word
+    done
+    case "$2" in
+      list) cat "$FIXTURES/ips-$app.txt" 2>/dev/null || true ;;
+      allocate-v4) echo "v4 66.241.124.36 shared global now" >>"$FIXTURES/ips-$app.txt" ;;
+      allocate-v6) echo "v6 2a09:8280:1::1:0 public global now" >>"$FIXTURES/ips-$app.txt" ;;
+    esac
+    ;;
   *) : ;;
 esac
 STUB
@@ -53,6 +65,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 url=${args[$((${#args[@]} - 1))]}
 echo "curl $method $url" >>"$CALLS"
+echo "curl-args $*" >>"$CALLS"
 status=200 body='{}'
 case "$method $url" in
   "GET https://console.neon.tech/api/v2/projects/"*/branches) body=$(cat "$FIXTURES/branches.json") ;;
@@ -162,6 +175,23 @@ grep -q "^fly deploy --config control-plane/fly.toml --app heph-cp-pr-feat-x --h
 expect "it deploys the one file with its own address" $?
 ! grep -q "SECRETPW\|sessionkey-value\|csecret-value" "$scratch/out"
 expect "no secret is printed" $?
+
+# A new app has no public address until one is allocated, and a deploy allocates one only the first
+# time and only when the config then has a service; so the script asks for them itself.
+alloc4=$(grep -n "^fly ips allocate-v4 --shared --app heph-cp-pr-feat-x" "$CALLS" | head -1 | cut -d: -f1)
+alloc6=$(grep -n "^fly ips allocate-v6 --app heph-cp-pr-feat-x" "$CALLS" | head -1 | cut -d: -f1)
+deploy_line=$(grep -n "^fly deploy" "$CALLS" | head -1 | cut -d: -f1)
+[[ -n $alloc4 && -n $alloc6 && -n $deploy_line ]] && ((alloc4 < deploy_line && alloc6 < deploy_line))
+expect "an app with no address is given a shared IPv4 and an IPv6 before it is deployed" $?
+grep -q "^curl-args .*--resolve heph-cp-pr-feat-x.fly.dev:443:66.241.124.36 .*/api/session" "$CALLS"
+expect "the check reaches the app through its allocated address, not through a DNS entry that may lag" $?
+
+reset
+echo heph-cp-pr-feat-x >>"$FIXTURES/apps-existing"
+printf 'VERSION IP TYPE REGION CREATED AT\nv4 66.241.124.36 shared global now\nv6 2a09:8280:1::1:0 public global now\n' >"$FIXTURES/ips-heph-cp-pr-feat-x.txt"
+run deploy-control-plane.sh preview --branch feat/x
+[[ $status -eq 0 ]] && ! grep -q "ips allocate" "$CALLS"
+expect "an app that already has both addresses is given no more" $?
 
 reset
 echo '{"branches":[{"id":"br-parent","name":"production","default":true,"created_at":"2026-01-01T00:00:00Z"},{"id":"br-old","name":"preview/feat-x","created_at":"2026-01-02T00:00:00Z"}]}' >"$FIXTURES/branches.json"

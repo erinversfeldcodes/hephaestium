@@ -157,6 +157,15 @@ fi
 fly secrets set --stage --app "$app" "${secrets[@]}" >/dev/null || die "could not set the secrets on ${app}"
 echo "    secrets set: $(printf '%s\n' "${secrets[@]}" | cut -d= -f1 | tr '\n' ' ')"
 
+# A new app has no public address until one is allocated, and a deploy allocates one only the first
+# time it runs and only if the config then has a service. An address is asked for here, once each,
+# so the result does not depend on what an earlier deploy found.
+addresses=$(fly ips list --app "$app" 2>/dev/null || true)
+awk '$1 == "v4" { found = 1 } END { exit !found }' <<<"$addresses" ||
+  fly ips allocate-v4 --shared --app "$app" --yes >/dev/null || die "could not allocate an IPv4 address for ${app}"
+awk '$1 == "v6" { found = 1 } END { exit !found }' <<<"$addresses" ||
+  fly ips allocate-v6 --app "$app" >/dev/null || die "could not allocate an IPv6 address for ${app}"
+
 echo "==> deploying ${app}"
 (cd "$root" && fly deploy --config control-plane/fly.toml --app "$app" --ha=false --yes \
   --env "HEPH_API_BASE_URL=${base_url}") || die "fly deploy failed for ${app}"
@@ -164,13 +173,20 @@ echo "==> deploying ${app}"
 # What a person would check first: the dashboard's page is served, and the API refuses a request
 # with no session.
 echo "==> checking ${base_url}"
+# The check goes to the address Fly allocated, not through DNS: a new app's name can take longer to
+# resolve than the check is willing to wait, and the name is Fly's to serve, not this script's.
+host=${base_url#https://}
+host=${host%%/*}
+v4=$(fly ips list --app "$app" 2>/dev/null | awk '$1 == "v4" { print $2; exit }')
+resolve=()
+[[ -z $v4 ]] || resolve=(--resolve "${host}:443:${v4}")
 attempt=0
-until [[ $(curl -s -o /dev/null -w '%{http_code}' "${base_url}/") == 200 ]]; do
+until [[ $(curl -s ${resolve[@]+"${resolve[@]}"} -o /dev/null -w '%{http_code}' "${base_url}/") == 200 ]]; do
   attempt=$((attempt + 1))
   ((attempt < 20)) || die "${base_url}/ did not answer 200"
   sleep "${DEPLOY_CHECK_SLEEP:-5}"
 done
-code=$(curl -s -o /dev/null -w '%{http_code}' "${base_url}/api/session")
+code=$(curl -s ${resolve[@]+"${resolve[@]}"} -o /dev/null -w '%{http_code}' "${base_url}/api/session")
 [[ $code == 401 ]] || die "${base_url}/api/session answered ${code}, not 401"
 echo "    / is 200 and /api/session is 401"
 echo "deployed ${app}"
