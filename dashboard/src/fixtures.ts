@@ -1,4 +1,4 @@
-import type { Client, DeviceToken, Question, RunDetail, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
+import type { Client, DeviceToken, Gate, ReviewEffort, Verdict, Question, RunDetail, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
 
 export const summary: TicketSummary = {
   repository: "erinversfeldcodes/gazebolang",
@@ -86,6 +86,81 @@ export const deviceTokens: DeviceToken[] = [
   },
 ];
 
+export const gates: Gate[] = [
+  {
+    name: "format",
+    outcome: "passed",
+    reason: null,
+    ciCheck: null,
+    durationMs: 40,
+  },
+  {
+    name: "test",
+    outcome: "deferred",
+    reason: "timed out after 60s",
+    ciCheck: "ci / test",
+    durationMs: 60000,
+  },
+];
+
+export const verdicts: Verdict[] = [
+  {
+    workload: "w-9",
+    at: "2026-11-21T10:00:00Z",
+    verdict: "not_met",
+    requirements: [
+      {
+        status: "not_met",
+        text: "Guards parse",
+        evidenceKind: "test",
+        evidence: "no test covers guards",
+      },
+    ],
+  },
+  {
+    workload: "w-10",
+    at: "2026-11-22T10:00:00Z",
+    verdict: "met",
+    requirements: [
+      {
+        status: "met",
+        text: "Guards parse",
+        evidenceKind: "test",
+        evidence: "guards_test passes",
+      },
+    ],
+  },
+];
+
+export const reviewEffort: ReviewEffort = {
+  localRounds: 2,
+  reviews: 3,
+  revisions: 1,
+  lenses: [
+    {
+      lens: "security",
+      reviews: 2,
+      found: 2,
+      resolved: 1,
+      remaining: 1,
+      findings: [
+        {
+          title: "leaks a key",
+          severity: "high",
+          blocking: true,
+          state: "resolved",
+        },
+        {
+          title: "naming",
+          severity: "low",
+          blocking: false,
+          state: "remaining",
+        },
+      ],
+    },
+  ],
+};
+
 /** A client whose answers are these fixtures, unless a test says otherwise. */
 export function fakeClient(overrides: Partial<Client> = {}): Client {
   return {
@@ -98,6 +173,9 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     workload: async () => runDetail,
     reply: async () => replied,
     agentText: async () => ({ account: null, question: null }),
+    gates: async () => gates,
+    verdicts: async () => verdicts,
+    reviewEffort: async () => reviewEffort,
     deviceTokens: async () => deviceTokens,
     makeDeviceToken: async (name) => ({
       ok: true,

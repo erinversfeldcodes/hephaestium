@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentText, Client, Run } from "../api";
+import type { AgentText, Client, ReviewEffort, Run, Verdict } from "../api";
 import { amount, amounts, when } from "../format";
 import { Link } from "../Link";
 import { runPath } from "../route";
@@ -63,6 +63,92 @@ function Said({ text }: { readonly text: AgentText }) {
   );
 }
 
+function VerdictHistory({
+  verdicts,
+}: {
+  readonly verdicts: readonly Verdict[];
+}) {
+  if (verdicts.length === 0)
+    return <p>No verdict has been given for this ticket.</p>;
+  return (
+    <ol aria-label="Verdicts">
+      {verdicts.map((verdict) => (
+        <li key={verdict.workload}>
+          <strong>{verdict.verdict}</strong> <small>{when(verdict.at)}</small>
+          <ul>
+            {verdict.requirements.map((requirement, index) => (
+              <li key={index}>
+                {requirement.status}
+                {requirement.text !== null && `: ${requirement.text}`}
+                {requirement.evidenceKind !== null &&
+                  ` (${requirement.evidenceKind}`}
+                {requirement.evidenceKind !== null &&
+                  requirement.evidence !== null &&
+                  `: ${requirement.evidence}`}
+                {requirement.evidenceKind !== null && ")"}
+              </li>
+            ))}
+          </ul>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function ReviewEffortPanel({ effort }: { readonly effort: ReviewEffort }) {
+  if (
+    effort.reviews === 0 &&
+    effort.revisions === 0 &&
+    effort.localRounds === 0 &&
+    effort.lenses.length === 0
+  ) {
+    return <p>This ticket has not been reviewed.</p>;
+  }
+  return (
+    <>
+      <p>
+        {effort.localRounds} rounds before the push, {effort.reviews} reviews
+        and {effort.revisions} revisions after it.
+      </p>
+      <table aria-label="Findings by lens">
+        <thead>
+          <tr>
+            <th>Lens</th>
+            <th>Reviews</th>
+            <th>Found</th>
+            <th>Resolved</th>
+            <th>Still there</th>
+          </tr>
+        </thead>
+        <tbody>
+          {effort.lenses.map((lens) => (
+            <tr key={lens.lens}>
+              <td>{lens.lens}</td>
+              <td>{lens.reviews}</td>
+              <td>{lens.found}</td>
+              <td>{lens.resolved}</td>
+              <td>{lens.remaining}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {effort.lenses.map((lens) =>
+        lens.findings.length === 0 ? null : (
+          <ul key={lens.lens} aria-label={`${lens.lens} findings`}>
+            {lens.findings.map((finding, index) => (
+              <li key={index}>
+                {finding.title} ({finding.blocking ? "blocking" : "advisory"}
+                {finding.severity !== null && `, ${finding.severity}`}):{" "}
+                {finding.state}
+              </li>
+            ))}
+          </ul>
+        ),
+      )}
+    </>
+  );
+}
+
 export function TicketDetailPage({
   client,
   repository,
@@ -73,6 +159,8 @@ export function TicketDetailPage({
   readonly number: number;
 }) {
   const ticket = useRemote(() => client.ticket(repository, number), [client, repository, number]);
+  const verdicts = useRemote(() => client.verdicts(repository, number), [client, repository, number]);
+  const effort = useRemote(() => client.reviewEffort(repository, number), [client, repository, number]);
 
   return (
     <Shown state={ticket}>
@@ -127,6 +215,20 @@ export function TicketDetailPage({
               {detail.workloads.map((run) => (
                 <RunWords key={run.id} client={client} run={run} />
               ))}
+            </section>
+
+            <section aria-labelledby="verdicts-heading">
+              <h3 id="verdicts-heading">Verdict history</h3>
+              <Shown state={verdicts}>
+                {(all) => <VerdictHistory verdicts={all} />}
+              </Shown>
+            </section>
+
+            <section aria-labelledby="effort-heading">
+              <h3 id="effort-heading">Review effort</h3>
+              <Shown state={effort}>
+                {(value) => <ReviewEffortPanel effort={value} />}
+              </Shown>
             </section>
 
             <section aria-labelledby="spend-heading">

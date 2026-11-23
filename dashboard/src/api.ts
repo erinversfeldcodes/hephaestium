@@ -78,6 +78,54 @@ export interface SpendDay {
   readonly totals: Totals;
 }
 
+/** One gate a run ran: what it was and what it came to. Nothing in it is an agent's text. */
+export interface Gate {
+  readonly name: string;
+  readonly outcome: string | null;
+  readonly reason: string | null;
+  readonly ciCheck: string | null;
+  readonly durationMs: number | null;
+}
+
+/** One completeness verdict of a ticket, as given. The requirements are the agent's words. */
+export interface Verdict {
+  readonly workload: string;
+  readonly at: string | null;
+  readonly verdict: string;
+  readonly requirements: readonly {
+    readonly status: string;
+    readonly text: string | null;
+    readonly evidenceKind: string | null;
+    readonly evidence: string | null;
+  }[];
+}
+
+/** One finding a lens made, and whether the lens still makes it. */
+export interface LensFinding {
+  readonly title: string;
+  readonly severity: string | null;
+  readonly blocking: boolean;
+  readonly state: "resolved" | "remaining";
+}
+
+/** What a ticket's reviewing came to under one lens. */
+export interface LensEffort {
+  readonly lens: string;
+  readonly reviews: number;
+  readonly found: number;
+  readonly resolved: number;
+  readonly remaining: number;
+  readonly findings: readonly LensFinding[];
+}
+
+/** How much reviewing a ticket needed. */
+export interface ReviewEffort {
+  readonly localRounds: number;
+  readonly reviews: number;
+  readonly revisions: number;
+  readonly lenses: readonly LensEffort[];
+}
+
 /** A run's question, waiting for a person to answer it. */
 export interface Question {
   readonly workload: string;
@@ -145,6 +193,12 @@ export interface Client {
   reply(repository: string, number: number, body: string): Promise<ReplyResult>;
   /** What the agent said in one run. It is asked for only when a person asks to read it. */
   agentText(workloadId: string): Promise<AgentText>;
+  /** The gates a run ran, in the order the run kept them. */
+  gates(workloadId: string): Promise<readonly Gate[]>;
+  /** Every completeness verdict a ticket has had, oldest first. */
+  verdicts(repository: string, number: number): Promise<readonly Verdict[]>;
+  /** How much reviewing a ticket needed. */
+  reviewEffort(repository: string, number: number): Promise<ReviewEffort>;
   /** The signed-in person's device tokens, newest first as the API gives them. */
   deviceTokens(): Promise<readonly DeviceToken[]>;
   /** Make a device token. Never raises for a refusal. */
@@ -218,6 +272,21 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
 
     agentText: (workloadId) =>
       read(`/api/workloads/${encodeURIComponent(workloadId)}/account`, parseAgentText),
+
+    gates: (workloadId) =>
+      read(
+        `/api/workloads/${encodeURIComponent(workloadId)}/gates`,
+        parseGates,
+      ),
+
+    verdicts: (repository, number) =>
+      read(`/api/tickets/${repository}/${number}/verdicts`, parseVerdicts),
+
+    reviewEffort: (repository, number) =>
+      read(
+        `/api/tickets/${repository}/${number}/review-effort`,
+        parseReviewEffort,
+      ),
 
     deviceTokens: () => read("/api/device-tokens", parseDeviceTokens),
 
@@ -407,6 +476,88 @@ function parseQuestions(body: unknown): readonly Question[] {
 function parseAgentText(body: unknown): AgentText {
   const text_ = fields(body);
   return { account: maybeText(text_["account"]), question: maybeText(text_["question"]) };
+}
+
+function maybeCount(value: unknown): number | null {
+  return value === null || value === undefined ? null : count(value);
+}
+
+function parseGates(body: unknown): readonly Gate[] {
+  return list(fields(body)["gates"]).map((raw) => {
+    const gate = fields(raw);
+    return {
+      name: text(gate["name"]),
+      outcome: maybeText(gate["outcome"]),
+      reason: maybeText(gate["reason"]),
+      ciCheck: maybeText(gate["ci_check"]),
+      durationMs: maybeCount(gate["duration_ms"]),
+    };
+  });
+}
+
+// A verdict's requirements are the agent's, and a verdict that lacks a field is still shown.
+function parseVerdicts(body: unknown): readonly Verdict[] {
+  return list(fields(body)["verdicts"]).map((raw) => {
+    const row = fields(raw);
+    const verdict = fields(row["verdict"]);
+    const requirements = Array.isArray(verdict["requirements"])
+      ? (verdict["requirements"] as unknown[])
+      : [];
+    return {
+      workload: text(row["workload"]),
+      at: maybeText(row["at"]),
+      verdict: text(verdict["verdict"]),
+      requirements: requirements.map((item) => {
+        const requirement = fields(item);
+        const evidence =
+          typeof requirement["evidence"] === "object" &&
+          requirement["evidence"] !== null
+            ? (requirement["evidence"] as Fields)
+            : {};
+        return {
+          status: text(requirement["status"]),
+          text:
+            typeof requirement["text"] === "string"
+              ? requirement["text"]
+              : null,
+          evidenceKind:
+            typeof evidence["kind"] === "string" ? evidence["kind"] : null,
+          evidence:
+            typeof evidence["detail"] === "string" ? evidence["detail"] : null,
+        };
+      }),
+    };
+  });
+}
+
+function parseReviewEffort(body: unknown): ReviewEffort {
+  const effort = fields(body);
+  return {
+    localRounds: count(effort["local_rounds"]),
+    reviews: count(effort["reviews"]),
+    revisions: count(effort["revisions"]),
+    lenses: list(effort["lenses"]).map((raw) => {
+      const lens = fields(raw);
+      return {
+        lens: text(lens["lens"]),
+        reviews: count(lens["reviews"]),
+        found: count(lens["found"]),
+        resolved: count(lens["resolved"]),
+        remaining: count(lens["remaining"]),
+        findings: list(lens["findings"]).map((item) => {
+          const finding = fields(item);
+          const state = text(finding["state"]);
+          if (state !== "resolved" && state !== "remaining") throw shapeError();
+          return {
+            title: text(finding["title"]),
+            severity: maybeText(finding["severity"]),
+            blocking: finding["blocking"] === true,
+            state,
+          };
+        }),
+      };
+    }),
+  };
 }
 
 function parseDays(body: unknown): readonly SpendDay[] {

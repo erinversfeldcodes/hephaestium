@@ -101,6 +101,111 @@ defmodule ControlPlane.Api.Read do
     }
   end
 
+  @doc """
+  The gates a workload ran, each with its name and what it came to. Only the gate's own result
+  is read: its outcome, why it did not run, the check it was left to, how long it took and its
+  exit code. None of it is an agent's text.
+  """
+  @spec gates(%Workload{}) :: [map()]
+  def gates(%Workload{record: %{"gates" => gates}}) when is_list(gates) do
+    for %{"name" => name} = gate <- gates do
+      result = if is_map(gate["result"]), do: gate["result"], else: %{}
+
+      %{
+        name: name,
+        outcome: result["outcome"],
+        reason: result["reason"],
+        ci_check: result["ci_check"],
+        duration_ms: result["duration_ms"],
+        exit_code: result["exit_code"]
+      }
+    end
+  end
+
+  def gates(%Workload{}), do: []
+
+  @doc """
+  Every completeness verdict a ticket has had, oldest first. Each is the verdict as it passed
+  the contract, with its requirements and the evidence for each, and when it was given. What
+  an evaluation wrote is agent text, which is why this is read only behind the login.
+  """
+  @spec verdicts(String.t(), integer()) :: [map()]
+  def verdicts(repository, number) do
+    for %Workload{state: "completed", record: %{"completeness" => %{} = verdict}} = w <-
+          Workloads.for_ticket(repository, number) do
+      %{workload: w.id, at: w.finished_at || w.inserted_at, verdict: verdict}
+    end
+  end
+
+  @doc """
+  How much reviewing a ticket needed: the rounds its runs read their own change in before
+  pushing, the reviews and revisions after, and for each lens the findings it made. A finding
+  is still there when the newest review under its lens, which is the one that read the latest
+  commit, makes it again, and is resolved when an earlier review made it and that one does not.
+  A finding is the same finding when its title and where it is are the same.
+  """
+  @spec review_effort(String.t(), integer()) :: map()
+  def review_effort(repository, number) do
+    workloads = Workloads.for_ticket(repository, number)
+
+    steps =
+      for %Workload{record: %{"steps" => steps}} <- workloads,
+          step when is_map(step) <- steps,
+          do: step
+
+    reviewed =
+      for %Workload{workload: %{"review" => %{"lens" => lens}}, record: record} <- workloads,
+          is_binary(lens),
+          %{"findings" => findings} <- [(record || %{})["review"] || %{}],
+          is_list(findings),
+          do: {lens, findings}
+
+    lenses =
+      reviewed
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.map(fn {lens, rounds} -> lens_effort(lens, rounds) end)
+      |> Enum.sort_by(& &1.lens)
+
+    %{
+      local_rounds:
+        steps
+        |> Enum.filter(&(&1["kind"] in ["STEP_KIND_REVIEW", "KIND_REVIEW"]))
+        |> Enum.map(&(&1["round"] || 0))
+        |> Enum.uniq()
+        |> length(),
+      reviews: Enum.count(workloads, &(kind(&1.workload) == "review")),
+      revisions: Enum.count(workloads, &(kind(&1.workload) == "revision")),
+      lenses: lenses
+    }
+  end
+
+  defp lens_effort(lens, rounds) do
+    key = fn finding -> {finding["title"], finding["location"]} end
+    latest = rounds |> List.last() |> Enum.map(key) |> MapSet.new()
+
+    found =
+      rounds
+      |> List.flatten()
+      |> Enum.uniq_by(key)
+      |> Enum.map(fn finding ->
+        %{
+          title: finding["title"],
+          severity: finding["severity"],
+          blocking: finding["blocking"] == true,
+          state: if(key.(finding) in latest, do: "remaining", else: "resolved")
+        }
+      end)
+
+    %{
+      lens: lens,
+      reviews: length(rounds),
+      found: length(found),
+      resolved: Enum.count(found, &(&1.state == "resolved")),
+      remaining: Enum.count(found, &(&1.state == "remaining")),
+      findings: found
+    }
+  end
+
   @doc "What kind of run a workload's document asks for."
   @spec kind(map() | nil) :: String.t()
   def kind(document) do

@@ -3,6 +3,7 @@ import type { Client, RunDetail } from "../api";
 import { when } from "../format";
 import { Link } from "../Link";
 import { ticketPath } from "../route";
+import { Shown, useRemote } from "../useRemote";
 import { followEvents, type Ending, type Follow, type RunEvent } from "../stream";
 import { describe, movesState, steps } from "../transcript";
 
@@ -29,6 +30,7 @@ export function RunPage({
   const [run, setRun] = useState<RunDetail | null | undefined>(undefined);
   const [failed, setFailed] = useState(false);
   const [reads, setReads] = useState(0);
+  const gates = useRemote(() => client.gates(id), [client, id, reads]);
 
   // The run is read when the page opens, and again whenever an event moves it on. A read that
   // fails after one has succeeded leaves what was shown.
@@ -97,6 +99,40 @@ export function RunPage({
           Your session has ended. <a href="/auth/login">Sign in with GitHub</a>
         </p>
       )}
+
+      <section aria-labelledby="gates-heading">
+        <h3 id="gates-heading">Gates</h3>
+        <Shown state={gates}>
+          {(all) =>
+            all.length === 0 ? (
+              <p>This run has kept no gates.</p>
+            ) : (
+              <table aria-label="Gates">
+                <thead>
+                  <tr>
+                    <th>Gate</th>
+                    <th>Result</th>
+                    <th>Why</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {all.map((gate) => (
+                    <tr key={gate.name}>
+                      <td>{gate.name}</td>
+                      <td>{gate.outcome ?? "-"}</td>
+                      <td>
+                        {gate.reason ?? ""}
+                        {gate.ciCheck !== null &&
+                          ` (left to the check ${gate.ciCheck})`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          }
+        </Shown>
+      </section>
 
       <section aria-labelledby="steps-heading">
         <h3 id="steps-heading">Steps</h3>

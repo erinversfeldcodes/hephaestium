@@ -107,6 +107,28 @@ defmodule ControlPlane.AgentTextPointerTest do
       refute body =~ "The agent's account of what it found"
     end
 
+    test "a verdict's evidence and a review's findings never reach the ticket comment", %{
+      gh: gh,
+      id: id
+    } do
+      assert :ok =
+               end_run(id, "OUTCOME_FAILED", %{
+                 "completeness" => %{
+                   "verdict" => "not_met",
+                   "requirements" => [%{"evidence" => %{"detail" => "payroll_sentinel"}}]
+                 },
+                 "review" => %{
+                   "findings" => [%{"title" => "finding_sentinel", "evidence" => "keys.pem"}]
+                 }
+               })
+
+      body = ticket_comment(gh)
+      assert body =~ link(id)
+      refute body =~ "payroll_sentinel"
+      refute body =~ "finding_sentinel"
+      refute body =~ "keys.pem"
+    end
+
     test "a blocked first run points to its question and carries none of it", %{gh: gh, id: id} do
       assert :ok = end_run(id, "OUTCOME_BLOCKED", %{"question" => @question})
 

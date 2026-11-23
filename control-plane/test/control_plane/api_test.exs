@@ -9,6 +9,7 @@ defmodule ControlPlane.ApiTest do
 
   import Plug.Test
   import Plug.Conn
+  import Ecto.Query, only: [from: 2]
 
   alias ControlPlane.Api.{Router, Session, Settings, UsedStates}
   alias ControlPlane.{Events, Fixtures, StandInGitHubLogin, Workloads}
@@ -65,6 +66,27 @@ defmodule ControlPlane.ApiTest do
   end
 
   defp cookie_value(set_cookie), do: set_cookie |> String.split(";") |> hd()
+
+  # A workload of another kind for a ticket: the document gets the given keys.
+  defp seed_kind(number, extra, state) do
+    id = Ecto.UUID.generate()
+
+    {:ok, _} =
+      Fixtures.workload(id)
+      |> put_in(["ticket", "number"], Integer.to_string(number))
+      |> Map.merge(extra)
+      |> Workloads.create()
+
+    ControlPlane.Repo.update_all(
+      from(w in ControlPlane.Workload, where: w.id == ^id),
+      set: [
+        state: state,
+        inserted_at: DateTime.add(DateTime.utc_now(), System.unique_integer([:positive]), :second)
+      ]
+    )
+
+    id
+  end
 
   # A workload with events, kept in the database.
   defp seed(number \\ 12, state_events \\ [Fixtures.started(), Fixtures.workspace_ready()]) do
@@ -518,6 +540,117 @@ defmodule ControlPlane.ApiTest do
 
       empty = seed(14)
       assert get_as("/api/workloads/#{empty}/steps") |> json() == %{"steps" => []}
+    end
+
+    test "a run's gates, each with its name and result, and none for a run that kept none" do
+      id = seed()
+
+      :ok =
+        Workloads.keep_record(id, %{
+          "gates" => [
+            %{"name" => "format", "result" => %{"outcome" => "passed", "duration_ms" => 40}},
+            %{
+              "name" => "test",
+              "result" => %{
+                "outcome" => "deferred",
+                "ci_check" => "ci / test",
+                "reason" => "timed out after 60s"
+              }
+            }
+          ]
+        })
+
+      assert %{"gates" => [format, test]} = get_as("/api/workloads/#{id}/gates") |> json()
+      assert %{"name" => "format", "outcome" => "passed", "duration_ms" => 40} = format
+      assert %{"outcome" => "deferred", "ci_check" => "ci / test"} = test
+      assert test["reason"] == "timed out after 60s"
+
+      assert get_as("/api/workloads/#{seed(14)}/gates") |> json() == %{"gates" => []}
+      assert get_as("/api/workloads/#{Ecto.UUID.generate()}/gates").status == 404
+    end
+
+    test "a ticket's verdict history, oldest first, with each requirement's evidence" do
+      first = seed_kind(20, %{"completeness" => %{}}, "completed")
+      second = seed_kind(20, %{"completeness" => %{}}, "completed")
+      failed = seed_kind(20, %{"completeness" => %{}}, "failed")
+
+      for {id, verdict} <- [{first, "not_met"}, {second, "met"}] do
+        :ok =
+          Workloads.keep_record(id, %{
+            "completeness" => %{
+              "verdict" => verdict,
+              "requirements" => [
+                %{"status" => verdict, "evidence" => %{"kind" => "test", "detail" => "a_test"}}
+              ]
+            }
+          })
+      end
+
+      assert %{"verdicts" => [one, two]} =
+               get_as("/api/tickets/#{@repository}/20/verdicts") |> json()
+
+      assert {one["workload"], two["workload"]} == {first, second}
+      assert one["verdict"]["verdict"] == "not_met"
+      assert [%{"evidence" => %{"kind" => "test"}}] = two["verdict"]["requirements"]
+      refute failed in [one["workload"], two["workload"]]
+
+      assert get_as("/api/tickets/#{@repository}/21/verdicts") |> json() == %{"verdicts" => []}
+      assert get_as("/api/tickets/#{@repository}/abc/verdicts").status == 404
+    end
+
+    test "a ticket's review effort: rounds, and findings by lens, resolved and still there" do
+      implementation = seed(30)
+
+      :ok =
+        Workloads.keep_record(implementation, %{
+          "steps" => [
+            %{"kind" => "STEP_KIND_IMPLEMENTATION", "round" => 0},
+            %{"kind" => "STEP_KIND_REVIEW", "lens" => "security", "round" => 1},
+            %{"kind" => "STEP_KIND_REVIEW", "lens" => "style", "round" => 1},
+            %{"kind" => "STEP_KIND_REVISION", "round" => 1},
+            %{"kind" => "STEP_KIND_REVIEW", "lens" => "security", "round" => 2}
+          ]
+        })
+
+      leak = %{"title" => "leaks a key", "severity" => "high", "blocking" => true}
+      nit = %{"title" => "naming", "severity" => "low", "blocking" => false}
+
+      for {lens, findings} <- [{"security", [leak, nit]}, {"security", [nit]}, {"style", []}] do
+        id = seed_kind(30, %{"review" => %{"lens" => lens}}, "completed")
+
+        :ok =
+          Workloads.keep_record(id, %{
+            "review" => %{"lens" => lens, "verdict" => "needs_revision", "findings" => findings}
+          })
+      end
+
+      seed_kind(30, %{"revision" => %{}}, "completed")
+
+      body = get_as("/api/tickets/#{@repository}/30/review-effort") |> json()
+      assert body["local_rounds"] == 2
+      assert body["reviews"] == 3
+      assert body["revisions"] == 1
+
+      assert [security, style] = body["lenses"]
+      assert %{"lens" => "security", "reviews" => 2, "found" => 2} = security
+      assert %{"resolved" => 1, "remaining" => 1} = security
+
+      assert [%{"title" => "leaks a key", "state" => "resolved", "blocking" => true}, still] =
+               security["findings"]
+
+      assert %{"title" => "naming", "state" => "remaining"} = still
+      assert %{"lens" => "style", "found" => 0, "remaining" => 0} = style
+    end
+
+    test "a ticket that was never reviewed has an empty review effort" do
+      seed(31)
+
+      assert get_as("/api/tickets/#{@repository}/31/review-effort") |> json() == %{
+               "local_rounds" => 0,
+               "reviews" => 0,
+               "revisions" => 0,
+               "lenses" => []
+             }
     end
 
     test "the spend roll-ups" do

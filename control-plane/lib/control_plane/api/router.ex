@@ -90,6 +90,24 @@ defmodule ControlPlane.Api.Router do
     },
     %{
       method: "GET",
+      path: ~w(api workloads :id gates),
+      access: :session,
+      handler: {Endpoints, :gates}
+    },
+    %{
+      method: "GET",
+      path: ~w(api tickets :owner :name :number verdicts),
+      access: :session,
+      handler: {Endpoints, :verdicts}
+    },
+    %{
+      method: "GET",
+      path: ~w(api tickets :owner :name :number review-effort),
+      access: :session,
+      handler: {Endpoints, :review_effort}
+    },
+    %{
+      method: "GET",
       path: ~w(api workloads :id account),
       access: :session,
       handler: {Endpoints, :account}
