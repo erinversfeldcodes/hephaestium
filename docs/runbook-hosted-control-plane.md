@@ -249,15 +249,13 @@ Against production, in this order. Each step names what a pass looks like.
    Sign in as a login not on the list: `403`. A wrong callback shows GitHub's "redirect_uri" error:
    the App's callback does not equal `<HEPH_API_BASE_URL>/auth/callback`.
 4. **Dashboard**: the tickets page loads and lists nothing yet without an error.
-5. **Make a device token**: the dashboard has no page for it yet *(finding: the routes exist, the
-   page does not)*. In a signed-in browser's console on the site: fetch `/api/csrf`, then
-   `fetch('/api/device-tokens', {method: 'POST', headers: {'x-csrf-token': <csrfToken>}, body: JSON.stringify({name: 'laptop'})})`,
-   where `<csrfToken>` is the `csrfToken` field of the `/api/csrf` answer (not `token`).
-   The answer holds the token once; save it to `~/.config/hephaestium/worker-token` with mode 600.
+5. **Make a device token**: on the dashboard's Workers page, name one and make it. The page shows
+   the token once, with the file to save it to (`~/.config/hephaestium/worker-token`, mode 600)
+   and the `heph worker` command. Reload: the token is not shown again.
 6. **`heph worker` enrols and makes a first claim**:
    `heph worker --control-plane https://<host>`. It prints nothing and stays running with no
-   error; a `204` claim every 25 seconds is normal; `GET /api/device-tokens` shows the token
-   `connected`. A wrong token ends with "does not accept the device token".
+   error; a `204` claim every 25 seconds is normal; the Workers page shows the token
+   connected now. A wrong token ends with "does not accept the device token".
 
    Two things about the machine the worker runs on:
 
