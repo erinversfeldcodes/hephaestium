@@ -1,0 +1,61 @@
+# Deploys the control plane to its production Fly app, against the production Neon project, from
+# main once CI has passed there. The pooled and direct connection strings come from the Neon API
+# and every secret is set on Fly on each deploy, so a changed secret is a changed Actions secret
+# and another run of this workflow. See docs/runbook-hosted-control-plane.md.
+name: deploy-production
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and a running one is never cancelled by the next.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      NEON_PRODUCTION_API_KEY: ${{ secrets.NEON_PRODUCTION_API_KEY }}
+      NEON_PRODUCTION_PROJECT_ID: ${{ secrets.NEON_PRODUCTION_PROJECT_ID }}
+      HEPH_API_SECRET_KEY_BASE: ${{ secrets.HEPH_API_SECRET_KEY_BASE }}
+      HEPH_API_GITHUB_CLIENT_ID: ${{ secrets.HEPH_API_GITHUB_CLIENT_ID }}
+      HEPH_API_GITHUB_CLIENT_SECRET: ${{ secrets.HEPH_API_GITHUB_CLIENT_SECRET }}
+      HEPH_WEBHOOK_SECRET: ${{ secrets.HEPH_WEBHOOK_SECRET }}
+      CONTROL_PLANE_GH_TOKEN: ${{ secrets.CONTROL_PLANE_GH_TOKEN }}
+      HEPH_REVIEW_APP_ID: ${{ secrets.HEPH_REVIEW_APP_ID }}
+      HEPH_REVIEW_APP_KEY: ${{ secrets.HEPH_REVIEW_APP_KEY }}
+      HEPH_API_ALLOWED_LOGINS: ${{ vars.HEPH_API_ALLOWED_LOGINS }}
+      HEPH_REPOSITORIES: ${{ vars.HEPH_REPOSITORIES }}
+    steps:
+      # The commit CI passed on, not whatever main has become since.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+        with:
+          version: 0.4.67
+      - name: Alias fly -> flyctl
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v flyctl)" "$HOME/.local/bin/fly"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Deploy
+        run: scripts/deploy-control-plane.sh production

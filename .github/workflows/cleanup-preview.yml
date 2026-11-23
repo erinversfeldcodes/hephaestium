@@ -1,0 +1,79 @@
+# Two layers against a preview that outlives its pull request:
+#   1. When a pull request closes or merges, its Fly app and its Neon branch are deleted.
+#   2. Weekly, any preview no open pull request owns, and older than a day, is deleted. This is
+#      the backstop for a close that never ran, a crashed deploy and a deploy made by hand.
+name: cleanup-preview
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-closed-pr:
+    # A pull request from a fork never had a preview, and has no secrets here.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    environment: preview
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      NEON_STAGING_API_KEY: ${{ secrets.NEON_STAGING_API_KEY }}
+      NEON_STAGING_PROJECT_ID: ${{ secrets.NEON_STAGING_PROJECT_ID }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+        with:
+          version: 0.4.67
+      # The action installs `flyctl` only; the scripts call `fly`. Without this the teardown
+      # would find no `fly` and, were it written to skip, report success having deleted nothing.
+      - name: Alias fly -> flyctl
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v flyctl)" "$HOME/.local/bin/fly"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Tear down the preview of the closed pull request
+        run: scripts/cleanup-preview.sh --branch "$PR_HEAD_REF"
+
+  sweep-orphans:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    environment: preview
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      NEON_STAGING_API_KEY: ${{ secrets.NEON_STAGING_API_KEY }}
+      NEON_STAGING_PROJECT_ID: ${{ secrets.NEON_STAGING_PROJECT_ID }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+        with:
+          version: 0.4.67
+      - name: Alias fly -> flyctl
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v flyctl)" "$HOME/.local/bin/fly"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Sweep the previews no open pull request owns
+        run: scripts/sweep-preview-orphans.sh
