@@ -18,6 +18,8 @@ export default defineConfig(({ mode }) => {
     },
     test: {
       environment: "jsdom",
+      // The stylesheet's own test reads it as text, and vitest blanks css files unless asked.
+      css: true,
       globals: true,
       setupFiles: ["./src/test-setup.ts"],
     },
