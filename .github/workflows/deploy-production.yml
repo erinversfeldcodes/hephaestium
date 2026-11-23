@@ -38,10 +38,17 @@ jobs:
       HEPH_API_GITHUB_CLIENT_SECRET: ${{ secrets.HEPH_API_GITHUB_CLIENT_SECRET }}
       HEPH_WEBHOOK_SECRET: ${{ secrets.HEPH_WEBHOOK_SECRET }}
       CONTROL_PLANE_GH_TOKEN: ${{ secrets.CONTROL_PLANE_GH_TOKEN }}
-      HEPH_REVIEW_APP_ID: ${{ secrets.HEPH_REVIEW_APP_ID }}
       HEPH_REVIEW_APP_KEY: ${{ secrets.HEPH_REVIEW_APP_KEY }}
       HEPH_API_ALLOWED_LOGINS: ${{ vars.HEPH_API_ALLOWED_LOGINS }}
       HEPH_REPOSITORIES: ${{ vars.HEPH_REPOSITORIES }}
+      HEPH_REVIEW_APP_ID: ${{ vars.HEPH_REVIEW_APP_ID }}
+      HEPH_ATHENAEUM_REF: ${{ vars.HEPH_ATHENAEUM_REF }}
+      HEPH_REVISIONS: ${{ vars.HEPH_REVISIONS }}
+      HEPH_RERUNS: ${{ vars.HEPH_RERUNS }}
+      HEPH_REVIEWS: ${{ vars.HEPH_REVIEWS }}
+      HEPH_COMPLETENESS: ${{ vars.HEPH_COMPLETENESS }}
+      HEPH_CLOSURES: ${{ vars.HEPH_CLOSURES }}
+      HEPH_AUTOMERGE: ${{ vars.HEPH_AUTOMERGE }}
     steps:
       # The commit CI passed on, not whatever main has become since.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

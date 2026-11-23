@@ -86,11 +86,28 @@ fine-grained personal access token.
    | `HEPH_API_GITHUB_CLIENT_ID`, `HEPH_API_GITHUB_CLIENT_SECRET` | per environment | the App's, see below. A preview needs them because the API refuses to start without them. |
    | `HEPH_WEBHOOK_SECRET` | `production` only | `openssl rand -hex 32`. The same value goes into the App. |
    | `CONTROL_PLANE_GH_TOKEN` | `production` only | the machine account's fine-grained token, see above. Set on Fly as `GH_TOKEN`. |
-   | `HEPH_REVIEW_APP_ID`, `HEPH_REVIEW_APP_KEY` | `production`, optional | the review App, only if it is to approve from the hosted control plane |
+   | `HEPH_REVIEW_APP_KEY` | `production`, optional | the review App's private key, only if it is to approve from the hosted control plane. Set with `HEPH_REVIEW_APP_ID` (a variable, below). Never printed. |
 
    Variables (not secrets), environment `production`: `HEPH_API_ALLOWED_LOGINS` (the logins that may
    sign in, comma-separated) and `HEPH_REPOSITORIES` (`erinversfeldcodes/hephaestium`, and others
    comma-separated).
+
+   Variables, environment `production`, each optional and passed to the control plane only when
+   set, so a deployment that leaves one out behaves as it did without it:
+
+   | Variable | What it sets |
+   | --- | --- |
+   | `HEPH_REVIEW_APP_ID` | the review App's id; needs `HEPH_REVIEW_APP_KEY` too |
+   | `HEPH_ATHENAEUM_REF` | the Athenaeum release lenses and skills are read from |
+   | `HEPH_REVISIONS` | how many revisions a pull request gets |
+   | `HEPH_RERUNS` | how many times a cancelled check is re-run |
+   | `HEPH_REVIEWS` | repositories whose pull requests are reviewed under lenses |
+   | `HEPH_COMPLETENESS` | repositories whose merged tickets are judged |
+   | `HEPH_CLOSURES` | repositories where a ticket is closed when its verdict is met (also list them in `HEPH_COMPLETENESS`) |
+   | `HEPH_AUTOMERGE` | repositories whose green, approved pull requests are merged |
+
+   The four that are lists of repositories may name only repositories in `HEPH_REPOSITORIES`; the
+   deploy stops before changing anything if one names another.
 
    Create the two environments, `production` and `preview`, under Settings, Environments. Put a
    required reviewer on `production` if you want a pause before it deploys.
@@ -203,7 +220,7 @@ as the first deploy in [the checklist](#verify).
    production Neon project's default branch, gets its pooled and direct strings from the Neon
    API, sets the Fly secrets (`DATABASE_URL`, `HEPH_MIGRATION_DATABASE_URL`, `HEPH_API_SECRET_KEY_BASE`,
    `HEPH_API_GITHUB_CLIENT_ID`, `HEPH_API_GITHUB_CLIENT_SECRET`, `HEPH_WEBHOOK_SECRET`, `GH_TOKEN`,
-   `HEPH_API_ALLOWED_LOGINS`, `HEPH_REPOSITORIES` and the review App's two), then runs
+   `HEPH_API_ALLOWED_LOGINS`, `HEPH_REPOSITORIES`, the review App's two and each of the optional settings above that is set), then runs
    `fly deploy`. The release command, `/app/bin/migrate`, runs on a temporary machine from the new
    image first, over the direct string; if it fails the old version keeps serving.
 2. **A preview**: opening or updating a pull request runs the checks, then, if they pass, makes
