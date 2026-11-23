@@ -54,4 +54,7 @@ defmodule ControlPlane.StandInWorker do
 
   def record(port, token, id, record),
     do: request(port, :post, "/worker/workloads/#{id}/record", token: token, body: record)
+
+  def release(port, token, id),
+    do: request(port, :post, "/worker/workloads/#{id}/release", token: token)
 end

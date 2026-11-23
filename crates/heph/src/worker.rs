@@ -331,7 +331,8 @@ fn serve(
         last_ok: Instant::now(),
         started: Instant::now(),
     };
-    let gone = sending.follow(&mut child, &lines, stop);
+    let followed = sending.follow(&mut child, &lines, stop);
+    let gone = followed.gone;
     let status = child
         .wait()
         .map_err(|e| format!("waiting for the executor failed: {e}"))?;
@@ -343,7 +344,31 @@ fn serve(
         return Ok(());
     }
 
-    let Ok(text) = std::fs::read_to_string(&record) else {
+    let text = std::fs::read_to_string(&record);
+    if followed.stopped_by_operator && !says_it_finished(text.as_deref().ok()) {
+        // The operator stopped this machine's executor, so the work did not finish and the
+        // ticket did not change. What the executor said while it stopped ("cancelled") is not
+        // sent, because the control plane would end the workload for good on it.
+        sending.give_back();
+        return Ok(());
+    }
+    // A stop that came too late to matter: the run ended as it would have, and what was held
+    // back while it stopped is sent after all.
+    if !followed.held.is_empty() {
+        let held: Vec<String> = followed
+            .held
+            .iter()
+            .map(|line| sending.numbered(line))
+            .collect();
+        if let Delivered::Gone(why) = sending.deliver(|| client.events(&claim.id, &held)) {
+            println!(
+                "workload {}: the events were not kept, because {why}",
+                claim.id
+            );
+            return Ok(());
+        }
+    }
+    let Ok(text) = text else {
         // Nothing is made up in its place: the control plane sees the lease lapse and decides
         // from the events what that means.
         return Err(format!(
@@ -382,6 +407,14 @@ fn serve(
     Ok(())
 }
 
+/// Whether a run record says the run ended by itself, as any outcome but a cancellation.
+fn says_it_finished(record: Option<&str>) -> bool {
+    let outcome = record
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .and_then(|value| value["outcome"].as_str().map(str::to_owned));
+    outcome.is_some_and(|outcome| outcome != "OUTCOME_CANCELLED")
+}
+
 /// The executor's output a line at a time, on a thread of its own so that this one can notice a
 /// stop, the end of a lease and the time for a heartbeat while the executor is quiet.
 fn read_lines(output: std::process::ChildStdout) -> Receiver<String> {
@@ -407,6 +440,16 @@ fn tail(path: &Path) -> String {
     lines[lines.len().saturating_sub(8)..].join("\n")
 }
 
+/// How the following of one run ended.
+struct Followed {
+    /// Why the run was stopped when the control plane took the workload back.
+    gone: Option<String>,
+    /// Whether this program was told to stop, and so told the executor to.
+    stopped_by_operator: bool,
+    /// What the executor said after it was told to stop, not yet sent.
+    held: Vec<String>,
+}
+
 enum Delivered {
     Yes,
     /// The control plane does not hold the workload for this machine any more, or will not
@@ -425,20 +468,22 @@ struct Sending<'a> {
 impl Sending<'_> {
     /// Read the executor's output until it ends, sending each event as it comes. A stop asked
     /// of this program is passed on once, to the executor, which says how it ended; and
-    /// reading goes on until it has. Returns why the run was stopped when the control plane
-    /// took the workload back, and the executor was stopped for it.
+    /// reading goes on until it has. What it says after that is held back and not sent, because
+    /// a cancelled run would end the workload for good, when the operator's stop is only a
+    /// reason to give the work back.
     fn follow(
         &mut self,
         child: &mut Child,
         lines: &Receiver<String>,
         stop: &dyn Fn() -> bool,
-    ) -> Option<String> {
+    ) -> Followed {
         let (client, claim) = (self.client, self.claim);
         let heartbeat_every = claim.lease / 4;
         let mut batch: Vec<String> = Vec::new();
         let mut told_to_stop = false;
         let mut gone: Option<(String, Instant)> = None;
         let mut killed = false;
+        let mut held: Vec<String> = Vec::new();
         loop {
             let mut ended = false;
             match lines.recv_timeout(LOOK) {
@@ -457,6 +502,14 @@ impl Sending<'_> {
             if gone.is_some() {
                 // What it says now is not sent: the control plane does not hold the run.
                 batch.clear();
+            } else if told_to_stop {
+                held.append(&mut batch);
+                if self.last_ok.elapsed() >= heartbeat_every
+                    && let Delivered::Gone(why) = self.deliver(|| client.heartbeat(&claim.id))
+                {
+                    gone = Some((why, Instant::now()));
+                    terminate(child);
+                }
             } else if !batch.is_empty() {
                 let numbered: Vec<String> =
                     batch.drain(..).map(|line| self.numbered(&line)).collect();
@@ -487,8 +540,24 @@ impl Sending<'_> {
                 let _ = child.kill();
             }
             if ended {
-                return gone.map(|(why, _)| why);
+                return Followed {
+                    gone: gone.map(|(why, _)| why),
+                    stopped_by_operator: told_to_stop,
+                    held,
+                };
             }
+        }
+    }
+
+    /// Tell the control plane the workload is given back, and say so.
+    fn give_back(&mut self) {
+        let (client, claim) = (self.client, self.claim);
+        match self.deliver(|| client.release(&claim.id)) {
+            Delivered::Yes => println!("workload {}: stopped, given back", claim.id),
+            Delivered::Gone(why) => println!(
+                "workload {}: not given back, because {why}; its lease lapses",
+                claim.id
+            ),
         }
     }
 

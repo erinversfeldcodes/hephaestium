@@ -395,6 +395,81 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
   end
 
+  describe "a workload its operator stopped" do
+    test "is put back and claimed again, and the numbering goes on", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      StandInWorker.events(ctx.port, ctx.mine, id, beginning(id))
+
+      assert %{status: 200, body: %{"result" => "requeued"}} =
+               StandInWorker.release(ctx.port, ctx.mine, id)
+
+      assert Workloads.get(id).state == "queued"
+      assert lease(id).requeues == 1
+      refute lease(id).active
+      assert length(Events.list(id)) == 2, "what the stopped run said stays kept"
+
+      assert %{status: 200, body: %{"nextSequence" => 3}} =
+               StandInWorker.claim(ctx.port, ctx.mine)
+
+      assert Workloads.get(id).state == "preparing"
+
+      assert %{status: 200, body: %{"accepted" => 1}} =
+               StandInWorker.events(ctx.port, ctx.mine, id, [event(id, 3, started())])
+
+      assert Enum.map(Events.list(id), & &1.sequence) == [1, 2, 3]
+    end
+
+    test "after delivery began fails the workload", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      sent = beginning(id) ++ [event(id, 3, %{"deliveryBegan" => %{}})]
+      StandInWorker.events(ctx.port, ctx.mine, id, sent)
+
+      assert %{status: 200, body: %{"result" => "failed"}} =
+               StandInWorker.release(ctx.port, ctx.mine, id)
+
+      failed = Workloads.get(id)
+      assert failed.state == "failed"
+      assert failed.reason =~ "may have pushed"
+      assert %{status: 204} = StandInWorker.claim(ctx.port, ctx.mine)
+    end
+
+    test "that has been put back as often as the link allows is failed", ctx do
+      id = queued()
+
+      for _ <- 1..2 do
+        StandInWorker.claim(ctx.port, ctx.mine)
+        assert %{status: 200} = StandInWorker.release(ctx.port, ctx.mine, id)
+      end
+
+      StandInWorker.claim(ctx.port, ctx.mine)
+
+      assert %{status: 200, body: %{"result" => "failed"}} =
+               StandInWorker.release(ctx.port, ctx.mine, id)
+
+      assert Workloads.get(id).state == "failed"
+    end
+
+    test "is refused for a token that does not hold it", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      assert %{status: 409} = StandInWorker.release(ctx.port, ctx.theirs, id)
+      assert Workloads.get(id).state == "preparing"
+    end
+
+    test "is not given back when the control plane cancelled it: that ends cancelled", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      sent = beginning(id) ++ [event(id, 3, finished("OUTCOME_CANCELLED", "cancelled"))]
+      StandInWorker.events(ctx.port, ctx.mine, id, sent)
+      record = %{"workloadId" => id, "outcome" => "OUTCOME_CANCELLED"}
+      assert %{status: 200} = StandInWorker.record(ctx.port, ctx.mine, id, record)
+      assert Workloads.get(id).state == "cancelled"
+      assert %{status: 204} = StandInWorker.claim(ctx.port, ctx.mine)
+    end
+  end
+
   describe "a workload's way to an executor" do
     test "goes to its approver's worker only, and waits while that worker is not connected",
          ctx do

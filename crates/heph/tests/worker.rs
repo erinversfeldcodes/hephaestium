@@ -542,7 +542,7 @@ fn a_workload_the_control_plane_takes_back_stops_its_executor_at_once_and_the_wo
 }
 
 #[test]
-fn a_stop_during_a_run_stops_the_executor_sends_how_it_ended_and_exits() {
+fn a_stop_during_a_run_stops_the_executor_gives_the_workload_back_and_exits() {
     let rig = Rig::new("stop");
     let server = gives_once(FIRST, 1);
     let mut worker = rig.start(&server.address, &Executor::SaysItWasCancelled);
@@ -564,11 +564,22 @@ fn a_stop_during_a_run_stops_the_executor_sends_how_it_ended_and_exits() {
     assert!(status.success(), "{}", worker.output());
     let pid = rig.pid(FIRST).expect("a pid");
     assert!(!alive(&pid), "the executor outlived the worker");
-    // What the executor said when it was stopped was sent, in order, and so was its record.
-    assert_eq!(sequences(&server), ["1", "2"]);
-    let record = &server.to(&format!("/worker/workloads/{FIRST}/record"))[0];
-    let record: Value = serde_json::from_str(&record.body).expect("a record");
-    assert_eq!(record["outcome"], "OUTCOME_CANCELLED");
+    // What the executor said when it was stopped (that it was cancelled) is not sent, because
+    // the control plane would end the workload for good on it. The workload is given back.
+    assert_eq!(sequences(&server), ["1"], "the cancelled event was sent");
+    assert!(
+        server
+            .to(&format!("/worker/workloads/{FIRST}/record"))
+            .is_empty(),
+        "the cancelled record was sent on an operator's stop"
+    );
+    assert_eq!(
+        server
+            .to(&format!("/worker/workloads/{FIRST}/release"))
+            .len(),
+        1,
+        "the workload was not given back"
+    );
     assert_eq!(
         server.to("/worker/claim").len(),
         claims,
