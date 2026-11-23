@@ -59,8 +59,9 @@ h1 {
 }
 
 h2 {
-  font-size: 1.25rem;
+  font-size: 1.5rem;
   font-weight: 600;
+  margin-bottom: 1rem;
 }
 
 h3,
@@ -73,7 +74,11 @@ h4 {
 }
 
 section + section {
-  margin-top: 1rem;
+  margin-top: 1.75rem;
+}
+
+section > h3 {
+  margin-bottom: 0.75rem;
 }
 
 p {
@@ -87,6 +92,17 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+/* Text keeps the foreground colour; the accent appears when a link is pointed at. */
+td a,
+.column li > a {
+  color: var(--fg);
+}
+
+td a:hover,
+.column li > a:hover {
+  color: var(--accent-text);
 }
 
 a:focus-visible,
@@ -124,8 +140,17 @@ header nav {
   gap: 1rem;
 }
 
+header nav a {
+  color: var(--muted);
+}
+
+header nav a:hover {
+  color: var(--accent-text);
+}
+
 header nav a[aria-current="page"] {
   font-weight: 600;
+  color: var(--accent-text);
 }
 
 header > p {
@@ -172,6 +197,50 @@ label {
 
 label input {
   margin-left: 0.5rem;
+}
+
+/* A table keeps its text whole and scrolls sideways inside this container, never the page. */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+
+.table-scroll th,
+.table-scroll td {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.state {
+  white-space: nowrap;
+}
+
+.figure {
+  font-variant-numeric: tabular-nums;
+}
+
+dl.spend {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+dl.spend > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 24rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+dl.spend dt {
+  color: var(--muted);
+}
+
+dl.spend dd {
+  margin: 0;
+  text-align: right;
 }
 
 table {
@@ -342,12 +411,5 @@ pre {
 
   .columns {
     grid-template-columns: 1fr;
-  }
-
-  /* A wide table scrolls inside itself so the page never scrolls sideways. */
-  table {
-    display: block;
-    max-width: 100%;
-    overflow-x: auto;
   }
 }

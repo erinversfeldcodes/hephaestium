@@ -59,7 +59,8 @@ function Days({ client, repository }: { readonly client: Client; readonly reposi
         ) : (
           <>
             <p>{`${repository}, the last ${DAYS} days`}</p>
-            <table>
+            <div className="table-scroll">
+<table>
               <thead>
                 <tr>
                   <th>Day</th>
@@ -75,6 +76,7 @@ function Days({ client, repository }: { readonly client: Client; readonly reposi
                 ))}
               </tbody>
             </table>
+</div>
           </>
         )
       }

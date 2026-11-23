@@ -342,6 +342,16 @@ describe("the board", () => {
     );
   });
 
+  it("carries the state pill of the ticket's latest run, and waiting for one with no run", async () => {
+    const bare = { ...summary, number: 30, title: "No run yet", latest: null, workloads: 0 };
+    render(<BoardPage client={fakeClient({ tickets: async () => [...rows, bare] })} />);
+
+    const card = (name: string) => screen.getByRole("link", { name }).closest("li") as HTMLElement;
+    await screen.findByRole("link", { name: "Asked one" });
+    expect(card("Asked one").querySelector(".state")).toHaveAttribute("data-state", "blocked");
+    expect(card("No run yet").querySelector(".state")).toHaveAttribute("data-state", "waiting");
+  });
+
   it("shows approved tickets with no run in the waiting column with how long they waited, and a queued one that no worker has claimed", async () => {
     const since = new Date(Date.now() - 5 * 60_000).toISOString();
     const waitingRows = [

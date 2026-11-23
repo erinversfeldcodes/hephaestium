@@ -140,4 +140,14 @@ describe("the dashboard", () => {
     expect(window.location.pathname).toBe("/board");
     expect(await screen.findByRole("group", { name: "Working" })).toBeInTheDocument();
   });
+
+  it("marks the current page in the navigation", async () => {
+    const user = userEvent.setup();
+    render(<App client={fakeClient()} />);
+
+    await user.click(await screen.findByRole("link", { name: "Board" }));
+
+    expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Tickets" })).not.toHaveAttribute("aria-current");
+  });
 });

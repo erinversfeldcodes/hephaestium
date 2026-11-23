@@ -74,7 +74,8 @@ export function WorkersPage({
           rows.length === 0 ? (
             <p>You have no device tokens.</p>
           ) : (
-            <table>
+            <div className="table-scroll">
+<table>
               <thead>
                 <tr>
                   <th>Name</th>
@@ -102,6 +103,7 @@ export function WorkersPage({
                 ))}
               </tbody>
             </table>
+</div>
           )
         }
       </Shown>

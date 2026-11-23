@@ -6,7 +6,7 @@ type Navigate = (path: string) => void;
 export const NavigateContext = createContext<Navigate>((path) => window.location.assign(path));
 
 /** A link to a page of the dashboard that changes the page without loading it again. */
-export function Link({ to, children }: { readonly to: string; readonly children: ReactNode }) {
+export function Link({ to, children, current }: { readonly to: string; readonly children: ReactNode; readonly current?: boolean }) {
   const navigate = useContext(NavigateContext);
 
   function follow(event: MouseEvent<HTMLAnchorElement>) {
@@ -16,7 +16,7 @@ export function Link({ to, children }: { readonly to: string; readonly children:
   }
 
   return (
-    <a href={to} onClick={follow}>
+    <a href={to} onClick={follow} aria-current={current ? "page" : undefined}>
       {children}
     </a>
   );
