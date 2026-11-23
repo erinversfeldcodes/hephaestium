@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoute, spendPath, ticketPath } from "./route";
+import { parseRoute, runPath, spendPath, ticketPath } from "./route";
 
 describe("the dashboard's routes", () => {
   it("knows each page by its address", () => {
@@ -10,6 +10,7 @@ describe("the dashboard's routes", () => {
       number: 12,
     });
     expect(parseRoute("/board", "")).toEqual({ page: "board" });
+    expect(parseRoute("/runs/0d7a1c3e-6f2b", "")).toEqual({ page: "run", id: "0d7a1c3e-6f2b" });
     expect(parseRoute("/spend", "")).toEqual({ page: "spend", repository: null });
     expect(parseRoute("/spend", "?repository=erinversfeldcodes/gazebolang")).toEqual({
       page: "spend",
@@ -18,7 +19,7 @@ describe("the dashboard's routes", () => {
   });
 
   it("does not take an address that is no page for one", () => {
-    for (const path of ["/nope", "/board/x", "/tickets", "/tickets/a/b", "/tickets/a/b/x", "/tickets/a/b/0", "/tickets/a/b/1/2"]) {
+    for (const path of ["/nope", "/board/x", "/runs", "/runs/a/b", "/runs/a b", "/tickets", "/tickets/a/b", "/tickets/a/b/x", "/tickets/a/b/0", "/tickets/a/b/1/2"]) {
       expect(parseRoute(path, "")).toEqual({ page: "not-found" });
     }
   });
@@ -26,6 +27,7 @@ describe("the dashboard's routes", () => {
   it("writes the addresses it reads", () => {
     expect(ticketPath("o/r", 7)).toBe("/tickets/o/r/7");
     expect(parseRoute(ticketPath("o/r", 7), "")).toEqual({ page: "ticket", repository: "o/r", number: 7 });
+    expect(runPath("w-1")).toBe("/runs/w-1");
     expect(spendPath("o/r")).toBe("/spend?repository=o%2Fr");
     expect(parseRoute("/spend", new URL(`http://x${spendPath("o/r")}`).search)).toEqual({ page: "spend", repository: "o/r" });
     expect(spendPath(null)).toBe("/spend");

@@ -1,4 +1,4 @@
-import type { Client, Question, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
+import type { Client, Question, RunDetail, ReplyResult, SpendDay, TicketDetail, TicketSummary } from "./api";
 
 export const summary: TicketSummary = {
   repository: "erinversfeldcodes/gazebolang",
@@ -50,6 +50,16 @@ export const question: Question = {
   askedAt: "2026-11-20T11:00:00Z",
 };
 
+export const runDetail: RunDetail = {
+  id: "w-2",
+  repository: "erinversfeldcodes/gazebolang",
+  ticket: 12,
+  kind: "review",
+  state: "running",
+  startedAt: "2026-11-20T10:00:05Z",
+  finishedAt: null,
+};
+
 export const replied: ReplyResult = { commented: true, approved: true, error: null };
 
 export const days: SpendDay[] = [
@@ -66,6 +76,7 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     spendDays: async () => days,
     question: async () => null,
     questions: async () => [],
+    workload: async () => runDetail,
     reply: async () => replied,
     ...overrides,
   };
