@@ -44,9 +44,19 @@ case "$1 $2" in
       prev=$word
     done
     case "$2" in
-      list) cat "$FIXTURES/ips-$app.txt" 2>/dev/null || true ;;
-      allocate-v4) echo "v4 66.241.124.36 shared global now" >>"$FIXTURES/ips-$app.txt" ;;
-      allocate-v6) echo "v6 2a09:8280:1::1:0 public global now" >>"$FIXTURES/ips-$app.txt" ;;
+      # Answers as the real command does with --json: a shared IPv4 is typed "shared_v4".
+      list)
+        printf '['
+        sep=""
+        while read -r kind address _; do
+          [[ $kind == v4 ]] && kind=shared_v4
+          printf '%s{"Address":"%s","Type":"%s"}' "$sep" "$address" "$kind"
+          sep=","
+        done <"$FIXTURES/ips-$app.txt" 2>/dev/null
+        printf ']\n'
+        ;;
+      allocate-v4) echo "v4 66.241.124.36" >>"$FIXTURES/ips-$app.txt" ;;
+      allocate-v6) echo "v6 2a09:8280:1::1:0" >>"$FIXTURES/ips-$app.txt" ;;
     esac
     ;;
   *) : ;;
@@ -186,10 +196,12 @@ deploy_line=$(grep -n "^fly deploy" "$CALLS" | head -1 | cut -d: -f1)
 expect "an app with no address is given a shared IPv4 and an IPv6 before it is deployed" $?
 grep -q "^curl-args .*--resolve heph-cp-pr-feat-x.fly.dev:443:66.241.124.36 .*/api/session" "$CALLS"
 expect "the check reaches the app through its allocated address, not through a DNS entry that may lag" $?
+! grep "^fly ips list" "$CALLS" | grep -qv -- "--json"
+expect "addresses are read from the JSON listing, whose shape does not depend on how the table is drawn" $?
 
 reset
 echo heph-cp-pr-feat-x >>"$FIXTURES/apps-existing"
-printf 'VERSION IP TYPE REGION CREATED AT\nv4 66.241.124.36 shared global now\nv6 2a09:8280:1::1:0 public global now\n' >"$FIXTURES/ips-heph-cp-pr-feat-x.txt"
+printf 'v4 66.241.124.36\nv6 2a09:8280:1::1:0\n' >"$FIXTURES/ips-heph-cp-pr-feat-x.txt"
 run deploy-control-plane.sh preview --branch feat/x
 [[ $status -eq 0 ]] && ! grep -q "ips allocate" "$CALLS"
 expect "an app that already has both addresses is given no more" $?

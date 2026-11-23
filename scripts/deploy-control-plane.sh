@@ -160,11 +160,23 @@ echo "    secrets set: $(printf '%s\n' "${secrets[@]}" | cut -d= -f1 | tr '\n' '
 # A new app has no public address until one is allocated, and a deploy allocates one only the first
 # time it runs and only if the config then has a service. An address is asked for here, once each,
 # so the result does not depend on what an earlier deploy found.
-addresses=$(fly ips list --app "$app" 2>/dev/null || true)
-awk '$1 == "v4" { found = 1 } END { exit !found }' <<<"$addresses" ||
+# The JSON listing is read, not the table: the table is drawn differently by different versions of
+# the command and when it is piped, and its columns are not a contract.
+addresses=$(fly ips list --app "$app" --json 2>/dev/null || echo '[]')
+# address_of <type>...: the first address of any of these types, or nothing.
+address_of() {
+  python3 -I -c 'import json, sys
+for entry in json.load(sys.stdin):
+    if entry.get("Type") in sys.argv[1:]:
+        print(entry.get("Address", ""))
+        break' "$@" <<<"$addresses"
+}
+[[ -n $(address_of v4 shared_v4) ]] ||
   fly ips allocate-v4 --shared --app "$app" --yes >/dev/null || die "could not allocate an IPv4 address for ${app}"
-awk '$1 == "v6" { found = 1 } END { exit !found }' <<<"$addresses" ||
+[[ -n $(address_of v6) ]] ||
   fly ips allocate-v6 --app "$app" >/dev/null || die "could not allocate an IPv6 address for ${app}"
+addresses=$(fly ips list --app "$app" --json 2>/dev/null || echo '[]')
+v4=$(address_of v4 shared_v4)
 
 echo "==> deploying ${app}"
 (cd "$root" && fly deploy --config control-plane/fly.toml --app "$app" --ha=false --yes \
@@ -177,7 +189,6 @@ echo "==> checking ${base_url}"
 # resolve than the check is willing to wait, and the name is Fly's to serve, not this script's.
 host=${base_url#https://}
 host=${host%%/*}
-v4=$(fly ips list --app "$app" 2>/dev/null | awk '$1 == "v4" { print $2; exit }')
 resolve=()
 [[ -z $v4 ]] || resolve=(--resolve "${host}:443:${v4}")
 attempt=0
