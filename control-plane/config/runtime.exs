@@ -29,6 +29,27 @@ whole_number = fn name, range ->
   end
 end
 
+# How much is logged. A release logs at info: at debug Ecto writes every query, with its
+# parameters (ticket text among them), to the platform's logs (#292). Raised to debug the queries
+# are logged again, so it can be done to find a fault without a rebuild. Development and tests
+# keep the level their own configuration gives unless this is set.
+log_level =
+  case System.get_env("HEPH_LOG_LEVEL") do
+    value when value in [nil, ""] ->
+      if config_env() == :prod, do: :info, else: nil
+
+    value when value in ["debug", "info", "warning", "error"] ->
+      String.to_atom(value)
+
+    value ->
+      raise "HEPH_LOG_LEVEL must be debug, info, warning or error, not #{inspect(value)}"
+  end
+
+if log_level, do: config(:logger, level: log_level)
+
+# A query is logged at debug, which a release's level does not reach.
+if config_env() == :prod, do: config(:control_plane, ControlPlane.Repo, log: :debug)
+
 # Over TLS, checking the server's certificate against the system's roots and its name against the
 # host connected to. A hosted database requires it, and a connection that does not check would
 # accept anyone's certificate.
