@@ -739,7 +739,7 @@ defmodule ControlPlane.Settle do
     lines =
       for {w, index} <- Enum.with_index(Workloads.chain(workload)), index > 0 do
         what = if w.reason in [nil, ""], do: w.state, else: "#{w.state}: #{w.reason}"
-        "- revision #{index}: #{what}\n\n" <> Account.section(w.id)
+        "- revision #{index}: #{what}\n\n" <> Account.public_section(w)
       end
 
     {:failed, names,

@@ -1,9 +1,67 @@
-import type { Client } from "../api";
+import { useState } from "react";
+import type { AgentText, Client, Run } from "../api";
 import { amount, amounts, when } from "../format";
 import { Link } from "../Link";
 import { runPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
 import { QuestionPanel } from "./QuestionPanel";
+
+type Words =
+  | { readonly kind: "closed" }
+  | { readonly kind: "loading" }
+  | { readonly kind: "failed" }
+  | { readonly kind: "read"; readonly text: AgentText };
+
+/** One run's words, which are read from the control plane only when a person asks. */
+function RunWords({ client, run }: { readonly client: Client; readonly run: Run }) {
+  const [words, setWords] = useState<Words>({ kind: "closed" });
+
+  function read() {
+    setWords({ kind: "loading" });
+    client.agentText(run.id).then(
+      (text) => setWords({ kind: "read", text }),
+      () => setWords({ kind: "failed" }),
+    );
+  }
+
+  return (
+    <div role="group" id={`run-${run.id}`} aria-label={`${run.kind} run ${run.id}`}>
+      <h4>
+        {run.kind} <small>{when(run.createdAt)}</small>
+      </h4>
+      {words.kind === "closed" && (
+        <button type="button" onClick={read}>
+          Read what the agent said
+        </button>
+      )}
+      {words.kind === "loading" && <p>Loading</p>}
+      {words.kind === "failed" && <p role="alert">What the agent said could not be read.</p>}
+      {words.kind === "read" && <Said text={words.text} />}
+    </div>
+  );
+}
+
+function Said({ text }: { readonly text: AgentText }) {
+  if (text.account === null && text.question === null) {
+    return <p>The agent said nothing in this run.</p>;
+  }
+  return (
+    <>
+      {text.question !== null && (
+        <>
+          <h5>The agent's question</h5>
+          <pre className="agent-text">{text.question}</pre>
+        </>
+      )}
+      {text.account !== null && (
+        <>
+          <h5>The agent's account</h5>
+          <pre className="agent-text">{text.account}</pre>
+        </>
+      )}
+    </>
+  );
+}
 
 export function TicketDetailPage({
   client,
@@ -62,6 +120,13 @@ export function TicketDetailPage({
                   ))}
                 </tbody>
               </table>
+            </section>
+
+            <section aria-labelledby="words-heading">
+              <h3 id="words-heading">What the agent said</h3>
+              {detail.workloads.map((run) => (
+                <RunWords key={run.id} client={client} run={run} />
+              ))}
             </section>
 
             <section aria-labelledby="spend-heading">

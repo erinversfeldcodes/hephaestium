@@ -78,6 +78,7 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     questions: async () => [],
     workload: async () => runDetail,
     reply: async () => replied,
+    agentText: async () => ({ account: null, question: null }),
     ...overrides,
   };
 }

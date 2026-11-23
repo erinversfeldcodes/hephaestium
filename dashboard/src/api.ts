@@ -5,7 +5,8 @@
 //
 // What the API answers is checked as it is read: a body that is not the shape promised is an
 // error, never a half-built value for a page to trip over. A workload's `reason` is not read
-// at all, since it can carry what an agent said, which the dashboard does not show yet.
+// at all, since it can carry what an agent said. What an agent said is read from its own route,
+// and only when a person asks for it.
 
 export class ApiError extends Error {
   readonly status: number;
@@ -97,6 +98,12 @@ export interface ReplyResult {
   readonly error: string | null;
 }
 
+/** What an agent wrote in one run: its last message, and the question it stopped to ask. */
+export interface AgentText {
+  readonly account: string | null;
+  readonly question: string | null;
+}
+
 export interface Client {
   /** Who is signed in, or null when nobody is. Any other failure raises. */
   session(): Promise<Session | null>;
@@ -114,6 +121,8 @@ export interface Client {
   questions(): Promise<readonly Question[]>;
   /** Answer a ticket's question as the signed-in person. Never raises for a refusal. */
   reply(repository: string, number: number, body: string): Promise<ReplyResult>;
+  /** What the agent said in one run. It is asked for only when a person asks to read it. */
+  agentText(workloadId: string): Promise<AgentText>;
 }
 
 type Fetcher = typeof fetch;
@@ -178,6 +187,9 @@ export function createClient(fetcher: Fetcher = (...args) => fetch(...args)): Cl
       });
       return parseReply(response);
     },
+
+    agentText: (workloadId) =>
+      read(`/api/workloads/${encodeURIComponent(workloadId)}/account`, parseAgentText),
   };
 
   async function csrfToken(): Promise<string | null> {
@@ -329,6 +341,11 @@ function parseQuestions(body: unknown): readonly Question[] {
       askedAt: maybeText(row["asked_at"]),
     };
   });
+}
+
+function parseAgentText(body: unknown): AgentText {
+  const text_ = fields(body);
+  return { account: maybeText(text_["account"]), question: maybeText(text_["question"]) };
 }
 
 function parseDays(body: unknown): readonly SpendDay[] {

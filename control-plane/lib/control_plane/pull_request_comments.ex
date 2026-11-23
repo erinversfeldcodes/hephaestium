@@ -192,7 +192,7 @@ defmodule ControlPlane.PullRequestComments do
 
     [
       "**Hephaestium, revision #{attempt}:** #{ended_as(workload)}",
-      Account.section(workload.id)
+      Account.public_section(workload)
     ]
     |> Enum.join("\n\n")
   end

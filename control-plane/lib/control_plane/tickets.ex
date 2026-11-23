@@ -16,6 +16,7 @@ defmodule ControlPlane.Tickets do
     Account,
     Amounts,
     CompletenessComment,
+    Dashboard,
     Evaluations,
     Gaps,
     Tracker,
@@ -390,7 +391,7 @@ defmodule ControlPlane.Tickets do
     [
       "**Hephaestium:** #{headline(workload.state, revision?(workload))}",
       reason(workload),
-      question(workload.state, record),
+      question(workload.state, workload, record),
       account(workload),
       pull_request(record),
       cost_section(record),
@@ -422,8 +423,14 @@ defmodule ControlPlane.Tickets do
   # who approved the ticket needs to act on. A first run that completed has its account on its
   # pull request. A run that stopped to ask has its question instead, quoted as data as the
   # account is, because the agent wrote it.
+  #
+  # What an agent wrote is public once it is on a ticket, so when the dashboard's address is
+  # configured the ticket points to the run there instead, and the words are read behind the
+  # login. With no address there is nothing to point to and the words stay on the ticket.
   defp account(%Workload{state: state} = workload) when state != "blocked" do
-    if revision?(workload) or state != "completed", do: Account.section(workload.id)
+    if revision?(workload) or state != "completed" do
+      Account.public_section(workload)
+    end
   end
 
   defp account(_workload), do: nil
@@ -431,17 +438,23 @@ defmodule ControlPlane.Tickets do
   defp reason(%{reason: reason}) when reason not in [nil, ""], do: "Why: #{reason}"
   defp reason(_), do: nil
 
-  defp question("blocked", record) do
+  defp question("blocked", workload, record) do
     case record["question"] do
       question when question not in [nil, ""] ->
-        "A question for you:\n\n#{Account.block(question)}\n\nAnswer it here and apply `#{@ready}` again to start a new workload."
+        case Dashboard.run_link(workload) do
+          nil ->
+            "A question for you:\n\n#{Account.block(question)}\n\nAnswer it here and apply `#{@ready}` again to start a new workload."
+
+          link ->
+            "The agent has a question for you. Read it, signed in, on the dashboard: #{link}\n\nThen apply `#{@ready}` again to start a new workload."
+        end
 
       _ ->
         "Apply `#{@ready}` again to start a new workload."
     end
   end
 
-  defp question(_, _), do: nil
+  defp question(_, _, _), do: nil
 
   defp pull_request(%{"pullRequest" => %{"url" => url}}) when is_binary(url),
     do: "Pull request: #{url}"
