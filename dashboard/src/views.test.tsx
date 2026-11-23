@@ -308,3 +308,11 @@ describe("the board", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("could not be read");
   });
 });
+
+describe("a ticket's runs", () => {
+  it("each open the run's own page", async () => {
+    render(<TicketDetailPage client={fakeClient()} repository="erinversfeldcodes/gazebolang" number={12} />);
+
+    expect(await screen.findByRole("link", { name: "implementation" })).toHaveAttribute("href", "/runs/w-1");
+  });
+});
