@@ -144,9 +144,12 @@ fn a_review_delivers_nothing_and_runs_no_gate() {
     assert!(!names.contains(&"gate_started"), "{names:?}");
     assert!(!names.contains(&"pull_request_opened"), "{names:?}");
     assert_eq!(finished(&events).0, Outcome::Completed);
+    // The one thing gh is asked is the pull request's description, which a review reads.
+    let asked = std::fs::read_to_string(ran.scratch.path("seen/gh-args.txt")).unwrap_or_default();
+    assert!(asked.starts_with("pr\nview\n"), "gh was asked: {asked}");
     assert!(
-        !ran.scratch.path("seen/gh-args.txt").exists(),
-        "gh was called"
+        !asked.contains("create") && !asked.contains("edit"),
+        "{asked}"
     );
     assert_eq!(git(&source, &["rev-parse", "main"]), main_before);
     assert_eq!(git(&source, &["rev-parse", BRANCH]), branch_before);
@@ -395,4 +398,166 @@ fn a_lens_that_tries_to_end_its_fence_stays_inside_it() {
         prompt[inside..].lines().any(|line| line == fence),
         "the same fence closes it: {prompt}"
     );
+}
+
+/// The prompt a review is given when the workspace it reads holds `description` as
+/// the implementer's `.heph-description.md`, or none. Each call has a workspace of its
+/// own, because the tests run in parallel in one process.
+fn prompt_with_description(description: Option<&str>) -> String {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let workspace = std::env::temp_dir().join(format!(
+        "heph-review-description-{}-{}",
+        std::process::id(),
+        CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    if let Some(text) = description {
+        std::fs::write(workspace.join(".heph-description.md"), text).expect("a description");
+    }
+    let workload: Workload =
+        serde_json::from_value(review_of("0123456789abcdef0123456789abcdef01234567"))
+            .expect("a workload");
+    let plan = ClaudeCode.plan(&workload, &workspace);
+    let _ = std::fs::remove_dir_all(&workspace);
+    let at = plan
+        .command
+        .iter()
+        .position(|word| word == "-p")
+        .expect("-p");
+    plan.command[at + 1].clone()
+}
+
+const ACCOUNT: &str = "## What this changes\n\nA reset that waits. Shown by `the_reset_waits`: failed with `timed out`, then passed.";
+
+#[test]
+fn a_lens_is_given_the_implementers_description_labelled_as_their_account() {
+    let prompt = prompt_with_description(Some(ACCOUNT));
+
+    assert!(prompt.contains("the_reset_waits"), "{prompt}");
+    assert!(prompt.contains("failed with `timed out`"), "{prompt}");
+    assert!(prompt.contains("implementer's account"), "{prompt}");
+    assert!(prompt.contains("not evidence"), "{prompt}");
+}
+
+#[test]
+fn a_review_with_no_description_is_given_no_account() {
+    let prompt = prompt_with_description(None);
+
+    assert!(!prompt.contains("implementer's account"), "{prompt}");
+}
+
+/// A `gh` that serves `body` as the pull request's description, and fails when `exit` is
+/// not 0.
+fn gh_serving(rig: &Rig, body: &str, exit: i32) -> std::path::PathBuf {
+    rig.scratch.write("served-body.md", body);
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > {seen}/gh-view-args.txt\n[ {exit} -eq 0 ] || {{ echo 'no such pull request' >&2; exit {exit}; }}\ncat {body}\n",
+        seen = rig.scratch.path("seen").display(),
+        body = rig.scratch.path("served-body.md").display(),
+    );
+    std::fs::create_dir_all(rig.scratch.path("seen")).expect("a directory");
+    let gh = rig.scratch.path("view-gh");
+    std::fs::write(&gh, script).expect("a script");
+    std::fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("to chmod");
+    gh
+}
+
+fn review_with_gh(rig: Rig, gh: &Path, value: &Value, script: &str) -> common::Ran {
+    let arguments = [
+        "--agent-command".to_owned(),
+        json!(["sh", "-c", script]).to_string(),
+        "--gh".to_owned(),
+        gh.display().to_string(),
+        "--deliver".to_owned(),
+    ];
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    run_with_env(rig.scratch, value, None, &refs, &IDENTITY)
+}
+
+const CLAIM: &str = "## What this changes\n\nA reset that waits. Shown by `the_reset_waits`.\n";
+
+/// A stand-in lens: it keeps what it was given, and blocks a change whose description names
+/// a test the diff does not contain.
+fn stand_in_lens(rig: &Rig, head: &str) -> String {
+    let seen = rig.scratch.path("seen");
+    let blocking = json!({
+        "schema_version": 0, "lens": "rust", "commit": head, "verdict": "needs_revision",
+        "findings": [{
+            "severity": "P1", "blocking": true,
+            "title": "A claimed test is not in the diff",
+            "evidence": "the description names the_reset_waits and the diff holds no such test",
+            "revision": "Add the_reset_waits or take the claim out."
+        }]
+    });
+    let approved = verdict(head);
+    format!(
+        "cp .heph-description.md {seen}/lens-description.md; git diff origin/main...HEAD > {seen}/lens-diff.txt; \
+         if grep -q the_reset_waits .heph-description.md && ! grep -q the_reset_waits {seen}/lens-diff.txt; \
+         then printf '%s' '{blocking}' > .heph-verdict.json; else printf '%s' '{approved}' > .heph-verdict.json; fi; echo '{done}'",
+        seen = seen.display(),
+        done = json!({"agentMessage": {"text": "reviewed"}}),
+    )
+}
+
+#[test]
+fn a_review_of_a_pushed_commit_is_given_the_description_read_from_its_pull_request() {
+    let (rig, head) = rig_with_change("review-description-read", &manifest(&[]));
+    let gh = gh_serving(&rig, CLAIM, 0);
+    let script = stand_in_lens(&rig, &head);
+    let seen = rig.scratch.path("seen");
+
+    let ran = review_with_gh(rig, &gh, &review_of(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    let given =
+        std::fs::read_to_string(seen.join("lens-description.md")).expect("the lens read it");
+    assert!(given.contains("the_reset_waits"), "{given}");
+    let asked = std::fs::read_to_string(seen.join("gh-view-args.txt")).expect("gh was asked");
+    assert!(
+        asked.contains(PULL),
+        "the pull request is the one under review: {asked}"
+    );
+}
+
+#[test]
+fn a_description_that_claims_a_test_the_diff_lacks_is_found_by_the_lens() {
+    let (rig, head) = rig_with_change("review-description-claim", &manifest(&[]));
+    let gh = gh_serving(&rig, CLAIM, 0);
+    let script = stand_in_lens(&rig, &head);
+    let seen = rig.scratch.path("seen");
+
+    let ran = review_with_gh(rig, &gh, &review_of(&head), &script);
+
+    let diff = std::fs::read_to_string(seen.join("lens-diff.txt")).expect("the lens read the diff");
+    assert!(diff.contains("web/change.txt"), "{diff}");
+    assert!(!diff.contains("the_reset_waits"), "{diff}");
+    let kept = serde_json::to_value(ran.record().review.expect("a verdict")).expect("JSON");
+    assert_eq!(kept["verdict"], "needs_revision", "{kept}");
+    assert_eq!(kept["findings"][0]["blocking"], true, "{kept}");
+}
+
+#[test]
+fn without_the_description_the_same_lens_finds_nothing_to_flag() {
+    // The planted violation: leave the description out, and the claim is never seen, so the
+    // lens approves. This shows the finding above comes from the description being read.
+    let (rig, head) = rig_with_change("review-description-left-out", &manifest(&[]));
+    let gh = gh_serving(&rig, "No claim here.\n", 0);
+    let script = stand_in_lens(&rig, &head);
+
+    let ran = review_with_gh(rig, &gh, &review_of(&head), &script);
+
+    let kept = serde_json::to_value(ran.record().review.expect("a verdict")).expect("JSON");
+    assert_eq!(kept["verdict"], "approved", "{kept}");
+}
+
+#[test]
+fn a_review_whose_description_cannot_be_read_fails_and_says_why() {
+    let (rig, head) = rig_with_change("review-description-unreadable", &manifest(&[]));
+    let gh = gh_serving(&rig, CLAIM, 1);
+    let script = stand_in_lens(&rig, &head);
+
+    let ran = review_with_gh(rig, &gh, &review_of(&head), &script);
+
+    failed_because(&ran, &["could not read the pull request's description"]);
 }

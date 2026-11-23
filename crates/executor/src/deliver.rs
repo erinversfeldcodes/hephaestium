@@ -360,6 +360,33 @@ fn probe_branch(workload: &Workload) -> String {
     format!("heph/push-check-{}", workload.id)
 }
 
+/// The pull request's description, as the implementer wrote it, kept in the workspace where a
+/// review reads it: the file the implementer wrote is never committed, so a review's fresh
+/// clone does not hold it.
+///
+/// # Errors
+///
+/// Returns why the description could not be read or kept.
+pub fn fetch_description(
+    url: &str,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    tick: &mut Tick<'_>,
+) -> Result<(), String> {
+    let lines = run_ticking(
+        &[gh, "pr", "view", url, "--json", "body", "--jq", ".body"],
+        workspace,
+        token,
+        "could not read the pull request's description",
+        tick,
+    )?;
+    let mut text = lines.join("\n");
+    text.push('\n');
+    std::fs::write(workspace.join(DESCRIPTION_FILE), text)
+        .map_err(|e| format!("could not keep the pull request's description: {e}"))
+}
+
 /// Whether the token can push to the repository, found out before an agent starts and
 /// anything is spent. It does a dry-run push of the base commit to a throwaway branch name,
 /// the way and with the credential the real push will use. A dry run makes the host

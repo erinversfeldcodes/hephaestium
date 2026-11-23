@@ -15,6 +15,7 @@ use contracts::v1alpha1::{Review, Workload};
 use heph::process::{Ended, execute};
 use serde_json::Value;
 
+use crate::deliver::DESCRIPTION_FILE;
 use crate::run::say;
 
 /// Where the agent leaves its verdict, at the workspace root. The executor keeps
@@ -25,9 +26,11 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// What the agent is told for a review: what the change was for, which commit it
 /// is reading and against what, the lens, and where to put the verdict and what
-/// that must be.
+/// that must be. When the implementer left a description, it is given as their
+/// account of the change: proof they say they showed lives there and not in the
+/// diff, but it is not evidence by itself.
 #[must_use]
-pub fn prompt(workload: &Workload, review: &Review) -> String {
+pub fn prompt(workload: &Workload, review: &Review, description: Option<&str>) -> String {
     let ticket = workload.ticket.clone().unwrap_or_default();
     let repository = workload.repository.clone().unwrap_or_default();
     let lens_fence = fence_for(&review.lens_document);
@@ -55,8 +58,18 @@ pub fn prompt(workload: &Workload, review: &Review) -> String {
             "the pull request",
         )
     };
+    let account = description
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            let fence = fence_for(text);
+            format!(
+                "The implementer's account of the change follows, as they wrote it in {DESCRIPTION_FILE}. It is their claim and not evidence: it is not part of the diff, and a claim in it that the diff and the files do not support is itself a finding. Use it to find where to look, and to see what they say they showed.\n\n{fence}\n{text}\n{fence}\n\n"
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "{opening}\n\nThe working tree is at commit {commit}, the commit under review. Read what {subject} changes with `git diff origin/{base}...HEAD`, and read the files around it as you need to.\n\nYou review under one lens, `{lens}`. The lens says what to look for; judge the change by it and by nothing else, and say only what you can point to.\n\n{lens_fence}\n{lens_text}\n{lens_fence}\n\nDo not change any file, do not commit and do not push: a review reads. When you have finished, write your verdict as JSON to `{file}` in the current directory. It must name commit `{commit}` and lens `{lens}`, and must satisfy this JSON Schema, including its rules (an approval holds no blocking finding, and every blocking finding says what to revise):\n\n{schema_fence}\n{schema}\n{schema_fence}\n\nThen say in one short paragraph what you found.",
+        "{opening}\n\n{account}The working tree is at commit {commit}, the commit under review. Read what {subject} changes with `git diff origin/{base}...HEAD`, and read the files around it as you need to.\n\nYou review under one lens, `{lens}`. The lens says what to look for; judge the change by it and by nothing else, and say only what you can point to.\n\n{lens_fence}\n{lens_text}\n{lens_fence}\n\nDo not change any file, do not commit and do not push: a review reads. When you have finished, write your verdict as JSON to `{file}` in the current directory. It must name commit `{commit}` and lens `{lens}`, and must satisfy this JSON Schema, including its rules (an approval holds no blocking finding, and every blocking finding says what to revise):\n\n{schema_fence}\n{schema}\n{schema_fence}\n\nThen say in one short paragraph what you found.",
         commit = repository.base_commit,
         base = repository.base_branch,
         lens = review.lens,
