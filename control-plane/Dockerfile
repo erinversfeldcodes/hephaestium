@@ -35,6 +35,34 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked -p heph \
     && cp target/release/heph /heph
 
+# `gh` is GitHub's own release, not Debian's package: the control plane runs `gh api --paginate
+# --slurp`, which came in gh 2.48.0 and which the Debian release's gh (2.46) lacks. The release
+# tarball is checked against the sha256 in the release's `gh_<version>_checksums.txt`
+# (https://github.com/cli/cli/releases), so the build fails if what is downloaded is not what
+# was pinned. When raising GH_VERSION, take both hashes from that file, and keep the minimum in
+# image-test/check.sh at or below it. Dependabot cannot track a release binary named in an ARG,
+# so this is raised by hand. Only the binary leaves this stage, so the image stays small, and
+# the stage is rebuilt only when these ARGs or the base image change.
+FROM ${RUNNER} AS gh
+ARG TARGETARCH
+ARG GH_VERSION=2.105.0
+ARG GH_SHA256_AMD64=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
+ARG GH_SHA256_ARM64=b1278c75107423d818f1937fd92cafc9e5e9b606631568f68d7fb816f5885a02
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) arch=amd64; sha=${GH_SHA256_AMD64} ;; \
+      arm64) arch=arm64; sha=${GH_SHA256_ARM64} ;; \
+      *) echo "no pinned gh for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    name=gh_${GH_VERSION}_linux_${arch}; \
+    curl -fsSL -o /gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${name}.tar.gz"; \
+    echo "${sha}  /gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /gh.tar.gz -C / "${name}/bin/gh"; \
+    mv "/${name}/bin/gh" /gh
+
 FROM ${BUILDER} AS build
 
 RUN apt-get update \
@@ -60,19 +88,20 @@ RUN mix release
 FROM ${RUNNER}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates gh \
+    && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 ENV LANG=C.UTF-8
 WORKDIR /app
 
 # `gh` is how the control plane reads and writes GitHub (it takes GH_TOKEN from the environment),
-# and how a person's reply is made as them. The package is Debian's, at the release's version.
+# and how a person's reply is made as them. It is the pinned release from the `gh` stage above.
 
 # Not root: nothing the control plane does needs it.
 RUN useradd --system --home /app --shell /usr/sbin/nologin heph
 COPY --from=build --chown=heph:heph /app/_build/prod/rel/control_plane ./
 COPY --from=heph /heph /usr/local/bin/heph
+COPY --from=gh /gh /usr/local/bin/gh
 COPY --from=dashboard --chown=heph:heph /dashboard/dist /app/dashboard
 USER heph
 
