@@ -296,6 +296,7 @@ the app, the Neon project and the secrets is done by hand once, and is not part 
 | `HEPH_MIGRATION_DATABASE_URL` | The database as the migrate command connects to it, if it is not `DATABASE_URL`: Neon's direct connection, because a migration holds an advisory lock for its whole run and the pooler does not keep a session. |
 | `HEPH_DB_SSL` | `true` connects over TLS, verifying the server's certificate against the system's roots and its hostname. Neon requires TLS. |
 | `HEPH_DB_POOL_SIZE` | The size of the connection pool (10 if not set). |
+| `HEPH_LOG_LEVEL` | `debug`, `info`, `warning` or `error`. A release logs at `info` if not set, which leaves out every SQL query (they are logged at `debug`, with their parameters); development and tests keep their own level. Raise it to `debug` to find a fault, no rebuild. |
 | `HEPH_OBAN_NOTIFIER` | `pg` or `postgres` (the default); see below. |
 | `HEPH_HEALTH_PORT` | Starts the health listener on this port. Off if not set. |
 | `HEPH_REVIEW_APP_ID`, `HEPH_REVIEW_APP_KEY` | The review App, with its private key held in the variable itself, for a platform whose secrets are variables. `HEPH_REVIEW_APP_KEY_FILE` (a path) still works and is what the laptop uses; if both are set the variable is used. |
