@@ -208,6 +208,28 @@ defmodule ControlPlane.WebhookReceiverTest do
     assert post(W.delivery("issues", W.labeled(), secret: "the-rotated-secret")).status == 202
   end
 
+  describe "with the secret in a variable" do
+    setup do
+      System.put_env("HEPH_WEBHOOK_SECRET_TEST", W.secret())
+      Application.put_env(:control_plane, :webhooks, secret_variable: "HEPH_WEBHOOK_SECRET_TEST")
+      on_exit(fn -> System.delete_env("HEPH_WEBHOOK_SECRET_TEST") end)
+    end
+
+    test "a good signature is accepted and a wrong one is refused" do
+      assert post(W.delivery("issues", W.labeled())).status == 202
+      assert post(W.delivery("issues", W.labeled(), secret: "another")).status == 401
+    end
+
+    test "a variable that is gone or empty is 503 and nothing is accepted" do
+      System.put_env("HEPH_WEBHOOK_SECRET_TEST", "")
+      assert post(W.delivery("issues", W.labeled())).status == 503
+
+      System.delete_env("HEPH_WEBHOOK_SECRET_TEST")
+      assert post(W.delivery("issues", W.labeled())).status == 503
+      assert deliveries() == 0
+    end
+  end
+
   describe "when webhooks are off" do
     setup do
       Application.delete_env(:control_plane, :webhooks)

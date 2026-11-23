@@ -272,6 +272,27 @@ describe("the API client", () => {
     });
   });
 
+  describe("what an agent said in a run", () => {
+    it("reads the account and the question from the run's own route", async () => {
+      const fetcher = respond(200, { workload: "w-1", account: "It is in a.ex.", question: "Which one?" });
+      const client = createClient(fetcher);
+
+      expect(await client.agentText("w-1")).toEqual({ account: "It is in a.ex.", question: "Which one?" });
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/workloads/w-1/account");
+    });
+
+    it("has neither when the run said nothing and asked nothing", async () => {
+      const client = createClient(respond(200, { workload: "w-1", account: null, question: null }));
+
+      expect(await client.agentText("w-1")).toEqual({ account: null, question: null });
+    });
+
+    it("raises on 401 and on a shape not promised", async () => {
+      await expect(createClient(respond(401, {})).agentText("w-1")).rejects.toMatchObject({ status: 401 });
+      await expect(createClient(respond(200, { account: 7 })).agentText("w-1")).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
   describe("spend by day", () => {
     it("reads the days for a repository, with the repository and the days in the request", async () => {
       const fetcher = respond(200, { days: [{ day: "2026-11-20", totals: { usd: 1, tokens: 5 } }] });
@@ -286,6 +307,47 @@ describe("the API client", () => {
       const fetcher = respond(200, { days: [{ day: "2026-11-20", totals: { usd: "1" } }] });
 
       await expect(createClient(fetcher).spendDays("o/r", 14)).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
+  describe("a workload", () => {
+    const body = {
+      id: "w-2",
+      repository: "o/r",
+      ticket_number: 12,
+      kind: "review",
+      state: "running",
+      reason: "the agent's own words, which are not read here",
+      parent_id: null,
+      approved_by: "octocat",
+      started_at: "2026-11-20T10:00:05Z",
+      finished_at: null,
+      settled_at: null,
+      created_at: "2026-11-20T10:00:00Z",
+    };
+
+    it("is read without its reason, so what an agent said cannot reach a page by this route", async () => {
+      const fetcher = respond(200, body);
+
+      const run = await createClient(fetcher).workload("w-2");
+
+      expect(run).toEqual({
+        id: "w-2",
+        repository: "o/r",
+        ticket: 12,
+        kind: "review",
+        state: "running",
+        startedAt: "2026-11-20T10:00:05Z",
+        finishedAt: null,
+      });
+      expect(JSON.stringify(run)).not.toContain("own words");
+      expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/workloads/w-2");
+      expect(vi.mocked(fetcher).mock.calls[0]?.[1]?.method).toBe("GET");
+    });
+
+    it("is null when there is none, and raises on a body that is not the shape promised", async () => {
+      expect(await createClient(respond(404, {})).workload("nope")).toBeNull();
+      await expect(createClient(respond(200, { ...body, state: 3 })).workload("w-2")).rejects.toBeInstanceOf(ApiError);
     });
   });
 });

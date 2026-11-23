@@ -1,0 +1,10 @@
+#!/bin/sh
+# A stand-in for `gh api ENDPOINT` that answers what `heph workload` reads for ticket 7 of
+# example/repo. The image check puts it first on the PATH, so no network or token is used.
+[ "$1" = api ] || { echo "stand-in gh: unexpected arguments: $*" >&2; exit 1; }
+case "$2" in
+  repos/example/repo) echo '{"default_branch":"main"}' ;;
+  repos/example/repo/commits/main) echo '{"sha":"0123456789abcdef0123456789abcdef01234567"}' ;;
+  repos/example/repo/issues/7) echo '{"state":"open","number":7,"title":"A fixture ticket","body":"Do the thing.","html_url":"https://github.com/example/repo/issues/7"}' ;;
+  *) echo "stand-in gh: unexpected endpoint: $2" >&2; exit 1 ;;
+esac

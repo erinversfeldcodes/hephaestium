@@ -82,6 +82,24 @@ if port = whole_number.("HEPH_API_PORT", 1..65535) do
       |> Enum.map(&String.trim/1)
 end
 
+# Where a person reads what an agent wrote, signed in. Both repositories are public, so when this is
+# set the ticket and the pull request carry a link to the run here instead of the agent's words;
+# when it is not, they carry the words as they always did. It is a setting of its own, not the
+# API's base URL, because a laptop sets that for the login and has nowhere public to point.
+case System.get_env("HEPH_DASHBOARD_URL", "") do
+  "" ->
+    :ok
+
+  value ->
+    uri = URI.parse(String.trim(value))
+
+    if uri.scheme not in ["http", "https"] or uri.host in [nil, ""] do
+      raise "HEPH_DASHBOARD_URL must be an http or https address, such as https://heph.example"
+    end
+
+    config :control_plane, :dashboard, url: String.trim(value)
+end
+
 # Executors on developers' machines run the workloads, over the API, instead of this process
 # starting one. Off unless `workers` is named. It needs the API, which is where executors
 # connect, so it is refused without one.
@@ -114,15 +132,28 @@ case System.get_env("HEPH_EXECUTOR_LINK") do
     raise "HEPH_EXECUTOR_LINK must be local or workers, not #{inspect(value)}"
 end
 
-# A code host's webhooks, on the API's listener. Off unless a file holding the secret is named;
-# the secret is read from that file when a delivery arrives, so it is never in this process's
-# configuration. It needs the API, which is where the route is.
-if (file = System.get_env("HEPH_WEBHOOK_SECRET_FILE", "")) != "" do
+# A code host's webhooks, on the API's listener. Off unless the secret is named, as a file that
+# holds it (a laptop's, or a platform that mounts secrets) or as a variable (Fly keeps secrets
+# as variables). Either is read when a delivery arrives, so the secret is never in this
+# process's configuration, only where to read it from. It needs the API, which is where the
+# route is.
+webhook_file = System.get_env("HEPH_WEBHOOK_SECRET_FILE", "")
+webhook_variable = System.get_env("HEPH_WEBHOOK_SECRET", "")
+
+if webhook_file != "" or webhook_variable != "" do
   if System.get_env("HEPH_API_PORT", "") == "" do
-    raise "HEPH_WEBHOOK_SECRET_FILE needs HEPH_API_PORT: webhooks arrive through the API"
+    raise "HEPH_WEBHOOK_SECRET_FILE or HEPH_WEBHOOK_SECRET needs HEPH_API_PORT: webhooks arrive through the API"
   end
 
-  config :control_plane, :webhooks, secret_file: Path.expand(file)
+  if webhook_file != "" and webhook_variable != "" do
+    raise "HEPH_WEBHOOK_SECRET and HEPH_WEBHOOK_SECRET_FILE are both set: name the secret one way"
+  end
+
+  if webhook_file != "" do
+    config :control_plane, :webhooks, secret_file: Path.expand(webhook_file)
+  else
+    config :control_plane, :webhooks, secret_variable: "HEPH_WEBHOOK_SECRET"
+  end
 end
 
 # How Oban's nodes tell each other that work arrived. By default the database does, with
