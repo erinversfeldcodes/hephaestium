@@ -331,10 +331,76 @@ jobs:
           docker logs control-plane >&2
           exit 1
 
+  # The deploy, cleanup and sweep scripts, against stand-ins for Fly, Neon and GitHub: what they
+  # ask for and refuse, not whether the real services answer as the fixtures do.
+  deploy-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Linted
+        run: |
+          shellcheck -x -P SCRIPTDIR scripts/deploy-control-plane.sh scripts/cleanup-preview.sh \
+            scripts/sweep-preview-orphans.sh scripts/test-deploy-scripts.sh scripts/lib/*.sh
+      - name: Tested
+        run: scripts/test-deploy-scripts.sh
+
+  # A pull request from this repository, once the checks that matter have passed, gets a Fly app
+  # of its own on a branch of the staging Neon project, both deleted when it closes (see
+  # cleanup-preview.yml). It is not part of the `ci` gate below: a preview that fails to deploy is
+  # looked at, but a pull request from a fork has no secrets and must not be blocked by one.
+  deploy-preview:
+    needs: [control-plane, dashboard, control-plane-image, deploy-scripts]
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'edited' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !cancelled() && !contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: preview
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      NEON_STAGING_API_KEY: ${{ secrets.NEON_STAGING_API_KEY }}
+      NEON_STAGING_PROJECT_ID: ${{ secrets.NEON_STAGING_PROJECT_ID }}
+      HEPH_API_SECRET_KEY_BASE: ${{ secrets.HEPH_API_SECRET_KEY_BASE }}
+      HEPH_API_GITHUB_CLIENT_ID: ${{ secrets.HEPH_API_GITHUB_CLIENT_ID }}
+      HEPH_API_GITHUB_CLIENT_SECRET: ${{ secrets.HEPH_API_GITHUB_CLIENT_SECRET }}
+      PR_HEAD_REF: ${{ github.head_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+        with:
+          version: 0.4.67
+      # The action installs `flyctl` only; the scripts call `fly`.
+      - name: Alias fly -> flyctl
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v flyctl)" "$HOME/.local/bin/fly"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Deploy the preview
+        run: scripts/deploy-control-plane.sh preview --branch "$PR_HEAD_REF"
+
   ci:
     if: always()
     needs:
-      [docs, commits, rust, baseline, contracts, artifacts, control-plane, dashboard, control-plane-image]
+      [
+        docs,
+        commits,
+        rust,
+        baseline,
+        contracts,
+        artifacts,
+        control-plane,
+        dashboard,
+        control-plane-image,
+        deploy-scripts,
+      ]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
