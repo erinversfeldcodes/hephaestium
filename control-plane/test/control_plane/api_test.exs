@@ -146,6 +146,7 @@ defmodule ControlPlane.ApiTest do
             "/api/workloads/#{id}/events",
             "/api/workloads/#{id}/events/stream",
             "/api/workloads/#{id}/steps",
+            "/api/workloads/#{id}/gates",
             "/api/workloads/#{id}/account",
             "/api/spend/tickets/erinversfeldcodes/gazebolang/12",
             "/api/spend/epics/erinversfeldcodes/gazebolang/12",
@@ -869,6 +870,55 @@ defmodule ControlPlane.ApiTest do
 
       assert get_as("/api/workloads/#{seed(14)}/gates") |> json() == %{"gates" => []}
       assert get_as("/api/workloads/#{Ecto.UUID.generate()}/gates").status == 404
+    end
+
+    test "a gate's last lines are served, cut to 40 and saying how many were left out" do
+      id = seed()
+      long = Enum.map_join(1..55, "\n", &"line #{&1}")
+
+      :ok =
+        Workloads.keep_record(id, %{
+          "gates" => [
+            %{"name" => "format", "result" => %{"outcome" => "passed"}, "output" => "ok"},
+            %{
+              "name" => "test",
+              "result" => %{"outcome" => "failed", "exit_code" => 1},
+              "output" => long,
+              "omittedLines" => 10
+            },
+            %{"name" => "old", "result" => %{"outcome" => "passed"}}
+          ]
+        })
+
+      assert %{"gates" => [format, test, old]} = get_as("/api/workloads/#{id}/gates") |> json()
+      assert %{"output" => "ok", "omitted_lines" => 0} = format
+      assert test["omitted_lines"] == 25
+      lines = String.split(test["output"], "\n")
+      assert length(lines) == 40
+      assert hd(lines) == "line 16"
+      assert List.last(lines) == "line 55"
+      assert %{"output" => "", "omitted_lines" => 0} = old
+    end
+
+    test "a run's reason is served in full, and a run that has not finished has neither it nor gates" do
+      failed = seed()
+
+      :ok =
+        Workloads.fail(
+          failed,
+          "gate test failed in /Users/someone/work: " <> String.duplicate("x", 3000)
+        )
+
+      running = seed(15)
+
+      body = get_as("/api/workloads/#{failed}") |> json()
+      assert body["state"] == "failed"
+      assert String.starts_with?(body["reason"], "gate test failed in /Users/someone/work: ")
+      assert String.length(body["reason"]) > 3000
+
+      body = get_as("/api/workloads/#{running}") |> json()
+      assert body["reason"] == nil
+      assert get_as("/api/workloads/#{running}/gates") |> json() == %{"gates" => []}
     end
 
     test "a ticket's verdict history, oldest first, with each requirement's evidence" do
