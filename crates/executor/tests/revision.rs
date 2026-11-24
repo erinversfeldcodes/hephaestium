@@ -370,3 +370,15 @@ fn all_the_output_together_is_capped_not_only_each_part() {
         );
     }
 }
+
+#[test]
+fn every_prompt_tells_the_agent_to_generate_a_migration_version_and_never_write_one() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let first = prompt_of(&common::workload(head));
+    let revision = prompt_of(&revising(head, |_| {}));
+
+    for prompt in [first, revision] {
+        assert!(prompt.contains("mix ecto.gen.migration"), "{prompt}");
+        assert!(prompt.contains("never write or edit a migration's version by hand"));
+    }
+}
