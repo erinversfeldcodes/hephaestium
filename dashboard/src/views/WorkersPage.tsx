@@ -141,6 +141,7 @@ export function WorkersPage({
                   <th>Created</th>
                   <th>Last connected</th>
                   <th>Connected now</th>
+                  <th>Running</th>
                   <th />
                 </tr>
               </thead>
@@ -151,6 +152,7 @@ export function WorkersPage({
                     <td>{when(row.createdAt)}</td>
                     <td>{when(row.lastSeenAt)}</td>
                     <td>{row.revokedAt !== null ? "revoked" : row.connected ? "yes" : "no"}</td>
+                    <td>{row.revokedAt !== null ? "-" : `${row.running} of ${row.slots}`}</td>
                     <td>
                       {row.revokedAt === null && (
                         <button type="button" onClick={() => void revoke(row)}>

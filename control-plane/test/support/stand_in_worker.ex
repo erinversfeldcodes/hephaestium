@@ -40,7 +40,8 @@ defmodule ControlPlane.StandInWorker do
   defp body(nil), do: ""
   defp body(map), do: Jason.encode!(map)
 
-  def claim(port, token), do: request(port, :post, "/worker/claim", token: token)
+  def claim(port, token, body \\ nil),
+    do: request(port, :post, "/worker/claim", token: token, body: body)
 
   def events(port, token, id, events),
     do:

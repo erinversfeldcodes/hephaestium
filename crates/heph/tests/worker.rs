@@ -60,6 +60,8 @@ enum Executor {
     Completes,
     /// One event, then nothing until it is stopped.
     Hangs,
+    /// The first workload hangs as `Hangs` does; any other completes as `Completes` does.
+    HangsFirstCompletesOthers,
     /// One event, then nothing until it is told to stop, and then it says it was cancelled.
     SaysItWasCancelled,
 }
@@ -119,6 +121,16 @@ record OUTCOME_COMPLETED 3"#
                 r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
 exec sleep 300"#
             }
+            Executor::HangsFirstCompletesOthers => {
+                r#"if [ "$id" = 0d7a1c3e-6f2b-4b8a-9a31-2f6c9e1d4b55 ]; then
+  ev 1 '"started":{"executorVersion":"0.0.0"}'
+  exec sleep 300
+fi
+ev 1 '"started":{"executorVersion":"0.0.0"}'
+ev 2 '"agentMessage":{"text":"working"}'
+ev 3 '"finished":{"outcome":"OUTCOME_COMPLETED"}'
+record OUTCOME_COMPLETED 3"#
+            }
             Executor::SaysItWasCancelled => {
                 r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
 trap 'ev 2 "\"finished\":{\"outcome\":\"OUTCOME_CANCELLED\"}"; record OUTCOME_CANCELLED 2; kill $sleeper; exit 0' TERM
@@ -161,6 +173,11 @@ echo "$$" > "$d/pid-$id"
     /// The worker, with a token and the executor's secrets in the places it looks, and its
     /// output kept in files.
     fn start(&self, address: &str, mode: &Executor) -> Worker {
+        self.start_with(address, mode, &[])
+    }
+
+    /// As `start`, with more arguments to `heph worker`.
+    fn start_with(&self, address: &str, mode: &Executor, extra_args: &[&str]) -> Worker {
         let executor = self.executor(mode);
         let claude = self.secret_file();
         let out = self.home.0.join("worker.out");
@@ -171,6 +188,7 @@ echo "$$" > "$d/pid-$id"
             .arg(executor)
             .arg("--runs-dir")
             .arg(self.home.0.join("runs"))
+            .args(extra_args)
             .env("HOME", &self.home.0)
             .env("XDG_CONFIG_HOME", self.home.0.join("config"))
             .env("HEPH_WORKER_TOKEN", TOKEN)
@@ -704,4 +722,175 @@ fn what_cannot_be_used_is_refused_before_anything_is_claimed() {
     let said = String::from_utf8_lossy(&in_the_clear.stderr).into_owned();
     assert!(said.contains("https"), "{said}");
     assert!(!said.contains(TOKEN));
+}
+
+/// A control plane that gives `FIRST` to the first claim and `SECOND` to the second, and has
+/// none after.
+fn gives_two() -> Server {
+    let claims = Arc::new(Mutex::new(0));
+    Server::start(move |request| {
+        if is_claim(request) {
+            let mut count = claims.lock().expect("a lock");
+            *count += 1;
+            return match *count {
+                1 => given(FIRST, 1, 120),
+                2 => given(SECOND, 1, 120),
+                _ => Answer::NoContent,
+            };
+        }
+        ok()
+    })
+}
+
+fn waits_for_pid(rig: &Rig, id: &str) -> String {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(pid) = rig.pid(id) {
+            return pid;
+        }
+        assert!(Instant::now() < until, "no executor for {id}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn two_workloads_run_at_once_on_one_worker_and_finish_independently() {
+    let rig = Rig::new("two-at-once");
+    let server = gives_two();
+    let mut worker = rig.start_with(
+        &server.address,
+        &Executor::HangsFirstCompletesOthers,
+        &["--workloads", "2"],
+    );
+
+    // The second finishes while the first is still running: neither waited for the other.
+    server.wait_for("the second workload's record", |s| {
+        !s.to(&format!("/worker/workloads/{SECOND}/record"))
+            .is_empty()
+    });
+    let first = waits_for_pid(&rig, FIRST);
+    assert!(
+        alive(&first),
+        "the first workload's executor ended with the second's"
+    );
+    assert!(
+        server
+            .to(&format!("/worker/workloads/{FIRST}/record"))
+            .is_empty(),
+        "the first workload was ended by the second finishing"
+    );
+    assert!(
+        server
+            .to(&format!("/worker/workloads/{FIRST}/release"))
+            .is_empty(),
+        "the first workload was given back when the second finished"
+    );
+
+    // Each has a workspace of its own.
+    let directories: Vec<_> = std::fs::read_dir(rig.home.0.join("runs/acme-widgets"))
+        .expect("a runs directory")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        directories.iter().any(|d| d.ends_with(FIRST)),
+        "{directories:?}"
+    );
+    assert!(
+        directories.iter().any(|d| d.ends_with(SECOND)),
+        "{directories:?}"
+    );
+
+    // Every claim says how many the worker may run at once.
+    for claim in server.to("/worker/claim") {
+        let body: Value = serde_json::from_str(&claim.body).expect("a JSON body");
+        assert_eq!(body["slots"], 2);
+    }
+    // The finished slot goes on claiming while the other is still running.
+    server.wait_for("a claim after the second finished", |s| {
+        s.to("/worker/claim").len() >= 3
+    });
+    assert!(alive(&first));
+    worker.stops();
+}
+
+#[test]
+fn an_interrupt_gives_back_every_workload_the_worker_holds() {
+    let rig = Rig::new("stop-both");
+    let server = gives_two();
+    let mut worker = rig.start_with(&server.address, &Executor::Hangs, &["--workloads", "2"]);
+    server.wait_for("both workloads' events", |s| {
+        !s.to(&format!("/worker/workloads/{FIRST}/events"))
+            .is_empty()
+            && !s
+                .to(&format!("/worker/workloads/{SECOND}/events"))
+                .is_empty()
+    });
+    let pids = [waits_for_pid(&rig, FIRST), waits_for_pid(&rig, SECOND)];
+    assert!(
+        pids.iter().all(|pid| alive(pid)),
+        "both run before the stop"
+    );
+
+    let status = worker.stops();
+
+    assert!(status.success(), "{}", worker.output());
+    for (id, pid) in [FIRST, SECOND].iter().zip(&pids) {
+        assert!(!alive(pid), "the executor of {id} outlived the worker");
+        assert_eq!(
+            server.to(&format!("/worker/workloads/{id}/release")).len(),
+            1,
+            "{id} was not given back"
+        );
+        assert!(
+            server
+                .to(&format!("/worker/workloads/{id}/record"))
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn a_worker_runs_one_workload_at_a_time_unless_asked_for_more() {
+    let rig = Rig::new("one-slot");
+    let server = gives_two();
+    let mut worker = rig.start(&server.address, &Executor::HangsFirstCompletesOthers);
+    server.wait_for("the first workload", |s| {
+        !s.to(&format!("/worker/workloads/{FIRST}/events"))
+            .is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        server.to("/worker/claim").len(),
+        1,
+        "it claimed a second while busy"
+    );
+    let claim: Value = serde_json::from_str(&server.to("/worker/claim")[0].body).expect("JSON");
+    assert_eq!(claim["slots"], 1);
+    worker.stops();
+}
+
+#[test]
+fn a_number_of_workloads_that_is_zero_or_above_the_ceiling_is_refused_before_anything_is_claimed() {
+    let rig = Rig::new("slots-refused");
+    let server = gives_two();
+    for (number, said) in [
+        ("0", "at least one"),
+        ("65", "above the most"),
+        ("many", "whole number"),
+    ] {
+        let mut worker = rig.start_with(
+            &server.address,
+            &Executor::Completes,
+            &["--workloads", number],
+        );
+        let status = worker.ends();
+        assert_eq!(status.code(), Some(3), "{number}: {}", worker.output());
+        let output = worker.output();
+        assert!(
+            output.contains(said) && output.contains("--workloads"),
+            "{number}: {output}"
+        );
+    }
+    assert!(server.requests().is_empty(), "something was claimed");
 }

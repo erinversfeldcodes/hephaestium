@@ -184,6 +184,10 @@ export interface DeviceToken {
   readonly revokedAt: string | null;
   /** Whether a worker with this token is connected now. */
   readonly connected: boolean;
+  /** How many workloads this worker holds a lease on now. */
+  readonly running: number;
+  /** How many workloads this worker has said it may run at once. */
+  readonly slots: number;
 }
 
 /** A device token just made. `secret` is the only time it can be read. */
@@ -620,6 +624,8 @@ function parseDeviceToken(body: unknown): DeviceToken {
     lastSeenAt: maybeText(row["lastSeenAt"]),
     revokedAt: maybeText(row["revokedAt"]),
     connected: row["connected"] === true,
+    running: count(row["running"]),
+    slots: Math.max(1, count(row["slots"])),
   };
 }
 

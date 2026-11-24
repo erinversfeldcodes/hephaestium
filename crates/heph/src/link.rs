@@ -140,13 +140,15 @@ impl Client {
         })
     }
 
-    /// Wait for a workload. `None` when the control plane had none within its wait.
+    /// Wait for a workload. `None` when the control plane had none within its wait. `slots` is
+    /// how many workloads this worker may run at once, which the control plane shows.
     ///
     /// # Errors
     ///
     /// As for any request.
-    pub fn claim(&self) -> Result<Option<Claim>, Failure> {
-        let (status, body) = self.post("/worker/claim", None)?;
+    pub fn claim(&self, slots: usize) -> Result<Option<Claim>, Failure> {
+        let body = format!("{{\"slots\":{slots}}}");
+        let (status, body) = self.post("/worker/claim", Some(&body))?;
         if status == 204 {
             return Ok(None);
         }
