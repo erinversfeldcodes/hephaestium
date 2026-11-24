@@ -30,8 +30,77 @@ defmodule ControlPlane.Spend do
       by_kind:
         rows |> Enum.group_by(& &1.kind) |> Map.new(fn {kind, rows} -> {kind, totals(rows)} end),
       workloads: workloads(rows),
-      parts: parts(rows)
+      parts: parts(rows),
+      steps: steps(repository, number)
     }
+  end
+
+  @doc """
+  What each step of a ticket spent, in the order the steps ran (the workloads oldest first,
+  then each workload's steps). A step carries its workload, kind, lens and round, its dollars
+  and tokens, the tokens by kind, and whether its workload is still running, in which case it
+  is what has been spent so far.
+  """
+  @spec steps(String.t(), integer()) :: [map()]
+  def steps(repository, number) do
+    Repo.all(
+      from e in SpendEntry,
+        join: w in ControlPlane.Workload,
+        on: w.id == e.workload_id,
+        where: e.repository == ^repository and e.ticket_number == ^number,
+        order_by: [w.inserted_at, w.id, e.step, e.unit, e.source],
+        select: {e, w.state}
+    )
+    |> Enum.chunk_by(fn {e, _} -> {e.workload_id, e.step} end)
+    |> Enum.map(fn [{first, state} | _] = group ->
+      %{
+        workload_id: first.workload_id,
+        step: first.step,
+        kind: first.kind,
+        lens: first.lens,
+        round: first.round
+      }
+      |> Map.merge(figures(Enum.map(group, &elem(&1, 0)), state))
+    end)
+  end
+
+  @doc """
+  What one workload has spent, from its ledger rows: dollars, tokens and the tokens by kind,
+  all zero when nothing was spent. Dollars are not split by kind of token: the ledger holds no
+  such figure.
+  """
+  @spec figures([%SpendEntry{}], String.t()) :: map()
+  def figures(rows, state) do
+    tokens = Enum.filter(rows, &(&1.unit == "tokens"))
+    sum = fn rows, field -> rows |> Enum.map(&(Map.get(&1, field) || 0.0)) |> Enum.sum() end
+
+    %{
+      usd: sum.(Enum.filter(rows, &(&1.unit == "usd")), :amount),
+      tokens: sum.(tokens, :amount),
+      tokens_by_kind: %{
+        input: sum.(tokens, :input),
+        output: sum.(tokens, :output),
+        cache_creation: sum.(tokens, :cache_creation),
+        cache_read: sum.(tokens, :cache_read)
+      },
+      running: state not in ControlPlane.Workloads.terminal_states()
+    }
+  end
+
+  @doc "What each of a ticket's workloads has spent, by workload id, for those that spent."
+  @spec by_workload(String.t(), integer()) :: %{String.t() => map()}
+  def by_workload(repository, number) do
+    Repo.all(
+      from e in SpendEntry,
+        join: w in ControlPlane.Workload,
+        on: w.id == e.workload_id,
+        where: e.repository == ^repository and e.ticket_number == ^number,
+        select: {e, w.state}
+    )
+    |> Enum.group_by(fn {e, _} -> e.workload_id end)
+    |> Map.new(fn {id, [{_, state} | _] = group} ->
+      {id, figures(Enum.map(group, &elem(&1, 0)), state)}
+    end)
   end
 
   @doc """
