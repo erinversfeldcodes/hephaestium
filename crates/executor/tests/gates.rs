@@ -330,3 +330,37 @@ fn a_gate_that_hangs_is_still_ended_by_its_own_timeout_while_heartbeats_continue
     assert!(beats_during_the_first_gate(&events) >= 1);
     assert_eq!(finished(&events).0, Outcome::Failed);
 }
+
+#[test]
+fn the_record_keeps_the_last_forty_lines_a_gate_printed_and_how_many_came_before() {
+    let scratch = Scratch::new("gates-output");
+    let text = manifest(&[])
+        + &gate("quiet", "echo only line", 30, "")
+        + &gate("loud", "seq 1 100; exit 1", 30, "");
+    let (_, commit) = source(&scratch, &text);
+
+    let ran = run_with(scratch, &workload(&commit), Some(&transcript()), &[]);
+
+    let record = ran.record();
+    let by_name = |name: &str| {
+        record
+            .gates
+            .iter()
+            .find(|g| g.name == name)
+            .expect("a gate")
+    };
+    let quiet = by_name("quiet");
+    assert_eq!(quiet.output, "only line");
+    assert_eq!(quiet.omitted_lines, 0);
+    let loud = by_name("loud");
+    let lines: Vec<&str> = loud.output.lines().collect();
+    assert_eq!(lines.len(), 40, "{}", loud.output);
+    assert_eq!(lines[0], "61");
+    assert_eq!(lines[39], "100");
+    assert_eq!(loud.omitted_lines, 60);
+    let result = serde_json::to_value(&loud.result).expect("a result");
+    assert!(
+        result.get("output").is_none(),
+        "the gate's own result is left as the gate produced it: {result}"
+    );
+}
