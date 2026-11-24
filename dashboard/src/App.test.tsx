@@ -80,6 +80,9 @@ describe("the dashboard", () => {
             workloads: 1,
             settled_at: null,
             latest: { id: "w", state: "queued", kind: "implementation", at: "2026-11-20T10:00:00Z" },
+            runs: [],
+            spend_usd: 0,
+            needs: null,
           },
         ],
       },
@@ -138,7 +141,7 @@ describe("the dashboard", () => {
     await user.click(await screen.findByRole("link", { name: "Board" }));
 
     expect(window.location.pathname).toBe("/board");
-    expect(await screen.findByRole("group", { name: "Working" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "In flight" })).toBeInTheDocument();
   });
 
   it("marks the current page in the navigation", async () => {

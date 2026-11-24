@@ -9,6 +9,11 @@ export const summary: TicketSummary = {
   latest: { id: "w-2", state: "running", kind: "review", at: "2026-11-20T10:00:00Z" },
   waiting: null,
   pullRequest: null,
+  runs: [
+    { kind: "implementation", state: "running", lens: null, at: "2026-11-19T09:00:00Z", failedGate: null },
+  ],
+  spendUsd: 1.5,
+  needs: null,
 };
 
 export const detail: TicketDetail = {

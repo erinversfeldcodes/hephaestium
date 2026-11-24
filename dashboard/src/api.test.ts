@@ -180,6 +180,9 @@ describe("the API client", () => {
       workloads: 2,
       settled_at: "2026-11-20T11:00:00Z",
       latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
+      runs: [],
+      spend_usd: 0,
+      needs: null,
     };
 
     it("reads a waiting ticket that has no run, with its wait", async () => {
@@ -209,6 +212,9 @@ describe("the API client", () => {
         latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
         waiting: null,
         pullRequest: null,
+        runs: [],
+        spendUsd: 0,
+        needs: null,
       });
       expect(tickets[1]).toMatchObject({ title: null, settledAt: null });
       expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/tickets?limit=200");
@@ -364,5 +370,33 @@ describe("the API client", () => {
       expect(await createClient(respond(404, {})).workload("nope")).toBeNull();
       await expect(createClient(respond(200, { ...body, state: 3 })).workload("w-2")).rejects.toBeInstanceOf(ApiError);
     });
+  });
+});
+
+describe("reading what a ticket needs from the ticket list", () => {
+  const respond = (body: unknown) => async () => new Response(JSON.stringify(body), { status: 200 });
+  const row = { repository: "o/r", number: 3, title: "T", workloads: 3, settled_at: null, latest: null, waiting: null, pull_request: null };
+
+  it("reads a question, a failure, and nothing for a ticket that needs none", async () => {
+    const tickets = await createClient(
+      respond({
+        tickets: [
+          { ...row, needs: { kind: "question", text: "Which?" }, runs: [], spend_usd: 0 },
+          { ...row, number: 4, needs: { kind: "failure", step: "format-rust", runs: 3 }, runs: [{ kind: "implementation", state: "failed", lens: null, at: "2026-11-20T10:00:00Z", failed_gate: "format-rust" }], spend_usd: 6.1 },
+          { ...row, number: 5, needs: null, runs: [], spend_usd: 0 },
+        ],
+      }),
+    ).tickets();
+
+    expect(tickets[0]?.needs).toEqual({ kind: "question", text: "Which?" });
+    expect(tickets[1]?.needs).toEqual({ kind: "failure", step: "format-rust", runs: 3 });
+    expect(tickets[1]?.runs[0]?.failedGate).toBe("format-rust");
+    expect(tickets[1]?.spendUsd).toBe(6.1);
+    expect(tickets[2]?.needs).toBeNull();
+  });
+
+  it("refuses a need of a kind it does not know", async () => {
+    const client = createClient(respond({ tickets: [{ ...row, needs: { kind: "prayer" }, runs: [], spend_usd: 0 }] }));
+    await expect(client.tickets()).rejects.toThrow();
   });
 });

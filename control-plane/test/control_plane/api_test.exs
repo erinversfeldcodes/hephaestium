@@ -94,6 +94,11 @@ defmodule ControlPlane.ApiTest do
     id
   end
 
+  defp tickets_by_number do
+    %{"tickets" => tickets} = get_as("/api/tickets") |> json()
+    Map.new(tickets, &{&1["number"], &1})
+  end
+
   defp set_state(id, state) do
     import Ecto.Query
     Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^id), set: [state: state])
@@ -537,6 +542,66 @@ defmodule ControlPlane.ApiTest do
         |> Enum.find(&(&1["number"] == 43))
 
       assert ticket["waiting"]["no_worker"] == false
+    end
+
+    test "a ticket with a question waiting carries it as what it needs" do
+      asked = seed_kind(60, %{}, "blocked")
+
+      :ok =
+        Workloads.keep_record(asked, %{
+          "outcome" => "OUTCOME_BLOCKED",
+          "question" => "Which database should the guards be stored in?"
+        })
+
+      assert tickets_by_number()[60]["needs"] == %{
+               "kind" => "question",
+               "text" => "Which database should the guards be stored in?"
+             }
+    end
+
+    test "a ticket whose runs failed at a gate and were not restarted carries the step and the runs" do
+      for _ <- 1..3 do
+        id = seed_kind(61, %{}, "failed")
+
+        :ok =
+          Workloads.keep_record(id, %{
+            "gates" => [
+              %{"name" => "build", "result" => %{"outcome" => "passed"}},
+              %{"name" => "format-rust", "result" => %{"outcome" => "failed"}}
+            ]
+          })
+      end
+
+      ticket = tickets_by_number()[61]
+      assert ticket["needs"] == %{"kind" => "failure", "step" => "format-rust", "runs" => 3}
+      assert ticket["workloads"] == 3
+    end
+
+    test "a failure that a later run has replaced is not what the ticket needs" do
+      seed_kind(62, %{}, "failed")
+      seed_kind(62, %{}, "running")
+
+      assert tickets_by_number()[62]["needs"] == nil
+    end
+
+    test "a ticket that needs nothing carries no needs, and says what each run was and its cost" do
+      import ControlPlane.SpendFixtures
+      %{id: id} = spent(63, [usd(1.5)])
+      set_state(id, "running")
+
+      ticket = tickets_by_number()[63]
+      assert ticket["needs"] == nil
+      assert ticket["spend_usd"] == 1.5
+
+      assert [
+               %{
+                 "kind" => "implementation",
+                 "state" => "running",
+                 "lens" => nil,
+                 "failed_gate" => nil
+               }
+             ] =
+               ticket["runs"]
     end
 
     test "a ticket with its workloads and what it spent" do

@@ -72,7 +72,7 @@ describe("reading a pull request from the API", () => {
   const raw = { number: 52, url, state: "merged", checks: "passing" };
 
   it("reads it on the board, and null when there is none", async () => {
-    const row = { repository: "o/r", number: 3, title: "T", workloads: 1, settled_at: null, latest: null, waiting: null };
+    const row = { repository: "o/r", number: 3, title: "T", workloads: 1, settled_at: null, latest: null, waiting: null, runs: [], spend_usd: 0, needs: null };
     const tickets = await createClient(respond({ tickets: [{ ...row, pull_request: raw }, { ...row, number: 4, pull_request: null }] })).tickets();
 
     expect(tickets[0]?.pullRequest).toEqual({ number: 52, url, state: "merged", checks: "passing" });
@@ -80,7 +80,7 @@ describe("reading a pull request from the API", () => {
   });
 
   it("refuses a state or checks it does not know, rather than draw a wrong dot", async () => {
-    const row = { repository: "o/r", number: 3, title: "T", workloads: 1, settled_at: null, latest: null, waiting: null };
+    const row = { repository: "o/r", number: 3, title: "T", workloads: 1, settled_at: null, latest: null, waiting: null, runs: [], spend_usd: 0, needs: null };
     const client = createClient(respond({ tickets: [{ ...row, pull_request: { ...raw, checks: "great" } }] }));
 
     await expect(client.tickets()).rejects.toThrow();
