@@ -49,7 +49,9 @@ defmodule ControlPlane.Api.DeviceTokens do
       createdAt: token.inserted_at,
       lastSeenAt: token.last_seen_at,
       revokedAt: token.revoked_at,
-      connected: connected
+      connected: connected,
+      slots: token.slots,
+      running: DeviceTokens.running(token)
     }
   end
 

@@ -78,6 +78,8 @@ export const deviceTokens: DeviceToken[] = [
     lastSeenAt: "2026-11-23T09:00:00Z",
     revokedAt: null,
     connected: true,
+    running: 2,
+    slots: 3,
   },
   {
     id: "t-2",
@@ -86,6 +88,8 @@ export const deviceTokens: DeviceToken[] = [
     lastSeenAt: null,
     revokedAt: null,
     connected: false,
+    running: 0,
+    slots: 1,
   },
 ];
 
@@ -183,7 +187,7 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     makeDeviceToken: async (name) => ({
       ok: true,
       value: {
-        token: { id: "t-3", name, createdAt: "2026-11-23T10:00:00Z", lastSeenAt: null, revokedAt: null, connected: false },
+        token: { id: "t-3", name, createdAt: "2026-11-23T10:00:00Z", lastSeenAt: null, revokedAt: null, connected: false, running: 0, slots: 1 },
         secret: "heph_secret_once",
       },
     }),

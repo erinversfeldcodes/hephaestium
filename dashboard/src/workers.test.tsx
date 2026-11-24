@@ -19,6 +19,15 @@ describe("the workers page", () => {
     expect(within(desk).getAllByRole("cell")[3]).toHaveTextContent("no");
   });
 
+  it("shows how many workloads each worker is running and how many it may run", async () => {
+    render(<WorkersPage client={fakeClient()} />);
+
+    const laptop = await screen.findByRole("row", { name: /laptop/ });
+    expect(within(laptop).getAllByRole("cell")[4]).toHaveTextContent("2 of 3");
+    const desk = screen.getByRole("row", { name: /desk/ });
+    expect(within(desk).getAllByRole("cell")[4]).toHaveTextContent("0 of 1");
+  });
+
   it("shows a revoked token as revoked, with nothing to revoke", async () => {
     const revoked = [{ ...deviceTokens[0]!, revokedAt: "2026-11-22T00:00:00Z", connected: false }];
     render(<WorkersPage client={fakeClient({ deviceTokens: async () => revoked })} />);

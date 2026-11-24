@@ -63,6 +63,32 @@ defmodule ControlPlane.DeviceTokens do
   def active?(id),
     do: Repo.exists?(from t in DeviceToken, where: t.id == ^id and is_nil(t.revoked_at))
 
+  @doc """
+  Say how many workloads the executor of this token may run at once. A bad number is ignored,
+  and an executor that says nothing is one that runs one at a time.
+  """
+  @spec slots(%DeviceToken{}, term()) :: :ok
+  def slots(%DeviceToken{id: id}, slots) when is_integer(slots) and slots >= 1 and slots <= 64 do
+    Repo.update_all(from(t in DeviceToken, where: t.id == ^id and t.slots != ^slots),
+      set: [slots: slots]
+    )
+
+    :ok
+  end
+
+  def slots(_token, _slots), do: :ok
+
+  @doc "How many workloads this token holds a lease on now."
+  @spec running(%DeviceToken{}) :: non_neg_integer()
+  def running(%DeviceToken{id: id}) do
+    now = now()
+
+    Repo.aggregate(
+      from(l in WorkloadLease, where: l.token_id == ^id and l.active and l.expires_at > ^now),
+      :count
+    )
+  end
+
   @doc "Say that the executor of this token is there."
   @spec seen(%DeviceToken{}) :: :ok
   def seen(%DeviceToken{id: id}) do

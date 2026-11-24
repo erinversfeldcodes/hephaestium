@@ -175,6 +175,13 @@ If the connection drops it tries again with growing waits; a workload the contro
 back is stopped at once; Ctrl-C or a termination signal stops the executor, sends how it ended
 and exits. Plain `http` is accepted only to this machine.
 
+A worker runs one workload at a time unless you give `--workloads N` (or `HEPH_WORKER_WORKLOADS`),
+from 1 to 64. Each workload has a workspace and a lease of its own, so one ending or failing does
+not touch another, and Ctrl-C gives every one back. Each holds a workspace on disk and a model
+session, so what bounds it in practice is the machine's memory and the model's rate limit. 64 only
+guards against a typing mistake; it is not a measured limit. Reviews are given out before new
+implementations, so an open pull request is not held up by new work.
+
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of
