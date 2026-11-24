@@ -23,3 +23,13 @@ pub mod sync;
 pub mod worker;
 pub mod workload;
 pub mod workspaces;
+
+/// What this build is made of, fixed when it was compiled.
+pub mod build {
+    /// The commit the binary was built from; empty where the build could not tell.
+    pub const COMMIT: &str = env!("HEPH_BUILD_COMMIT");
+    /// The Athenaeum release the binary is linked against, as its tag.
+    pub const ATHENAEUM_TAG: &str = env!("HEPH_ATHENAEUM_TAG");
+    /// The commit that tag named when the lock resolved it; empty where it is not known.
+    pub const ATHENAEUM_COMMIT: &str = env!("HEPH_ATHENAEUM_COMMIT");
+}

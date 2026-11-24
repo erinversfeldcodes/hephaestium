@@ -66,10 +66,12 @@ defmodule ControlPlane.Gaps do
          :ok <- not_stepping(repository, number),
          :ok <- not_asked_too_often(repository, number),
          {:ok, approval} <- approval(repository, number),
-         {:ok, skill} <- Evaluations.skill(@skill),
+         {:ok, skill, ref} <- Evaluations.skill_at_ref(@skill),
          {:ok, built} <- Intake.build(repository, number, approval),
          {:ok, record} <-
-           Workloads.create(Map.put(built, "gap", gap(skill, because, refused))),
+           Workloads.create(Map.put(built, "gap", gap(skill, because, refused)),
+             athenaeum_ref: ref
+           ),
          {:ok, _job} <- Runner.enqueue(record.id) do
       {:started, record.id}
     else

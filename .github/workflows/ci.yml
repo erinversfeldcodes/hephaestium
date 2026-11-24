@@ -200,11 +200,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28"
           elixir-version: "1.19.5"
+      # Before anything migrates, so a clash reads as two file names and not as an Ecto error
+      # partway through. On a push the base is the commit itself, so only a shared version can
+      # fail.
+      - name: Migration versions are unique and later than the base's
+        working-directory: .
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD' }}
+        run: scripts/check-migrations.sh "$BASE"
+      - name: The migration check refuses what it should
+        working-directory: .
+        run: scripts/test-check-migrations.sh
       - name: Dependencies, exactly as locked
         run: mix deps.get --check-locked
       - name: Formatted
@@ -265,7 +277,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the image
-        run: docker build --file control-plane/Dockerfile --tag control-plane:ci .
+        run: docker build --file control-plane/Dockerfile --build-arg HEPHAESTIUM_COMMIT="$GITHUB_SHA" --tag control-plane:ci .
       - name: The image carries a heph that runs and builds a workload
         run: control-plane/image-test/check.sh control-plane:ci
       - name: The migrate command brings an empty database to the current schema

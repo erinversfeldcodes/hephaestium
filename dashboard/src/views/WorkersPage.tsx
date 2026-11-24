@@ -1,10 +1,63 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import type { Client, DeviceToken, IssuedToken } from "../api";
 import { when } from "../format";
 import { Shown, useRemote } from "../useRemote";
 
-// Where `heph worker` looks for a token when it is given none.
-export const TOKEN_FILE = "~/.config/hephaestium/worker-token";
+const CONFIG_DIR = "~/.config/hephaestium";
+
+// Where `heph worker` looks for a token when it is given none. It is never offered for a new
+// token: a second token saved there would replace the first worker's.
+export const DEFAULT_TOKEN_FILE = `${CONFIG_DIR}/worker-token`;
+
+// The file a token is saved to: named after the token, so that one token never overwrites another.
+export function tokenFile(name: string): string {
+  const safe = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${CONFIG_DIR}/worker-token-${safe === "" ? "device" : safe}`;
+}
+
+function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+// A block of text to copy, with a button beside it. Where the browser refuses the clipboard the
+// text is selected, so that it can be copied by hand.
+function Copyable({ label, text }: { readonly label: string; readonly text: string }) {
+  const block = useRef<HTMLPreElement>(null);
+  const [state, setState] = useState<"idle" | "copied" | "manual">("idle");
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState("copied");
+      setTimeout(() => setState("idle"), 2000);
+    } catch {
+      const node = block.current;
+      if (node !== null) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      setState("manual");
+    }
+  }
+
+  return (
+    <div className="copyable">
+      <pre ref={block} aria-label={label}>
+        {text}
+      </pre>
+      <button type="button" onClick={() => void copy()} aria-label={`Copy ${label.toLowerCase()}`}>
+        {state === "copied" ? "Copied" : "Copy"}
+      </button>
+      {state === "manual" && <span role="status">Your browser did not allow copying. The text is selected: copy it by hand.</span>}
+    </div>
+  );
+}
 
 export function WorkersPage({
   client,
@@ -18,6 +71,7 @@ export function WorkersPage({
   const [issued, setIssued] = useState<IssuedToken | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const file = issued === null ? "" : tokenFile(issued.token.name);
   const tokens = useRemote(() => client.deviceTokens(), [client, version]);
 
   async function make(event: FormEvent) {
@@ -50,9 +104,12 @@ export function WorkersPage({
         <section aria-labelledby="new-token-heading">
           <h3 id="new-token-heading">{`Device token "${issued.token.name}"`}</h3>
           <p>This is the only time the token is shown. Copy it now.</p>
-          <pre aria-label="Device token">{issued.secret}</pre>
-          <p>{`Save it to ${TOKEN_FILE} with mode 600, then run:`}</p>
-          <pre aria-label="Command">{`heph worker --control-plane ${origin}`}</pre>
+          <Copyable label="Device token" text={issued.secret} />
+          <p>{`Save it to ${file}, which only you can read:`}</p>
+          <Copyable label="Save command" text={`umask 077; printf '%s' ${shellQuote(issued.secret)} > ${file}`} />
+          <p>Then run the worker, naming that file:</p>
+          <Copyable label="Command" text={`HEPH_WORKER_TOKEN_FILE=${file} heph worker --control-plane ${origin}`} />
+          <p>{`To use this token as this machine's only worker, you may instead save it as ${DEFAULT_TOKEN_FILE}, which heph worker reads when no file is named.`}</p>
           <button type="button" onClick={() => setIssued(null)}>
             I have saved it
           </button>
@@ -61,12 +118,13 @@ export function WorkersPage({
 
       <form onSubmit={make}>
         <label>
-          Name
+          Name the worker, for example the machine it runs on
           <input value={name} maxLength={80} onChange={(event) => setName(event.target.value)} />
         </label>{" "}
-        <button type="submit" disabled={name.trim() === ""}>
+        <button type="submit" disabled={name.trim() === ""} aria-describedby="make-reason">
           Make a device token
         </button>
+        {name.trim() === "" && <span id="make-reason"> Type a name first: a token needs one.</span>}
       </form>
 
       <Shown state={tokens}>

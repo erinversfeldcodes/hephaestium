@@ -43,19 +43,100 @@ describe("the workers page", () => {
     const client = fakeClient({ makeDeviceToken: make });
     const { unmount, container } = render(<WorkersPage client={client} origin="https://cp.example" />);
 
-    await user.type(await screen.findByLabelText("Name"), "work");
+    await user.type(await screen.findByLabelText("Name the worker, for example the machine it runs on"), "work");
     await user.click(screen.getByRole("button", { name: "Make a device token" }));
 
     expect(make).toHaveBeenCalledWith("work");
     expect(await screen.findByLabelText("Device token")).toHaveTextContent(SECRET);
     expect(screen.getByLabelText("Command")).toHaveTextContent("heph worker --control-plane https://cp.example");
-    expect(container).toHaveTextContent("~/.config/hephaestium/worker-token");
+    expect(container).toHaveTextContent("~/.config/hephaestium/worker-token-work");
     expect(within(screen.getByRole("table")).queryByText(SECRET)).toBeNull();
 
     unmount();
     const reloaded = render(<WorkersPage client={client} origin="https://cp.example" />);
     await screen.findByRole("table");
     expect(reloaded.container).not.toHaveTextContent(SECRET);
+  });
+
+  async function issue(name: string, origin = "https://cp.example") {
+    const user = userEvent.setup();
+    const view = render(<WorkersPage client={fakeClient()} origin={origin} />);
+    await user.type(await screen.findByLabelText("Name the worker, for example the machine it runs on"), name);
+    await user.click(screen.getByRole("button", { name: "Make a device token" }));
+    await screen.findByLabelText("Device token");
+    return { user, ...view };
+  }
+
+  it("names the file after the token, with the token already in the save command and the file in the run command", async () => {
+    await issue("work");
+
+    expect(screen.getByLabelText("Save command")).toHaveTextContent(
+      `umask 077; printf '%s' '${SECRET}' > ~/.config/hephaestium/worker-token-work`,
+    );
+    expect(screen.getByLabelText("Command")).toHaveTextContent(
+      "HEPH_WORKER_TOKEN_FILE=~/.config/hephaestium/worker-token-work heph worker --control-plane https://cp.example",
+    );
+  });
+
+  it("makes a name with spaces and punctuation safe for a file name", async () => {
+    await issue("Erin's Mac / mini!");
+
+    expect(screen.getByLabelText("Command")).toHaveTextContent(
+      "HEPH_WORKER_TOKEN_FILE=~/.config/hephaestium/worker-token-erin-s-mac-mini heph worker",
+    );
+  });
+
+  it("never offers the default file as where to save, only as the single-worker alternative", async () => {
+    await issue("mac");
+
+    for (const label of ["Save command", "Command"]) {
+      expect(screen.getByLabelText(label).textContent).not.toMatch(/worker-token(?![-\w])/);
+    }
+    expect(screen.getByLabelText("Command")).toHaveTextContent("worker-token-mac");
+    expect(screen.getByText(/only worker/)).toHaveTextContent(
+      "~/.config/hephaestium/worker-token, which heph worker reads when no file is named",
+    );
+  });
+
+  describe("copying", () => {
+    const blocks = [
+      ["Device token", SECRET],
+      ["Save command", `umask 077; printf '%s' '${SECRET}' > ~/.config/hephaestium/worker-token-work`],
+      ["Command", "HEPH_WORKER_TOKEN_FILE=~/.config/hephaestium/worker-token-work heph worker --control-plane https://cp.example"],
+    ] as const;
+
+    it.each(blocks)("copies the %s and shows Copied", async (label, text) => {
+      const { user } = await issue("work");
+      const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+
+      await user.click(screen.getByRole("button", { name: `Copy ${label.toLowerCase()}` }));
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledWith(text);
+      expect(screen.getByRole("button", { name: `Copy ${label.toLowerCase()}` })).toHaveTextContent("Copied");
+    });
+
+    it("selects the text and says to copy by hand where the clipboard is refused", async () => {
+      const { user } = await issue("work");
+      vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
+
+      await user.click(screen.getByRole("button", { name: "Copy device token" }));
+
+      expect(window.getSelection()?.toString()).toBe(SECRET);
+      expect(await screen.findByRole("status")).toHaveTextContent("copy it by hand");
+    });
+  });
+
+  it("says the name is needed, and why the button is disabled, until one is typed", async () => {
+    const user = userEvent.setup();
+    render(<WorkersPage client={fakeClient()} />);
+    const button = await screen.findByRole("button", { name: "Make a device token" });
+
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(/Type a name first/);
+    await user.type(screen.getByLabelText("Name the worker, for example the machine it runs on"), "x");
+    expect(button).toBeEnabled();
+    expect(screen.queryByText(/Type a name first/)).toBeNull();
   });
 
   it("never puts a token in the list, even when the API's list carried one (planted violation)", async () => {
@@ -87,7 +168,7 @@ describe("the workers page", () => {
     const refused = async () => ({ ok: false as const, error: "a name of one to 80 characters is needed" });
     render(<WorkersPage client={fakeClient({ makeDeviceToken: refused })} />);
 
-    await user.type(await screen.findByLabelText("Name"), "x");
+    await user.type(await screen.findByLabelText("Name the worker, for example the machine it runs on"), "x");
     await user.click(screen.getByRole("button", { name: "Make a device token" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("80 characters");

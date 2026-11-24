@@ -206,6 +206,15 @@ defmodule ControlPlane.ReviewsTest do
     assert length(reviews_of(id)) == 2
   end
 
+  test "a review keeps the release it read, whatever the setting becomes", %{id: id} do
+    {:ok, _} = request(id)
+    Application.put_env(:control_plane, :settle, reviews: [@repo], athenaeum_ref: "v9.9.9")
+
+    for review <- reviews_of(id) do
+      assert review.provenance["athenaeumRef"] == @ref
+    end
+  end
+
   test "an empty release name is no release", %{id: id} do
     Application.put_env(:control_plane, :settle, reviews: [@repo], athenaeum_ref: "")
 
