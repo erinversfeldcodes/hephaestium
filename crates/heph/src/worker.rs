@@ -14,6 +14,7 @@ use std::os::unix::fs::DirBuilderExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -56,11 +57,65 @@ const MOST_EVENTS: usize = 500;
 /// How often what is waited for is looked at: a stop, a line from the executor.
 const LOOK: Duration = Duration::from_millis(100);
 
+/// The variable that sets how many workloads this worker runs at once, when no flag does.
+pub const WORKLOADS_VARIABLE: &str = "HEPH_WORKER_WORKLOADS";
+
+/// How many workloads a worker runs at once when nothing says.
+pub const DEFAULT_WORKLOADS: usize = 1;
+
+/// The most workloads a worker may be asked to run at once.
+///
+/// This is a guard against a typing mistake, so that `--workloads 640` does not start
+/// hundreds of model sessions and workspaces. It is not a measured limit, and nothing was
+/// measured to choose it: the right number depends on the machine and is the person's to
+/// choose. What each slot costs is one workspace on disk and one model session, and in
+/// practice the worker's memory and the model's rate limit are what bound it.
+pub const MOST_WORKLOADS: usize = 64;
+
 /// What `run` was asked to do.
 pub struct Options {
     pub control_plane: String,
     pub runs_dir: Option<PathBuf>,
     pub executor: Option<PathBuf>,
+    /// How many workloads may run at once, from 1 to [`MOST_WORKLOADS`].
+    pub workloads: usize,
+}
+
+/// How many workloads to run at once: the flag's value, else the variable's, else one.
+///
+/// # Errors
+///
+/// Returns why the number is refused: it is not a whole number, it is zero, or it is above
+/// [`MOST_WORKLOADS`].
+pub fn workloads(flag: Option<&str>) -> Result<usize, String> {
+    workloads_from(flag, run::environment(WORKLOADS_VARIABLE).as_deref())
+}
+
+fn workloads_from(flag: Option<&str>, variable: Option<&str>) -> Result<usize, String> {
+    let (text, from) = match (flag, variable) {
+        (Some(text), _) => (text, "--workloads".to_owned()),
+        (None, Some(text)) => (text, WORKLOADS_VARIABLE.to_owned()),
+        (None, None) => return Ok(DEFAULT_WORKLOADS),
+    };
+    let number: usize = text.trim().parse().map_err(|_| {
+        format!("{from}: {text:?} is not a whole number of workloads, from 1 to {MOST_WORKLOADS}")
+    })?;
+    check_workloads(number).map_err(|message| format!("{from}: {message}"))
+}
+
+fn check_workloads(number: usize) -> Result<usize, String> {
+    if number == 0 {
+        Err(
+            "a worker must be able to run at least one workload at once, so 0 is refused"
+                .to_owned(),
+        )
+    } else if number > MOST_WORKLOADS {
+        Err(format!(
+            "{number} is above the most a worker may run at once, {MOST_WORKLOADS}: each one holds a workspace on disk and a model session"
+        ))
+    } else {
+        Ok(number)
+    }
 }
 
 /// The device token: from `HEPH_WORKER_TOKEN`, else the file `HEPH_WORKER_TOKEN_FILE` names,
@@ -160,11 +215,11 @@ enum Asked {
 
 /// Ask for a workload without being held by the wait when a stop comes. A claim that is
 /// answered after the stop is dropped, and the control plane's lease on it lapses.
-fn ask(client: &Client, stop: &dyn Fn() -> bool) -> Asked {
+fn ask(client: &Client, slots: usize, stop: &dyn Fn() -> bool) -> Asked {
     let (sender, answer) = mpsc::channel();
     let client = client.clone();
     std::thread::spawn(move || {
-        let _ = sender.send(client.claim());
+        let _ = sender.send(client.claim(slots));
     });
     loop {
         if stop() {
@@ -184,24 +239,67 @@ fn ask(client: &Client, stop: &dyn Fn() -> bool) -> Asked {
 
 /// Claim workloads and run them until told to stop.
 ///
-/// A workload is claimed only when nothing else is running, so a worker runs one at a time. A
-/// claim whose answer is lost is never run: the worker never saw it, and the control plane's
-/// lease on it lapses.
+/// A worker has as many slots as it may run workloads at once. Each slot claims on its own,
+/// runs what it is given in a workspace of its own, and holds a lease of its own, so one
+/// finishing, failing or being stopped does not touch another. A stop reaches every slot, and
+/// each gives back what it holds. A claim whose answer is lost is never run: the worker never
+/// saw it, and the control plane's lease on it lapses.
 ///
 /// # Errors
 ///
-/// Returns why the worker cannot go on: the address is unusable, the executor's secrets are
-/// missing, or the control plane does not accept the token.
-pub fn run(options: &Options, token: Token, stop: &dyn Fn() -> bool) -> Result<(), String> {
+/// Returns why the worker cannot go on: the number of workloads is refused, the address is
+/// unusable, the executor's secrets are missing, or the control plane does not accept the token.
+pub fn run(
+    options: &Options,
+    token: Token,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<(), String> {
+    check_workloads(options.workloads)?;
     let client = Client::new(&options.control_plane, token)?;
     // Found out before anything is claimed, so that a worker that could not deliver does not
     // take work it will only fail.
     run::secret_files()?;
 
+    // Set when one slot finds the worker cannot go on, which ends the others too.
+    let halted = AtomicBool::new(false);
+    let stopping = || halted.load(Ordering::Relaxed) || stop();
+    let slots = options.workloads;
+    let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..slots)
+            .map(|_| {
+                scope.spawn(|| {
+                    let result = slot(&client, options, slots, &stopping);
+                    if result.is_err() {
+                        halted.store(true, Ordering::Relaxed);
+                    }
+                    result
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("a workload slot stopped unexpectedly".to_owned()))
+            })
+            .collect()
+    });
+    results.into_iter().collect::<Result<Vec<()>, String>>()?;
+    Ok(())
+}
+
+/// One slot: claim a workload, run it, and ask again, until told to stop.
+fn slot(
+    client: &Client,
+    options: &Options,
+    slots: usize,
+    stop: &dyn Fn() -> bool,
+) -> Result<(), String> {
     let mut failures: u32 = 0;
     while !stop() {
         let asked_at = Instant::now();
-        let claim = match ask(&client, stop) {
+        let claim = match ask(client, slots, stop) {
             Asked::Stopped => break,
             Asked::Answer(Ok(claim)) => {
                 failures = 0;
@@ -234,7 +332,7 @@ pub fn run(options: &Options, token: Token, stop: &dyn Fn() -> bool) -> Result<(
         if stop() {
             break;
         }
-        if let Err(message) = serve(&client, &claim, options, stop) {
+        if let Err(message) = serve(client, &claim, options, stop) {
             eprintln!("heph: worker: workload {}: {message}", claim.id);
         }
     }
@@ -701,6 +799,36 @@ mod tests {
             .map(|_| backoff(5, first, longest).as_micros())
             .collect();
         assert!(varied.len() > 1, "the wait is the same every time");
+    }
+
+    #[test]
+    fn workloads_default_to_one_and_the_flag_wins_over_the_variable() {
+        assert_eq!(workloads_from(None, None), Ok(1));
+        assert_eq!(workloads_from(None, Some("3")), Ok(3));
+        assert_eq!(workloads_from(Some("2"), Some("3")), Ok(2));
+        assert_eq!(workloads_from(Some("64"), None), Ok(64));
+    }
+
+    #[test]
+    fn zero_workloads_is_refused_and_says_so() {
+        let error = workloads_from(Some("0"), None).expect_err("zero");
+        assert!(
+            error.contains("at least one") && error.contains("--workloads"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn workloads_above_the_ceiling_are_refused_and_say_so() {
+        let error = workloads_from(Some("65"), None).expect_err("too many");
+        assert!(
+            error.contains("above the most") && error.contains("64"),
+            "{error}"
+        );
+        let error = workloads_from(None, Some("640")).expect_err("too many");
+        assert!(error.contains(WORKLOADS_VARIABLE), "{error}");
+        assert!(workloads_from(Some("many"), None).is_err());
+        assert!(workloads_from(Some("-1"), None).is_err());
     }
 
     #[test]

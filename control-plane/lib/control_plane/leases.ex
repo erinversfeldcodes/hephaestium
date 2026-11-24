@@ -44,8 +44,9 @@ defmodule ControlPlane.Leases do
   # --- claiming -------------------------------------------------------------------------
 
   @doc """
-  Give the token's person the oldest queued workload their login approved, as a lease, or
-  `:none`. A workload that is not queued, or that has a lease, is never given, and one that is
+  Give the token's person a queued workload their login approved, as a lease, or `:none`: a
+  review before any other kind, so an open pull request is not held up by new work, and the
+  oldest first within each. A workload that is not queued, or that has a lease, is never given, and one that is
   being claimed at this moment is skipped and not waited for, so two executors never both get
   one.
   """
@@ -63,7 +64,11 @@ defmodule ControlPlane.Leases do
               on: l.workload_id == w.id and l.active,
               where: w.state == "queued" and is_nil(l.workload_id),
               where: fragment("lower(?->'approval'->>'approvedBy')", w.workload) == ^approver,
-              order_by: [asc: w.inserted_at, asc: w.id],
+              order_by: [
+                asc: fragment("CASE WHEN ?->'review' IS NULL THEN 1 ELSE 0 END", w.workload),
+                asc: w.inserted_at,
+                asc: w.id
+              ],
               limit: 1,
               lock: "FOR UPDATE OF w0 SKIP LOCKED"
           )

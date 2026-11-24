@@ -87,6 +87,18 @@ defmodule ControlPlane.ExecutorLinkTest do
     created.id
   end
 
+  # A queued review of a pull request, approved by `approver`, put on the queue after what is
+  # queued before it.
+  defp queued_review(approver \\ @person) do
+    {:ok, created} =
+      workload()
+      |> put_in(["approval", "approvedBy"], approver)
+      |> Map.put("review", %{"pullRequestNumber" => "7", "lens" => "security"})
+      |> Workloads.create()
+
+    created.id
+  end
+
   defp stream(id, from, kinds),
     do:
       kinds
@@ -132,6 +144,45 @@ defmodule ControlPlane.ExecutorLinkTest do
       assert %{status: 200} = StandInWorker.record(ctx.port, ctx.mine, id, record)
       assert Workloads.get(id).record == record
       refute lease(id).active, "the lease is let go when the record is kept"
+    end
+
+    test "is given a queued review before an implementation that was queued earlier", ctx do
+      implementation = queued()
+      Process.sleep(5)
+      review = queued_review()
+
+      assert %{status: 200, body: %{"workload" => %{"id" => ^review}}} =
+               StandInWorker.claim(ctx.port, ctx.mine)
+
+      assert %{status: 200, body: %{"workload" => %{"id" => ^implementation}}} =
+               StandInWorker.claim(ctx.port, ctx.mine)
+    end
+
+    test "holds several workloads at once, each with a lease of its own", ctx do
+      first = queued()
+      second = queued()
+
+      assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 2})
+      assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 2})
+      assert lease(first).active and lease(second).active
+      assert DeviceTokens.running(ctx.mine_record) == 2
+      assert Repo.reload!(ctx.mine_record).slots == 2
+
+      # One finishing, or being given back, leaves the other held.
+      assert %{status: 200} = StandInWorker.release(ctx.port, ctx.mine, first)
+      refute lease(first).active
+      assert lease(second).active
+      assert %{status: 200} = StandInWorker.heartbeat(ctx.port, ctx.mine, second)
+      assert DeviceTokens.running(ctx.mine_record) == 1
+    end
+
+    test "a claim that says nothing, or something absurd, is an executor of one slot", ctx do
+      queued()
+      assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine)
+      assert Repo.reload!(ctx.mine_record).slots == 1
+
+      assert %{status: 204} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 5000})
+      assert Repo.reload!(ctx.mine_record).slots == 1
     end
 
     test "is connected for as long as it sends anything, not only when it claims", ctx do
@@ -783,6 +834,10 @@ defmodule ControlPlane.ExecutorLinkTest do
       listed = browser(:get, "/api/device-tokens", cookie: as(@person))
       assert id in Enum.map(body(listed)["tokens"], & &1["id"])
       refute listed.resp_body =~ token
+
+      # Nothing is held and the worker has said nothing, so it may run one and runs none.
+      assert %{"slots" => 1, "running" => 0} =
+               Enum.find(body(listed)["tokens"], &(&1["id"] == id))
 
       assert {:ok, _} = DeviceTokens.authenticate(token, settings())
     end

@@ -88,6 +88,7 @@ Commands:
                          be run.
 
   worker --control-plane URL [--runs-dir PATH] [--executor PATH]
+         [--workloads N]
                          Do the work a hosted control plane gives this machine:
                          ask it for a workload, run the executor on it as `run`
                          does, send the events and the run record back, and ask
@@ -102,7 +103,11 @@ Commands:
                          never an argument, and never sent in anything but the
                          Authorization header. The executor's own secrets stay
                          on this machine, found as `run` finds them. Plain http
-                         is accepted only for this machine. Exits 0 when
+                         is accepted only for this machine. --workloads N (or
+                         HEPH_WORKER_WORKLOADS) is how many workloads it runs
+                         at once, each in a workspace and under a lease of its
+                         own: 1 to 64, default 1. Each holds a workspace on
+                         disk and a model session. Exits 0 when
                          stopped, 2 on a usage error and 3 if it could not go
                          on.
 
@@ -1089,6 +1094,7 @@ struct Worker {
     control_plane: String,
     runs_dir: Option<String>,
     executor: Option<String>,
+    workloads: Option<String>,
 }
 
 impl Worker {
@@ -1098,6 +1104,7 @@ impl Worker {
         let mut control_plane = None;
         let mut runs_dir = None;
         let mut executor = None;
+        let mut workloads = None;
         let mut remaining = arguments.iter();
         while let Some(argument) = remaining.next() {
             let value = (*remaining.next()?).to_owned();
@@ -1105,6 +1112,7 @@ impl Worker {
                 "--control-plane" => control_plane = Some(value),
                 "--runs-dir" => runs_dir = Some(value),
                 "--executor" => executor = Some(value),
+                "--workloads" => workloads = Some(value),
                 _ => return None,
             }
         }
@@ -1112,13 +1120,14 @@ impl Worker {
             control_plane: control_plane?,
             runs_dir,
             executor,
+            workloads,
         })
     }
 }
 
 fn worker_usage_error() -> ExitCode {
     eprintln!(
-        "heph: expected 'worker --control-plane URL [--runs-dir PATH] [--executor PATH]'\n\n{USAGE}"
+        "heph: expected 'worker --control-plane URL [--runs-dir PATH] [--executor PATH] [--workloads N]'\n\n{USAGE}"
     );
     ExitCode::from(USAGE_ERROR)
 }
@@ -1127,6 +1136,10 @@ fn worker_usage_error() -> ExitCode {
 fn run_worker(request: &Worker) -> ExitCode {
     let token = match worker::token() {
         Ok(token) => token,
+        Err(message) => return could_not_run(&message),
+    };
+    let workloads = match worker::workloads(request.workloads.as_deref()) {
+        Ok(workloads) => workloads,
         Err(message) => return could_not_run(&message),
     };
     // A stop is passed on to the executor and waited for, and does not end this program
@@ -1138,6 +1151,7 @@ fn run_worker(request: &Worker) -> ExitCode {
         control_plane: request.control_plane.clone(),
         runs_dir: request.runs_dir.as_ref().map(std::path::PathBuf::from),
         executor: request.executor.as_ref().map(std::path::PathBuf::from),
+        workloads,
     };
     match worker::run(&options, token, &heph::process::cancelled) {
         Ok(()) => ExitCode::SUCCESS,

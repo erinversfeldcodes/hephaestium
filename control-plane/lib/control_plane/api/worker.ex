@@ -11,7 +11,7 @@ defmodule ControlPlane.Api.Worker do
 
   | Route | |
   | --- | --- |
-  | `POST /worker/claim` | The workload to run, as a lease, and the number its first event takes, or 204 when there is none. |
+  | `POST /worker/claim` | `{"slots": n}`, how many workloads the executor may run at once (one when it says nothing). The workload to run, as a lease, and the number its first event takes, or 204 when there is none. |
   | `POST /worker/workloads/:id/events` | `{"events": [...]}`: kept in order by the stream's rules. |
   | `POST /worker/workloads/:id/heartbeat` | Keeps the lease while nothing else is sent. |
   | `POST /worker/workloads/:id/record` | The run record, at the end. |
@@ -30,8 +30,20 @@ defmodule ControlPlane.Api.Worker do
 
   def claim(conn, _params, settings, token) do
     DeviceTokens.seen(token)
+    {conn, slots} = slots(conn)
+    DeviceTokens.slots(token, slots)
     deadline = System.monotonic_time(:millisecond) + ExecutorLink.config(:claim_wait_ms)
     wait(conn, token, settings.poll_ms, deadline)
+  end
+
+  # How many workloads the executor says it may run at once. A claim with no body, or one that
+  # does not say, is an executor that runs one at a time.
+  defp slots(conn) do
+    case body(conn) do
+      {:ok, %{"slots" => slots}, conn} -> {conn, slots}
+      {:ok, _, conn} -> {conn, 1}
+      :error -> {conn, 1}
+    end
   end
 
   defp wait(conn, token, poll_ms, deadline) do

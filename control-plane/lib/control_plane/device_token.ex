@@ -10,6 +10,8 @@ defmodule ControlPlane.DeviceToken do
     field :token_hash, :string, redact: true
     field :last_seen_at, :utc_datetime_usec
     field :revoked_at, :utc_datetime_usec
+    # How many workloads the executor said it may run at once, as of its last claim.
+    field :slots, :integer, default: 1
 
     timestamps(updated_at: false, type: :utc_datetime_usec)
   end
