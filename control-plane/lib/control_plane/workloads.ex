@@ -198,13 +198,16 @@ defmodule ControlPlane.Workloads do
     )
   end
 
-  @doc "The workloads of a ticket, oldest first."
+  @doc """
+  The workloads of a ticket, oldest first. Workloads made in the same instant are ordered by id,
+  so the order is the same on every call rather than whatever the database happens to return.
+  """
   @spec for_ticket(String.t(), integer()) :: [%Workload{}]
   def for_ticket(repository, number) do
     Repo.all(
       from w in Workload,
         where: w.repository == ^repository and w.ticket_number == ^number,
-        order_by: w.inserted_at
+        order_by: [w.inserted_at, w.id]
     )
   end
 

@@ -77,11 +77,17 @@ defmodule ControlPlane.ApiTest do
       |> Map.merge(extra)
       |> Workloads.create()
 
+    # A monotonic counter, so each seeded workload is strictly later than the one before it.
     ControlPlane.Repo.update_all(
       from(w in ControlPlane.Workload, where: w.id == ^id),
       set: [
         state: state,
-        inserted_at: DateTime.add(DateTime.utc_now(), System.unique_integer([:positive]), :second)
+        inserted_at:
+          DateTime.add(
+            DateTime.utc_now(),
+            System.unique_integer([:positive, :monotonic]),
+            :second
+          )
       ]
     )
 
@@ -653,6 +659,18 @@ defmodule ControlPlane.ApiTest do
 
       assert get_as("/api/tickets/#{@repository}/21/verdicts") |> json() == %{"verdicts" => []}
       assert get_as("/api/tickets/#{@repository}/abc/verdicts").status == 404
+    end
+
+    test "workloads of one ticket made in the same instant come back in a fixed order, by id" do
+      ids = for _ <- 1..5, do: seed_kind(22, %{}, "completed")
+      same_instant = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      ControlPlane.Repo.update_all(
+        from(w in ControlPlane.Workload, where: w.id in ^ids),
+        set: [inserted_at: same_instant]
+      )
+
+      assert Enum.map(Workloads.for_ticket(@repository, 22), & &1.id) == Enum.sort(ids)
     end
 
     test "a ticket's review effort: rounds, and findings by lens, resolved and still there" do
