@@ -118,11 +118,24 @@ pub fn snapshot(workspace: &Path) -> Result<Snapshot, String> {
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?
     .split('\0')
-    .filter(|entry| !entry.is_empty())
+    .filter(|entry| !entry.is_empty() && !is_tool_state(entry))
     .map(str::to_owned)
     .collect();
     let diff = git_text(workspace, &["diff", "HEAD", "--binary"])?;
     Ok(Snapshot { head, status, diff })
+}
+
+/// Where the tools an agent runs keep their own state when the workspace is its
+/// home. A new file there is the tool at work, not the agent editing the change.
+const TOOL_STATE: [&str; 2] = [".local/state/gh/", ".config/gh/"];
+
+/// Whether a porcelain status entry is a new file under a tool's own state
+/// directory. Only untracked files qualify: a tracked file changed there is still
+/// a change.
+fn is_tool_state(entry: &str) -> bool {
+    entry
+        .strip_prefix("?? ")
+        .is_some_and(|path| TOOL_STATE.iter().any(|dir| path.starts_with(dir)))
 }
 
 /// Why a review that ran did not change nothing, or `None` when it changed nothing.
