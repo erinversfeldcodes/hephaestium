@@ -245,6 +245,9 @@ fn run_ticking(
 pub struct Committed {
     /// The branch the commit is on, which is the one it will be pushed to.
     pub branch: String,
+    /// Whether there is a commit to push. A revision that changed only the pull request's
+    /// description has none: the branch is as the pull request already has it.
+    pub made: std::cell::Cell<bool>,
 }
 
 /// The commit message the agent left, if it is one the repository's rule allows.
@@ -301,7 +304,14 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
         .join("\n")
         .trim()
             != message;
-    if tree_unchanged && !account_only {
+    // The description is kept out of the repository, so a revision that rewrote only it leaves
+    // the tree untouched; it is still something to deliver, to the pull request and not to
+    // its branch.
+    let description_only = tree_unchanged
+        && !account_only
+        && workload.revision.is_some()
+        && written_description(workspace).is_some();
+    if tree_unchanged && !account_only && !description_only {
         return Err("the agent changed nothing, so there is nothing to deliver".to_owned());
     }
 
@@ -311,6 +321,12 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
         || branch_for(ticket.number, &ticket.title),
         |revision| revision.branch.clone(),
     );
+    if description_only {
+        return Ok(Committed {
+            branch,
+            made: std::cell::Cell::new(false),
+        });
+    }
     run(
         &["git", "switch", "-c", &branch],
         workspace,
@@ -323,7 +339,18 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
         commit.push("--allow-empty");
     }
     run(&commit, workspace, "", "git commit")?;
-    Ok(Committed { branch })
+    Ok(Committed {
+        branch,
+        made: std::cell::Cell::new(true),
+    })
+}
+
+/// What the agent wrote in [`DESCRIPTION_FILE`], if it wrote anything.
+fn written_description(workspace: &Path) -> Option<String> {
+    std::fs::read_to_string(workspace.join(DESCRIPTION_FILE))
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
 }
 
 /// Rewrite the commit that was made locally from what the working tree and the message now
@@ -332,9 +359,35 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
 /// # Errors
 ///
 /// Returns why the commit could not be rewritten.
-pub fn amend_locally(_workload: &Workload, workspace: &Path) -> Result<(), String> {
+pub fn amend_locally(committed: &Committed, workspace: &Path) -> Result<(), String> {
     read_message(workspace)?;
     run(&["git", "add", "-A"], workspace, "", "git add")?;
+    if !committed.made.get() {
+        // Nothing was committed, so there is nothing of this run's to amend: the head is the
+        // pull request's own, which is never rewritten.
+        run(
+            &["git", "switch", "-c", &committed.branch],
+            workspace,
+            "",
+            "git switch",
+        )?;
+        run(
+            &[
+                "git",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-F",
+                MESSAGE_FILE,
+                "--cleanup=strip",
+            ],
+            workspace,
+            "",
+            "git commit",
+        )?;
+        committed.made.set(true);
+        return Ok(());
+    }
     run(
         &[
             "git",
@@ -463,29 +516,28 @@ pub fn push_and_open(
     let message = read_message(workspace)?;
     let branch = committed.branch.clone();
 
-    let helper = format!("credential.helper=!{gh} auth git-credential");
-    run_ticking(
-        &[
-            "git",
-            "-c",
-            "credential.helper=",
-            "-c",
-            &helper,
-            "push",
-            "origin",
-            &branch,
-        ],
-        workspace,
-        token,
-        &format!("could not push {branch}"),
-        tick,
-    )?;
+    if committed.made.get() {
+        let helper = format!("credential.helper=!{gh} auth git-credential");
+        run_ticking(
+            &[
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                &helper,
+                "push",
+                "origin",
+                &branch,
+            ],
+            workspace,
+            token,
+            &format!("could not push {branch}"),
+            tick,
+        )?;
+    }
 
     let resolution = read_resolution(workspace);
-    let written = std::fs::read_to_string(workspace.join(DESCRIPTION_FILE))
-        .ok()
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty());
+    let written = written_description(workspace);
     let description = Description {
         message: &message,
         written: written.as_deref(),

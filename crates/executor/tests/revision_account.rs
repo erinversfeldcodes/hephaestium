@@ -111,6 +111,27 @@ fn a_revision_that_changed_nothing_and_says_what_the_head_already_says_is_still_
 }
 
 #[test]
+fn a_revision_that_only_rewrites_the_description_updates_the_pull_request_and_pushes_no_commit() {
+    let (rig, head) = rig_with_branch("account-description");
+    let script = format!(
+        "printf '%s' '{HEAD_MESSAGE}' > .heph-commit-message; printf '## What this changes\\n\\nthe corrected account' > .heph-description.md; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(
+        git(&source, &["rev-parse", PR_BRANCH]),
+        head,
+        "no commit was pushed"
+    );
+    assert_eq!(&gh_arguments(&ran)[..2], ["pr", "edit"]);
+    assert!(gh_body(&ran).contains("the corrected account"));
+}
+
+#[test]
 fn a_first_run_that_changed_nothing_and_gave_no_account_is_still_failed_whatever_its_message_says()
 {
     let rig = rig("account-first", &manifest(&[]));
