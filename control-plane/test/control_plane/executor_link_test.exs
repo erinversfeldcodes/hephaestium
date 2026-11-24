@@ -87,6 +87,18 @@ defmodule ControlPlane.ExecutorLinkTest do
     created.id
   end
 
+  # A queued workload for a ticket of its own: one ticket's branch is held by one workload at a
+  # time, so workloads meant to run side by side are for different tickets.
+  defp queued_for_another_ticket do
+    {:ok, created} =
+      workload()
+      |> put_in(["approval", "approvedBy"], @person)
+      |> put_in(["ticket", "number"], System.unique_integer([:positive]))
+      |> Workloads.create()
+
+    created.id
+  end
+
   # A queued review of a pull request, approved by `approver`, put on the queue after what is
   # queued before it.
   defp queued_review(approver \\ @person) do
@@ -159,8 +171,8 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "holds several workloads at once, each with a lease of its own", ctx do
-      first = queued()
-      second = queued()
+      first = queued_for_another_ticket()
+      second = queued_for_another_ticket()
 
       assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 2})
       assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 2})
@@ -564,8 +576,8 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "is the oldest first, and the one claimed is not offered again", ctx do
-      first = queued()
-      second = queued()
+      first = queued_for_another_ticket()
+      second = queued_for_another_ticket()
 
       Repo.update_all(from(w in Workload, where: w.id == ^first),
         set: [inserted_at: ~U[2026-11-01 00:00:00.000000Z]]
@@ -580,7 +592,7 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "is never run by two workers: a workload held is not claimed again", ctx do
-      id = queued()
+      id = queued_for_another_ticket()
       {:ok, %{token: second}} = DeviceTokens.issue(@person, "desktop")
 
       assert %{status: 200, body: %{"workload" => %{"id" => ^id}}} =
@@ -592,7 +604,7 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "is never run by two workers that claim at the same moment", ctx do
-      ids = for _ <- 1..3, do: queued()
+      ids = for _ <- 1..3, do: queued_for_another_ticket()
 
       tokens =
         for n <- 1..8 do

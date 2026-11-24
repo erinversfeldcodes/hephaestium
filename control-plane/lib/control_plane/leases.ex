@@ -41,12 +41,20 @@ defmodule ControlPlane.Leases do
 
   @type held_error :: :not_held
 
+  # The states in which a workload holds its ticket's branch.
+  @in_flight ["preparing", "running", "gating"]
+
+  # The key of the lock that serialises claims.
+  @claim_lock 331_001
+
   # --- claiming -------------------------------------------------------------------------
 
   @doc """
   Give the token's person a queued workload their login approved, as a lease, or `:none`: a
   review before any other kind, so an open pull request is not held up by new work, and the
-  oldest first within each. A workload that is not queued, or that has a lease, is never given, and one that is
+  oldest first within each. A workload that changes a ticket's branch is not given while another
+  that does is under way for the same ticket: two would push to the one branch, and the second to
+  push is refused. It stays queued until the first ends. A workload that is not queued, or that has a lease, is never given, and one that is
   being claimed at this moment is skipped and not waited for, so two executors never both get
   one.
   """
@@ -57,12 +65,29 @@ defmodule ControlPlane.Leases do
 
     claimed =
       Repo.transaction(fn ->
+        # One claim at a time, so that two executors asking at once cannot each see the ticket
+        # free and each take a workload for it.
+        Repo.query!("SELECT pg_advisory_xact_lock($1)", [@claim_lock])
+
         candidate =
           Repo.one(
             from w in Workload,
+              as: :w,
               left_join: l in WorkloadLease,
               on: l.workload_id == w.id and l.active,
               where: w.state == "queued" and is_nil(l.workload_id),
+              where:
+                not is_nil(fragment("?->'review'", w.workload)) or
+                  not exists(
+                    from o in Workload,
+                      where:
+                        o.repository == parent_as(:w).repository and
+                          o.ticket_number == parent_as(:w).ticket_number and
+                          o.id != parent_as(:w).id and
+                          o.state in @in_flight and
+                          is_nil(fragment("?->'review'", o.workload)),
+                      select: 1
+                  ),
               where: fragment("lower(?->'approval'->>'approvedBy')", w.workload) == ^approver,
               order_by: [
                 asc: fragment("CASE WHEN ?->'review' IS NULL THEN 1 ELSE 0 END", w.workload),
