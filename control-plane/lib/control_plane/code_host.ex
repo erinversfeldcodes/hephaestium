@@ -27,7 +27,8 @@ defmodule ControlPlane.CodeHost do
   @callback compare(repository, from :: String.t(), to :: String.t()) ::
               {:ok, %{commits: [%{sha: String.t(), message: String.t()}], files: [String.t()]}}
               | error
-  @callback comment_on_change(repository, number :: term(), body :: String.t()) :: :ok | error
+  @callback comment_on_change(repository, number :: term(), body :: String.t()) ::
+              :ok | {:ok, url :: String.t()} | error
   @callback merge(repository, number :: term(), commit :: String.t()) ::
               :ok | {:refused, String.t()} | error
   @callback reviews(repository, number :: term()) :: {:ok, [ChangeReview.t()]} | error
