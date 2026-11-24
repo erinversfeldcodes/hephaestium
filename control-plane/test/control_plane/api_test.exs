@@ -554,6 +554,98 @@ defmodule ControlPlane.ApiTest do
       assert get_as("/api/tickets/#{@repository}/abc").status == 404
     end
 
+    test "a ticket with no spend carries empty steps and zeros" do
+      seed(12)
+      body = get_as("/api/tickets/#{@repository}/12") |> json()
+
+      assert body["spend"]["steps"] == []
+      assert [%{"spend" => spend}] = body["workloads"]
+      assert spend["usd"] == 0.0 and spend["tokens"] == 0.0
+
+      assert spend["tokens_by_kind"] == %{
+               "input" => 0.0,
+               "output" => 0.0,
+               "cache_creation" => 0.0,
+               "cache_read" => 0.0
+             }
+    end
+
+    test "each run and step carries its spend, the runs sum to the ticket's, and a live run says so" do
+      import ControlPlane.SpendFixtures
+
+      parts = fn input, output, creation, read ->
+        tokens(input + output + creation + read)
+        |> Map.put("breakdown", %{
+          "input" => input,
+          "output" => output,
+          "cacheCreation" => creation,
+          "cacheRead" => read
+        })
+      end
+
+      first =
+        spent(12, [usd(0.5), parts.(100.0, 50.0, 25.0, 825.0)],
+          steps: [
+            %{
+              "kind" => "KIND_IMPLEMENTATION",
+              "costs" => [usd(0.3), parts.(60.0, 30.0, 10.0, 400.0)]
+            },
+            %{"kind" => "KIND_REVISION", "costs" => [usd(0.2), parts.(40.0, 20.0, 15.0, 425.0)]}
+          ]
+        )
+
+      second = spent(12, [usd(0.25), parts.(10.0, 5.0, 0.0, 85.0)])
+
+      # The first run began a minute before the second, and has finished.
+      now = DateTime.utc_now()
+
+      ControlPlane.Repo.update_all(
+        from(w in ControlPlane.Workload, where: w.id == ^first.id),
+        set: [state: "completed", inserted_at: DateTime.add(now, -60, :second)]
+      )
+
+      ControlPlane.Repo.update_all(
+        from(w in ControlPlane.Workload, where: w.id == ^second.id),
+        set: [inserted_at: now]
+      )
+
+      body = get_as("/api/tickets/#{@repository}/12") |> json()
+      runs = body["workloads"]
+      assert Enum.map(runs, & &1["id"]) == [first.id, second.id]
+
+      assert [%{"running" => false}, %{"running" => true, "usd" => 0.25, "tokens" => 100.0}] =
+               Enum.map(runs, & &1["spend"])
+
+      # The runs sum to the ticket's totals, in dollars and in tokens, and the kinds to the tokens.
+      assert Enum.sum(Enum.map(runs, & &1["spend"]["usd"])) == body["spend"]["totals"]["usd"]
+
+      assert Enum.sum(Enum.map(runs, & &1["spend"]["tokens"])) ==
+               body["spend"]["totals"]["tokens"]
+
+      for run <- runs do
+        assert run["spend"]["tokens_by_kind"] |> Map.values() |> Enum.sum() ==
+                 run["spend"]["tokens"]
+
+        refute Map.has_key?(run["spend"], "usd_by_kind")
+      end
+
+      steps = body["spend"]["steps"]
+
+      assert Enum.map(steps, &{&1["workload_id"], &1["kind"]}) ==
+               [
+                 {first.id, "implementation"},
+                 {first.id, "revision"},
+                 {second.id, "implementation"}
+               ]
+
+      for step <- steps do
+        assert step["tokens_by_kind"] |> Map.values() |> Enum.sum() == step["tokens"]
+      end
+
+      assert Enum.sum(Enum.map(steps, & &1["tokens"])) == body["spend"]["totals"]["tokens"]
+      assert Enum.sum(Enum.map(steps, & &1["usd"])) == body["spend"]["totals"]["usd"]
+    end
+
     test "a workload" do
       id = seed()
       conn = get_as("/api/workloads/#{id}")

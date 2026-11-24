@@ -143,16 +143,24 @@ defmodule ControlPlane.Api.Read do
         nil
 
       [first | _] = workloads ->
+        spends = ControlPlane.Spend.by_workload(repository, number)
+
         %{
           repository: repository,
           number: number,
           title: get_in(first.workload, ["ticket", "title"]),
           url: get_in(first.workload, ["ticket", "url"]),
-          workloads: Enum.map(workloads, &workload/1),
+          workloads: Enum.map(workloads, &with_spend(&1, spends)),
           pull_request: PullRequests.for_tickets([{repository, number}])[{repository, number}],
           spend: ControlPlane.Spend.ticket(repository, number)
         }
     end
+  end
+
+  # A workload that spent nothing carries zeros, so a reader never has to test for absence.
+  defp with_spend(%Workload{} = w, spends) do
+    spend = Map.get_lazy(spends, w.id, fn -> ControlPlane.Spend.figures([], w.state) end)
+    w |> workload() |> Map.put(:spend, spend)
   end
 
   @doc "A workload as a person looks at it."
