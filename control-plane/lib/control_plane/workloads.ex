@@ -31,7 +31,8 @@ defmodule ControlPlane.Workloads do
         state: "queued",
         workload: workload,
         parent_id: options[:parent],
-        budget_base: options[:budget_base] || 0
+        budget_base: options[:budget_base] || 0,
+        provenance: provenance(options)
       }
       |> Ecto.Changeset.change()
       |> Ecto.Changeset.unique_constraint(:id, name: :workloads_pkey)
@@ -46,6 +47,25 @@ defmodule ControlPlane.Workloads do
   end
 
   def create(_, _options), do: {:error, :not_a_workload}
+
+  # What the control plane ran under when it made the workload, kept on it: the commit its image
+  # was built from, and the Athenaeum release it read when it read one for the workload. Both are
+  # taken as the workload is made, so changing the setting later does not change them.
+  defp provenance(options) do
+    %{
+      "controlPlaneCommit" => build_commit(),
+      "athenaeumRef" => options[:athenaeum_ref]
+    }
+  end
+
+  @doc "The commit the running control plane was built from, or nil when the build did not say."
+  @spec build_commit() :: String.t() | nil
+  def build_commit do
+    case Application.get_env(:control_plane, :build_commit) do
+      commit when is_binary(commit) and commit != "" -> commit
+      _ -> nil
+    end
+  end
 
   @doc """
   The workload of a ticket whose pull request is the one to look at: the latest that
@@ -453,10 +473,11 @@ defmodule ControlPlane.Workloads do
   neither. The workload it reviews is not settled by this: a review reads, and what
   it says is for the pull request's own ticket to weigh.
   """
-  @spec start_review(%Workload{}, map()) :: {:ok, %Workload{}} | {:error, term()}
-  def start_review(%Workload{} = workload, review) do
+  @spec start_review(%Workload{}, map(), keyword()) :: {:ok, %Workload{}} | {:error, term()}
+  def start_review(%Workload{} = workload, review, options \\ []) do
     Repo.transaction(fn ->
-      with {:ok, child} <- create(review, parent: workload.id),
+      with {:ok, child} <-
+             create(review, parent: workload.id, athenaeum_ref: options[:athenaeum_ref]),
            {:ok, _job} <- ControlPlane.Runner.enqueue(child.id) do
         child
       else

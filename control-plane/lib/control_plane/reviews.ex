@@ -54,7 +54,7 @@ defmodule ControlPlane.Reviews do
          {:ok, plan} <- lenses(manifest, changed),
          {:ok, plan} <- with_universal(plan, changed, ref),
          {:ok, texts, missing} <- lens_texts(plan["lenses"], ref) do
-      asked(workload, sha, number, texts, missing, plan)
+      asked(workload, sha, number, texts, missing, plan, ref)
     end
   end
 
@@ -372,13 +372,16 @@ defmodule ControlPlane.Reviews do
     end
   end
 
-  defp asked(workload, sha, number, texts, missing, plan) do
+  defp asked(workload, sha, number, texts, missing, plan, ref) do
     {existing, wanted} =
       Enum.split_with(texts, fn {pack, _} -> exists?(workload.repository, number, sha, pack) end)
 
     results =
       for {pack, text} <- wanted do
-        {pack, Workloads.start_review(workload, review(workload, sha, number, pack, text))}
+        {pack,
+         Workloads.start_review(workload, review(workload, sha, number, pack, text),
+           athenaeum_ref: ref
+         )}
       end
 
     case Enum.find(results, &match?({_, {:error, _}}, &1)) do

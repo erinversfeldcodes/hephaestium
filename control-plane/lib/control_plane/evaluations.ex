@@ -113,11 +113,12 @@ defmodule ControlPlane.Evaluations do
          :ok <- not_evaluating(repository, number),
          approval = approval || approval(merged),
          :ok <- not_judged_too_often(repository, number, approval.text),
-         {:ok, skill} <- skill(),
+         {:ok, skill, ref} <- skill_at_ref(@skill),
          {:ok, built} <- Intake.build(repository, number, approval),
          {:ok, record} <-
            Workloads.create(
-             with_evaluation(built, skill, open_items(repository, number), refused)
+             with_evaluation(built, skill, open_items(repository, number), refused),
+             athenaeum_ref: ref
            ),
          {:ok, _job} <- Runner.enqueue(record.id) do
       {:started, record.id}
@@ -387,16 +388,25 @@ defmodule ControlPlane.Evaluations do
   defp evaluation?(%Workload{workload: %{"completeness" => _}}), do: true
   defp evaluation?(_), do: false
 
-  # The skill as the pinned release has it.
-  defp skill, do: skill(@skill)
-
   @doc "The text of a skill as the pinned Athenaeum release has it."
   @spec skill(String.t()) :: {:ok, String.t()} | {:no_skill, String.t()}
   def skill(name) do
+    case skill_at_ref(name) do
+      {:ok, text, _ref} -> {:ok, text}
+      other -> other
+    end
+  end
+
+  @doc """
+  The text of a skill and the release it was read from, so that what is made from it can say
+  which release it read.
+  """
+  @spec skill_at_ref(String.t()) :: {:ok, String.t(), String.t()} | {:no_skill, String.t()}
+  def skill_at_ref(name) do
     with {:ok, ref} <- athenaeum_ref(),
          {:ok, text} <-
            CodeHost.file(@athenaeum, "skills/#{name}/SKILL.md", ref) do
-      {:ok, text}
+      {:ok, text, ref}
     else
       {:error, message} -> {:no_skill, message}
     end

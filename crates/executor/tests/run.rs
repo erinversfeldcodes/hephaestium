@@ -214,6 +214,20 @@ fn the_record_agrees_with_the_stream() {
     assert_eq!(record.workload_id, workload["id"].as_str().expect("an id"));
     assert!(record.started_at.is_some() && record.finished_at.is_some());
     assert_ne!(record.executor_version, "");
+    // The record says what it ran under: the release it was linked against, as the lock
+    // resolved it, and a build named by a commit and not by the workspace version.
+    let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
+        .expect("the lock");
+    let provenance = record.provenance.as_ref().expect("the run's provenance");
+    assert!(provenance.athenaeum_tag.starts_with('v'), "{provenance:?}");
+    assert!(
+        lock.contains(&format!(
+            "athenaeum?tag={}#{}",
+            provenance.athenaeum_tag, provenance.athenaeum_commit
+        )),
+        "the release the record names is the one the lock resolved: {provenance:?}"
+    );
+    assert_eq!(provenance.executor_commit.len(), 40, "{provenance:?}");
     assert_eq!(
         serde_json::to_value(record.workload.as_ref().expect("the workload")).expect("JSON")["repository"]
             ["baseCommit"],

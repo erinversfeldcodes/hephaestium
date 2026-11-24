@@ -1756,6 +1756,10 @@ fn bootstrap(
 
 /// Write the record, with the value of every secret held taken out of it.
 fn write_record(path: &Path, record: &RunRecord, redactor: &Redactor) -> Result<(), Refused> {
+    // Every record is written here, so none leaves without saying what it ran under.
+    let mut record = record.clone();
+    record.provenance = Some(crate::provenance::of(&record));
+    let record = &record;
     let mut text = serde_json::to_string_pretty(record).map_err(|e| Refused(e.to_string()))?;
     if !redactor.is_empty() {
         let mut value = serde_json::to_value(record).map_err(|e| Refused(e.to_string()))?;
