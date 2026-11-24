@@ -16,8 +16,10 @@ FROM ${NODE} AS dashboard
 WORKDIR /dashboard
 COPY dashboard/package.json dashboard/package-lock.json dashboard/.npmrc ./
 RUN npm ci
-COPY dashboard/index.html dashboard/tsconfig.json dashboard/vite.config.ts ./
+# The type check covers the browser tests and their config too, so they are in the build context.
+COPY dashboard/index.html dashboard/tsconfig.json dashboard/vite.config.ts dashboard/playwright.config.ts ./
 COPY dashboard/src src
+COPY dashboard/browser browser
 RUN npm run build
 
 # `heph` is what intake runs to turn an approved ticket into a workload. It is built from the
