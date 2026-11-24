@@ -141,7 +141,7 @@ fn a_revisions_work_goes_on_the_pull_requests_own_branch() {
 #[test]
 fn amending_rewrites_the_one_commit_with_what_the_agent_changed_and_said() {
     let tree = tree("local-amend", |_| {});
-    deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
+    let committed = deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
 
     tree.scratch
         .write("source/web/change.txt", "the better change\n");
@@ -150,7 +150,7 @@ fn amending_rewrites_the_one_commit_with_what_the_agent_changed_and_said() {
         "source/.heph-commit-message",
         "fix: make the reset spec wait properly\n",
     );
-    deliver::amend_locally(&tree.workload, &tree.workspace).expect("an amend");
+    deliver::amend_locally(&committed, &tree.workspace).expect("an amend");
 
     assert_eq!(
         commits_past_main(&tree),
@@ -171,9 +171,9 @@ fn amending_rewrites_the_one_commit_with_what_the_agent_changed_and_said() {
 #[test]
 fn amending_when_the_agent_changed_nothing_keeps_the_commit_as_it_was() {
     let tree = tree("local-amend-same", |_| {});
-    deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
+    let committed = deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
 
-    deliver::amend_locally(&tree.workload, &tree.workspace).expect("an amend");
+    deliver::amend_locally(&committed, &tree.workspace).expect("an amend");
 
     assert_eq!(commits_past_main(&tree).len(), 1);
     assert_eq!(

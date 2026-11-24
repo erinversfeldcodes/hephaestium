@@ -1022,7 +1022,7 @@ fn read_before_push<W: Write>(
                 Ok(still_deferred) => deferred = still_deferred,
                 Err(failed) => return Ok((Outcome::Failed, failed.with_output())),
             }
-            if let Err(reason) = deliver::amend_locally(workload, workspace) {
+            if let Err(reason) = deliver::amend_locally(&committed, workspace) {
                 return Ok((Outcome::Failed, reason));
             }
         }
