@@ -1,6 +1,7 @@
 import type { Client, Question } from "../api";
 import { columns, lanes, waitedFor } from "../board";
 import { Link } from "../Link";
+import { PullRequestLink } from "../PullRequestLink";
 import { ticketPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
 
@@ -47,7 +48,8 @@ export function BoardPage({ client }: { readonly client: Client }) {
                               <span className="state" data-state={ticket.latest?.state ?? "waiting"}>
                                 {ticket.latest?.state ?? "waiting"}
                               </span>{" "}
-                              <small>{`#${ticket.number}`}</small>
+                              <small>{`#${ticket.number}`}</small>{" "}
+                              <PullRequestLink pullRequest={ticket.pullRequest} />
                               {waiting.has(`${ticket.repository}#${ticket.number}`) && (
                                 <strong className="needed"> Person needed</strong>
                               )}

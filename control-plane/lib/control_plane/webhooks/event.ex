@@ -12,7 +12,7 @@ defmodule ControlPlane.Webhooks.Event do
   """
 
   @kinds ~w(ticket_approved ticket_edited ticket_closed ticket_reopened comment_added
-            checks_completed change_updated change_merged change_closed base_moved)a
+            checks_completed checks_changed change_updated change_merged change_closed base_moved)a
 
   defstruct [:kind, :source, :repository, :number, :actor, :at, :delivery_id, :cause, :on, :head]
 
@@ -62,7 +62,7 @@ defmodule ControlPlane.Webhooks.Event do
   def from_args(_), do: :error
 
   # Only atoms the control plane already knows are made from text a job holds.
-  @known ~w(unapproved edited review synchronize ticket change)a
+  @known ~w(unapproved edited review synchronize opened ticket change)a
 
   defp atom(nil), do: nil
   defp atom(text) when is_binary(text), do: Enum.find(@known, &(Atom.to_string(&1) == text))

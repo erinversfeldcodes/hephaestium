@@ -7,7 +7,16 @@ defmodule ControlPlane.Api.Read do
 
   import Ecto.Query
 
-  alias ControlPlane.{Account, DeviceTokens, Event, Repo, WaitingTickets, Workload, Workloads}
+  alias ControlPlane.{
+    Account,
+    DeviceTokens,
+    Event,
+    PullRequests,
+    Repo,
+    WaitingTickets,
+    Workload,
+    Workloads
+  }
 
   @max_page 500
 
@@ -16,7 +25,8 @@ defmodule ControlPlane.Api.Read do
 
   @doc """
   The board's tickets, the most recently active first: each with its title, how many workloads
-  it has had and the latest of them with its state. An approved ticket with no workload yet is
+  it has had and the latest of them with its state, and its pull request (number, address, state and the
+  state of its checks, as last recorded) or nil when it has none. Nothing here reads the code host. An approved ticket with no workload yet is
   among them with no `latest` and no workloads. A ticket that waits, with no workload or with a
   queued one, has `waiting`: since when, and for a queued workload whether no worker has
   claimed it, which is so when no executor of the ticket's approver is connected. A time the
@@ -40,8 +50,13 @@ defmodule ControlPlane.Api.Read do
           into: %{},
           do: {login, DeviceTokens.connected?(login)}
 
+    pulls = PullRequests.for_tickets(for row <- page, do: {row.repository, row.number})
+
     Enum.map(page, fn row ->
-      row |> Map.delete(:sort_at) |> Map.update!(:waiting, &worker_known(&1, connected))
+      row
+      |> Map.delete(:sort_at)
+      |> Map.update!(:waiting, &worker_known(&1, connected))
+      |> Map.put(:pull_request, pulls[{row.repository, row.number}])
     end)
   end
 
@@ -134,6 +149,7 @@ defmodule ControlPlane.Api.Read do
           title: get_in(first.workload, ["ticket", "title"]),
           url: get_in(first.workload, ["ticket", "url"]),
           workloads: Enum.map(workloads, &workload/1),
+          pull_request: PullRequests.for_tickets([{repository, number}])[{repository, number}],
           spend: ControlPlane.Spend.ticket(repository, number)
         }
     end

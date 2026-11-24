@@ -25,6 +25,14 @@ export interface Session {
 /** What was spent, each unit on its own: dollars and tokens are never added to each other. */
 export type Totals = Readonly<Record<string, number>>;
 
+/** A ticket's pull request as the control plane last recorded it, never read from the code host. */
+export interface PullRequest {
+  readonly number: number;
+  readonly url: string;
+  readonly state: "open" | "merged" | "closed";
+  readonly checks: "passing" | "failing" | "pending" | "none";
+}
+
 export interface TicketSummary {
   readonly repository: string;
   readonly number: number;
@@ -40,6 +48,8 @@ export interface TicketSummary {
   } | null;
   /** Present while the ticket waits for a run to start: no workload yet, or a queued one. */
   readonly waiting: Waiting | null;
+  /** The ticket's pull request, or null when it has none. */
+  readonly pullRequest: PullRequest | null;
 }
 
 /** A ticket waiting for work to start. `since` is null where the control plane does not hold the time. */
@@ -76,6 +86,8 @@ export interface TicketDetail {
   readonly number: number;
   readonly title: string | null;
   readonly url: string | null;
+  /** The ticket's pull request, or null when it has none. */
+  readonly pullRequest: PullRequest | null;
   readonly workloads: readonly Run[];
   readonly spend: {
     readonly totals: Totals;
@@ -386,6 +398,18 @@ function parseSession(body: unknown): Session {
   return { login: text(fields(body)["login"]) };
 }
 
+const pullStates = ["open", "merged", "closed"] as const;
+const pullChecks = ["passing", "failing", "pending", "none"] as const;
+
+function parsePullRequest(value: unknown): PullRequest | null {
+  if (value === null || value === undefined) return null;
+  const pull = fields(value);
+  const state = pullStates.find((s) => s === pull["state"]);
+  const checks = pullChecks.find((c) => c === pull["checks"]);
+  if (state === undefined || checks === undefined) throw new Error("a pull request has a state or checks that is not known");
+  return { number: count(pull["number"]), url: text(pull["url"]), state, checks };
+}
+
 function parseTickets(body: unknown): readonly TicketSummary[] {
   return list(fields(body)["tickets"]).map((raw) => {
     const row = fields(raw);
@@ -408,6 +432,7 @@ function parseTickets(body: unknown): readonly TicketSummary[] {
         approvedBy: maybeText(waiting["approved_by"]),
         noWorker: waiting["no_worker"] === true,
       },
+      pullRequest: parsePullRequest(row["pull_request"]),
     };
   });
 }
@@ -433,6 +458,7 @@ function parseTicket(body: unknown): TicketDetail {
     number: count(ticket["number"]),
     title: maybeText(ticket["title"]),
     url: maybeText(ticket["url"]),
+    pullRequest: parsePullRequest(ticket["pull_request"]),
     workloads: list(ticket["workloads"]).map((raw) => {
       const run = fields(raw);
       return {

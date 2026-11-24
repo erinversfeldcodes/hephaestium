@@ -8,6 +8,7 @@ export const summary: TicketSummary = {
   settledAt: null,
   latest: { id: "w-2", state: "running", kind: "review", at: "2026-11-20T10:00:00Z" },
   waiting: null,
+  pullRequest: null,
 };
 
 export const detail: TicketDetail = {
@@ -15,6 +16,7 @@ export const detail: TicketDetail = {
   number: 12,
   title: "Teach the parser about guards",
   url: "https://github.com/erinversfeldcodes/gazebolang/issues/12",
+  pullRequest: null,
   workloads: [
     {
       id: "w-1",

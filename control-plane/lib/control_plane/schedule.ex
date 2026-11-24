@@ -11,7 +11,8 @@ defmodule ControlPlane.Schedule do
   # What reads no code host does not change with webhooks.
   @unchanged [
     {"7 * * * *", Jobs.RecheckOwed},
-    {"17 * * * *", Jobs.SweepWorkspaces}
+    {"17 * * * *", Jobs.SweepWorkspaces},
+    {"37 * * * *", Jobs.RefreshPullRequests}
   ]
 
   @poll [

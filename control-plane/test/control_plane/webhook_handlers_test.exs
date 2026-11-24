@@ -93,7 +93,14 @@ defmodule ControlPlane.WebhookHandlersTest do
 
   defp stand_in_event(id, sequence, kind), do: event(id, sequence, kind)
 
-  defp changes(calls), do: for({:code_host, :change, [_, number]} <- calls, do: number)
+  # Each read of a change is for settling or keeping current, and one more is for the record of
+  # the pull request.
+  defp changes(calls),
+    do: for({:code_host, :change, [_, number]} <- calls, do: to_string(number))
+
+  # What was asked of the host other than the change itself, which the record of the pull
+  # request reads whatever else is done.
+  defp beyond_the_change(calls), do: Enum.reject(calls, &match?({:code_host, :change, _}, &1))
 
   describe "a ticket approved (what Intake does for each ticket)" do
     setup %{gh: gh} do
@@ -318,7 +325,7 @@ defmodule ControlPlane.WebhookHandlersTest do
 
         Handle.run(event(unquote(kind), number: 52, head: "abc"))
 
-        assert changes(host_calls()) == ["52"]
+        assert changes(host_calls()) == ["52", "52"]
       end
     end
 
@@ -356,7 +363,7 @@ defmodule ControlPlane.WebhookHandlersTest do
       Handle.run(event(:checks_completed, number: 52))
       Handle.run(event(:change_closed, number: 52))
 
-      assert host_calls() == []
+      assert beyond_the_change(host_calls()) == []
     end
   end
 
@@ -372,7 +379,7 @@ defmodule ControlPlane.WebhookHandlersTest do
 
       Handle.run(event(:change_merged, number: 52))
 
-      assert changes(host_calls()) == ["52"]
+      assert changes(host_calls()) == ["52", "52"]
     end
 
     test "a change updated is looked at as the poll keeps a pull request current" do
@@ -386,7 +393,7 @@ defmodule ControlPlane.WebhookHandlersTest do
 
       Handle.run(event(:change_updated, number: 52))
 
-      assert changes(host_calls()) == ["52"]
+      assert changes(host_calls()) == ["52", "52"]
     end
 
     test "a change closed without a merge is nothing to do" do
@@ -394,7 +401,7 @@ defmodule ControlPlane.WebhookHandlersTest do
 
       Handle.run(event(:change_closed, number: 52))
 
-      assert host_calls() == []
+      assert beyond_the_change(host_calls()) == []
     end
   end
 
@@ -432,7 +439,7 @@ defmodule ControlPlane.WebhookHandlersTest do
       args = event(:change_closed, number: 52) |> Event.to_args()
       assert :ok = perform_job(HandleEvent, args)
 
-      assert changes(host_calls()) == ["52"]
+      assert changes(host_calls()) == ["52", "52"]
     end
 
     test "is one job for a delivery id, even if it is inserted twice" do
@@ -511,11 +518,12 @@ defmodule ControlPlane.WebhookHandlersTest do
       StandInSystems.answer(:code_host, :change, {:error, "stand-in"})
 
       assert :ok = perform_job(SettleWorkload, %{"workload_id" => w.id})
-      assert changes(host_calls()) == ["52"]
+      assert changes(host_calls()) == ["52", "52"]
 
+      # Settled now: it is not settled again, and only the record of the pull request is read.
       Workloads.settle(w.id)
       assert :ok = perform_job(SettleWorkload, %{"workload_id" => w.id})
-      assert changes(host_calls()) == ["52"]
+      assert changes(host_calls()) == ["52", "52", "52"]
     end
   end
 

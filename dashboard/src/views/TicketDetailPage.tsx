@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentText, Client, ReviewEffort, Run, Verdict } from "../api";
 import { amount, amounts, when } from "../format";
 import { Link } from "../Link";
+import { PullRequestLink } from "../PullRequestLink";
 import { runPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
 import { QuestionPanel } from "./QuestionPanel";
@@ -175,6 +176,12 @@ export function TicketDetailPage({
               {detail.title ?? `Ticket #${detail.number}`} <small>{`${detail.repository} #${detail.number}`}</small>
             </h2>
             {detail.url !== null && <a href={detail.url}>On GitHub</a>}
+            {detail.pullRequest !== null && (
+              <>
+                {" "}
+                <PullRequestLink pullRequest={detail.pullRequest} />
+              </>
+            )}
 
             <QuestionPanel client={client} repository={repository} number={number} />
 

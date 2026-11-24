@@ -407,7 +407,9 @@ delivery id) and never GitHub's payload. A delivery for a repository not in `HEP
 of a kind not subscribed to, is acknowledged and dropped.
 
 Subscribe the App to `issues`, `issue_comment`, `pull_request`, `pull_request_review`,
-`check_run` and `push`. A delivery is a hint to look: the handler reads the current state through
+`check_run`, `check_suite`, `status` and `push`. The last three checks events and the pull request
+events also keep the record of each pull request (its state and the state of its checks) that the
+board and the ticket page read, which the hourly poll repairs. A delivery is a hint to look: the handler reads the current state through
 the tracker and the code host and calls what the poll calls, so a late or repeated delivery does
 nothing and a forged approval is no approval.
 

@@ -10,13 +10,49 @@ defmodule ControlPlane.Webhooks.Handle do
   not be read and a later attempt may do better.
   """
 
-  alias ControlPlane.{Evaluations, Gaps, Intake, Settle, Tracker, Workloads}
+  require Logger
+
+  alias ControlPlane.{Evaluations, Gaps, Intake, PullRequests, Settle, Tracker, Workloads}
   alias ControlPlane.Webhooks.Event
 
   @spec run(Event.t()) :: term()
   def run(%Event{repository: repository} = event) do
-    if repository in repositories(), do: handle(event), else: :not_configured
+    if repository in repositories() do
+      result = handle(event)
+      record_pull_request(event)
+      result
+    else
+      :not_configured
+    end
   end
+
+  # What a change or its checks did moves the record of the pull request, which is read again
+  # from the host so that the record is what the host says now. A host that cannot be read is
+  # left to the hourly poll: the event's own work is not undone or retried for it.
+  @pull_request_kinds [
+    :checks_completed,
+    :checks_changed,
+    :change_updated,
+    :change_merged,
+    :change_closed
+  ]
+
+  defp record_pull_request(%Event{kind: kind} = event) when kind in @pull_request_kinds do
+    results =
+      if is_nil(event.number),
+        do: PullRequests.refresh_head(event.repository, event.head),
+        else: [PullRequests.refresh(event.repository, event.number)]
+
+    for {:error, message} <- results do
+      Logger.warning(
+        "could not record a pull request of #{event.repository} after #{kind}: #{message}"
+      )
+    end
+
+    :ok
+  end
+
+  defp record_pull_request(_event), do: :ok
 
   defp repositories, do: Application.get_env(:control_plane, :intake, [])[:repositories] || []
 
@@ -52,6 +88,9 @@ defmodule ControlPlane.Webhooks.Handle do
 
   defp handle(%Event{kind: :comment_added} = event),
     do: Gaps.replies(event.repository, event.number)
+
+  # Checks that have only changed settle nothing: they move the record of the pull request.
+  defp handle(%Event{kind: :checks_changed}), do: :recorded
 
   defp handle(%Event{kind: :base_moved} = event), do: Settle.stale(event.repository)
 
