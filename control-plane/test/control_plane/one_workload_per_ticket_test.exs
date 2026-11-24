@@ -51,4 +51,17 @@ defmodule ControlPlane.OneWorkloadPerTicketTest do
     assert {:ok, %Workload{id: ^review}} = Leases.claim(token)
     assert {:ok, %Workload{id: ^first}} = Leases.claim(token)
   end
+
+  test "the local runner's claim does not take a workload while another of the ticket is under way" do
+    first = queue()
+    second = queue()
+
+    assert {:ok, %Workload{state: "preparing"}} = Workloads.claim(first)
+    assert :ticket_busy = Workloads.claim(second)
+    assert Workloads.get(second).state == "queued"
+
+    Repo.update_all(from(w in Workload, where: w.id == ^first), set: [state: "completed"])
+
+    assert {:ok, %Workload{id: ^second}} = Workloads.claim(second)
+  end
 end

@@ -277,23 +277,76 @@ defmodule ControlPlane.Workloads do
   @doc "The states a workload does not leave."
   def terminal_states, do: @terminal
 
-  @doc """
-  Take a queued workload to run, once. A workload that is not queued (it is
-  running, or has ended, or another job has it) is not taken again.
-  """
-  @spec claim(Ecto.UUID.t()) :: {:ok, %Workload{}} | :already_claimed | :unknown
-  def claim(id) do
-    {count, rows} =
-      Repo.update_all(
-        from(w in Workload, where: w.id == ^id and w.state == "queued", select: w),
-        set: [state: "preparing", updated_at: DateTime.utc_now()]
-      )
+  # The states in which a workload holds its ticket's branch.
+  @in_flight ["preparing", "running", "gating"]
 
-    cond do
-      count == 1 -> {:ok, hd(rows)}
-      get(id) == nil -> :unknown
-      true -> :already_claimed
-    end
+  # The key of the lock that serialises every claim, so that two claims at once cannot each see
+  # the ticket free and each take a workload for it.
+  @claim_lock 331_001
+
+  @doc "Wait for the lock that serialises claims; held until the transaction ends."
+  @spec lock_claims() :: :ok
+  def lock_claims do
+    Repo.query!("SELECT pg_advisory_xact_lock($1)", [@claim_lock])
+    :ok
+  end
+
+  @doc """
+  A condition on a query whose workload has the binding `:w`: the workload may be given now. A
+  review never changes the branch, so it always may; any other workload may not while another
+  that is not a review is under way for the same ticket. The one home of the
+  one-workload-per-ticket rule.
+  """
+  def branch_free do
+    dynamic(
+      [w: w],
+      not is_nil(fragment("?->'review'", w.workload)) or
+        not exists(
+          from(o in ControlPlane.Workload,
+            where:
+              o.repository == parent_as(:w).repository and
+                o.ticket_number == parent_as(:w).ticket_number and
+                o.id != parent_as(:w).id and
+                o.state in ^@in_flight and
+                is_nil(fragment("?->'review'", o.workload)),
+            select: 1
+          )
+        )
+    )
+  end
+
+  @doc """
+  Take a queued workload to run, once. A workload that is not queued (it is running, or has
+  ended, or another job has it) is not taken again. One whose ticket's branch is held by another
+  workload is not taken: `:ticket_busy`, and it stays queued.
+  """
+  @spec claim(Ecto.UUID.t()) :: {:ok, %Workload{}} | :already_claimed | :ticket_busy | :unknown
+  def claim(id) do
+    result =
+      Repo.transaction(fn ->
+        lock_claims()
+
+        {count, rows} =
+          Repo.update_all(
+            from(w in Workload,
+              as: :w,
+              where: w.id == ^id and w.state == "queued",
+              where: ^branch_free(),
+              select: w
+            ),
+            set: [state: "preparing", updated_at: DateTime.utc_now()]
+          )
+
+        cond do
+          count == 1 -> {:ok, hd(rows)}
+          get(id) == nil -> :unknown
+          get(id).state == "queued" -> :ticket_busy
+          true -> :already_claimed
+        end
+      end)
+
+    {:ok, outcome} = result
+    outcome
   end
 
   @doc "Put a claimed workload back on the queue, because the executor could not be started."

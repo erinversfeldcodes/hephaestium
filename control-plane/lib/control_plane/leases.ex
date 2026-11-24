@@ -41,12 +41,6 @@ defmodule ControlPlane.Leases do
 
   @type held_error :: :not_held
 
-  # The states in which a workload holds its ticket's branch.
-  @in_flight ["preparing", "running", "gating"]
-
-  # The key of the lock that serialises claims.
-  @claim_lock 331_001
-
   # --- claiming -------------------------------------------------------------------------
 
   @doc """
@@ -67,7 +61,7 @@ defmodule ControlPlane.Leases do
       Repo.transaction(fn ->
         # One claim at a time, so that two executors asking at once cannot each see the ticket
         # free and each take a workload for it.
-        Repo.query!("SELECT pg_advisory_xact_lock($1)", [@claim_lock])
+        Workloads.lock_claims()
 
         candidate =
           Repo.one(
@@ -76,18 +70,7 @@ defmodule ControlPlane.Leases do
               left_join: l in WorkloadLease,
               on: l.workload_id == w.id and l.active,
               where: w.state == "queued" and is_nil(l.workload_id),
-              where:
-                not is_nil(fragment("?->'review'", w.workload)) or
-                  not exists(
-                    from o in Workload,
-                      where:
-                        o.repository == parent_as(:w).repository and
-                          o.ticket_number == parent_as(:w).ticket_number and
-                          o.id != parent_as(:w).id and
-                          o.state in @in_flight and
-                          is_nil(fragment("?->'review'", o.workload)),
-                      select: 1
-                  ),
+              where: ^Workloads.branch_free(),
               where: fragment("lower(?->'approval'->>'approvedBy')", w.workload) == ^approver,
               order_by: [
                 asc: fragment("CASE WHEN ?->'review' IS NULL THEN 1 ELSE 0 END", w.workload),
