@@ -21,8 +21,10 @@ defmodule ControlPlane.Tickets do
     Gaps,
     Tracker,
     PullRequestComments,
+    RevisionNeeded,
     Spend,
-    Workload
+    Workload,
+    Workloads
   }
 
   @ready "heph:ready"
@@ -75,8 +77,21 @@ defmodule ControlPlane.Tickets do
   # person's reply, and a person's approval of any ticket it proposed, are what act.
   defp finish(%Workload{workload: %{"gap" => _}} = workload), do: stepped(workload)
 
+  # A revision that failed may only have found its pull request merged and its branch gone.
+  # Then the work did not fail: the workload is not needed, and the ticket keeps the label the
+  # merge gave it and gets no comment.
+  defp finish(%Workload{state: state, workload: %{"revision" => _}} = workload)
+       when state in ["failed", "timed_out"] do
+    case RevisionNeeded.check(workload) do
+      {:not_needed, reason} -> Workloads.not_needed(workload.id, reason)
+      :needed -> revised(workload)
+    end
+  end
+
+  defp finish(%Workload{} = workload), do: revised(workload)
+
   # A revision's account is on the pull request as well as the ticket.
-  defp finish(%Workload{} = workload),
+  defp revised(%Workload{} = workload),
     do: first_error([end_ticket(workload), PullRequestComments.revision(workload)])
 
   defp evaluated(%Workload{state: "completed", record: %{"completeness" => verdict}} = workload)
