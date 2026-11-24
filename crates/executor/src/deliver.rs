@@ -240,6 +240,49 @@ fn run_ticking(
     }
 }
 
+/// The largest file a delivery commits. Anything bigger is a dump or a build product left
+/// behind, not source, and it would stay in the repository's history for good.
+pub const LARGEST_FILE: u64 = 5 * 1024 * 1024;
+
+/// What a BEAM that crashed leaves in the directory it ran in. It is a record of a stopped
+/// run, never part of a change, so it is left out of the commit wherever it is.
+const CRASH_DUMP: &str = "erl_crash.dump";
+
+/// Stage the agent's work: everything except a crash dump, and nothing larger than
+/// [`LARGEST_FILE`].
+fn stage(workspace: &Path) -> Result<(), String> {
+    let leave_out = format!(":(exclude,glob)**/{CRASH_DUMP}");
+    run(
+        &["git", "add", "-A", "--", ".", &leave_out],
+        workspace,
+        "",
+        "git add",
+    )?;
+    let staged = run(
+        &[
+            "git",
+            "-c",
+            "core.quotepath=off",
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMR",
+        ],
+        workspace,
+        "",
+        "git diff",
+    )?;
+    for name in staged {
+        let size = std::fs::metadata(workspace.join(&name)).map_or(0, |m| m.len());
+        if size > LARGEST_FILE {
+            return Err(format!(
+                "{name} is {size} bytes, over the {LARGEST_FILE}-byte limit for a committed file: delete it, or keep it out of the change"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// What a local commit made.
 #[derive(Debug)]
 pub struct Committed {
@@ -333,7 +376,7 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
         "",
         "git switch",
     )?;
-    run(&["git", "add", "-A"], workspace, "", "git add")?;
+    stage(workspace)?;
     let mut commit = vec!["git", "commit", "-q", "-F", MESSAGE_FILE, "--cleanup=strip"];
     if account_only {
         commit.push("--allow-empty");
@@ -361,7 +404,7 @@ fn written_description(workspace: &Path) -> Option<String> {
 /// Returns why the commit could not be rewritten.
 pub fn amend_locally(committed: &Committed, workspace: &Path) -> Result<(), String> {
     read_message(workspace)?;
-    run(&["git", "add", "-A"], workspace, "", "git add")?;
+    stage(workspace)?;
     if !committed.made.get() {
         // Nothing was committed, so there is nothing of this run's to amend: the head is the
         // pull request's own, which is never rewritten.
