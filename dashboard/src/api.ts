@@ -50,7 +50,29 @@ export interface TicketSummary {
   readonly waiting: Waiting | null;
   /** The ticket's pull request, or null when it has none. */
   readonly pullRequest: PullRequest | null;
+  /** The ticket's workloads, oldest first: what its track is drawn from. */
+  readonly runs: readonly TrackRun[];
+  /** What the ticket's runs have cost, in dollars. */
+  readonly spendUsd: number;
+  /** What the ticket asks of a person, or null when it asks nothing. */
+  readonly needs: Needs | null;
 }
+
+/** One workload of a ticket, as far as the track needs to know it. */
+export interface TrackRun {
+  readonly kind: string;
+  readonly state: string;
+  /** The lens of a review, or null for any other workload. */
+  readonly lens: string | null;
+  readonly at: string;
+  /** The gate a failed run stopped at, or null when it stopped at none. */
+  readonly failedGate: string | null;
+}
+
+/** What a ticket needs from a person: its question, or the step its runs failed at. */
+export type Needs =
+  | { readonly kind: "question"; readonly text: string }
+  | { readonly kind: "failure"; readonly step: string; readonly runs: number };
 
 /** A ticket waiting for work to start. `since` is null where the control plane does not hold the time. */
 export interface Waiting {
@@ -437,8 +459,28 @@ function parseTickets(body: unknown): readonly TicketSummary[] {
         noWorker: waiting["no_worker"] === true,
       },
       pullRequest: parsePullRequest(row["pull_request"]),
+      runs: list(row["runs"]).map((raw) => {
+        const run = fields(raw);
+        return {
+          kind: text(run["kind"]),
+          state: text(run["state"]),
+          lens: maybeText(run["lens"]),
+          at: text(run["at"]),
+          failedGate: maybeText(run["failed_gate"]),
+        };
+      }),
+      spendUsd: typeof row["spend_usd"] === "number" ? row["spend_usd"] : 0,
+      needs: parseNeeds(row["needs"]),
     };
   });
+}
+
+function parseNeeds(raw: unknown): Needs | null {
+  if (raw === null || raw === undefined) return null;
+  const needs = fields(raw);
+  if (needs["kind"] === "question") return { kind: "question", text: text(needs["text"]) };
+  if (needs["kind"] === "failure") return { kind: "failure", step: text(needs["step"]), runs: count(needs["runs"]) };
+  throw new Error("a need of a kind this dashboard does not know");
 }
 
 function parseRun(body: unknown): RunDetail {

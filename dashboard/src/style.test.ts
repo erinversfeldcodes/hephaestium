@@ -67,8 +67,13 @@ describe("the stylesheet", () => {
     expect(declarations(planted, ".table-scroll")).not.toMatch(/overflow-x:\s*auto/);
   });
 
-  it("sets card titles and table links in the foreground colour, with the accent on hover", () => {
-    expect(declarations(stylesheet, "td a,\n.column li > a")).toMatch(/color:\s*var\(--fg\)/);
-    expect(declarations(stylesheet, "td a:hover,\n.column li > a:hover")).toMatch(/color:\s*var\(--accent-text\)/);
+  it("sets row titles in the foreground colour, with the accent on hover", () => {
+    expect(declarations(stylesheet, ".title > a")).toMatch(/color:\s*var\(--fg\)/);
+    expect(declarations(stylesheet, ".title > a:hover")).toMatch(/color:\s*var\(--accent-text\)/);
+  });
+
+  it("sets table links in the foreground colour, with the accent on hover", () => {
+    expect(declarations(stylesheet, "td a")).toMatch(/color:\s*var\(--fg\)/);
+    expect(declarations(stylesheet, "td a:hover")).toMatch(/color:\s*var\(--accent-text\)/);
   });
 });

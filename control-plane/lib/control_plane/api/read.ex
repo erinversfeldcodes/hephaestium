@@ -32,6 +32,12 @@ defmodule ControlPlane.Api.Read do
   queued one, has `waiting`: since when, and for a queued workload whether no worker has
   claimed it, which is so when no executor of the ticket's approver is connected. A time the
   control plane does not hold is nil, and the age is unknown.
+
+  Each carries `runs` (its workloads, oldest first, with kind, state, lens and time: what the
+  board draws a track from), `spend_usd`, and `needs`: `%{kind: "question", text: ...}` for a
+  question waiting, `%{kind: "failure", step: ..., runs: n}` for a ticket whose latest run
+  failed and nothing has restarted (the gate it stopped at, or the run's kind, and how many runs
+  in a row stopped there), or nil when it needs no person.
   """
   @spec tickets(non_neg_integer(), non_neg_integer()) :: [map()]
   def tickets(limit, offset) do
@@ -51,14 +57,116 @@ defmodule ControlPlane.Api.Read do
           into: %{},
           do: {login, DeviceTokens.connected?(login)}
 
-    pulls = PullRequests.for_tickets(for row <- page, do: {row.repository, row.number})
+    keys = for row <- page, do: {row.repository, row.number}
+    pulls = PullRequests.for_tickets(keys)
+    runs = runs_of(keys)
+    spent = spent_usd(keys)
+    asked = for q <- questions(), into: %{}, do: {{q.repository, q.ticket}, q.question}
 
     Enum.map(page, fn row ->
+      key = {row.repository, row.number}
+      row_runs = Map.get(runs, key, [])
+
       row
       |> Map.delete(:sort_at)
       |> Map.update!(:waiting, &worker_known(&1, connected))
-      |> Map.put(:pull_request, pulls[{row.repository, row.number}])
+      |> Map.put(:pull_request, pulls[key])
+      |> Map.put(:runs, row_runs)
+      |> Map.put(:spend_usd, Map.get(spent, key, 0.0))
+      |> Map.put(:needs, needs(row, asked[key], row_runs))
     end)
+  end
+
+  # What a person is asked for on a ticket: the question a run stopped to ask, or the step a run
+  # failed at when nothing has started a run since. A settled ticket, and one that needs nothing,
+  # carry nil.
+  defp needs(%{settled_at: settled}, _question, _runs) when not is_nil(settled), do: nil
+
+  defp needs(_row, question, runs) do
+    case {question, Enum.reverse(runs)} do
+      {text, _} when is_binary(text) and text != "" ->
+        %{kind: "question", text: text |> Account.clean() |> String.trim()}
+
+      {_, [%{state: state} = latest | earlier]} when state in ["failed", "timed_out"] ->
+        same =
+          Enum.take_while(
+            earlier,
+            &(&1.state in ["failed", "timed_out"] and &1.failed_gate == latest.failed_gate and
+                &1.kind == latest.kind)
+          )
+
+        %{kind: "failure", step: latest.failed_gate || latest.kind, runs: 1 + length(same)}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Each ticket's workloads, oldest first, as far as the board needs to place a ticket on its
+  # track: their kind, state, lens and when they were made, and the gate a failed one stopped at
+  # (nil when it stopped at none).
+  defp runs_of([]), do: %{}
+
+  defp runs_of(keys) do
+    repositories = keys |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    numbers = keys |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    wanted = MapSet.new(keys)
+
+    Repo.all(
+      from w in Workload,
+        where: w.repository in ^repositories and w.ticket_number in ^numbers,
+        order_by: [asc: w.inserted_at, asc: w.id],
+        select: %{
+          repository: w.repository,
+          number: w.ticket_number,
+          state: w.state,
+          at: w.inserted_at,
+          document: w.workload,
+          gates: fragment("?->'gates'", w.record)
+        }
+    )
+    |> Enum.filter(&MapSet.member?(wanted, {&1.repository, &1.number}))
+    |> Enum.group_by(&{&1.repository, &1.number}, fn w ->
+      kind = kind(w.document)
+
+      %{
+        kind: kind,
+        state: w.state,
+        lens: get_in(w.document || %{}, ["review", "lens"]),
+        at: utc(w.at),
+        failed_gate: failed_gate(w.gates)
+      }
+    end)
+  end
+
+  defp failed_gate(gates) when is_list(gates) do
+    Enum.find_value(gates, fn
+      %{"name" => name, "result" => %{"outcome" => outcome}}
+      when outcome in ["failed", "timed out", "timed_out"] ->
+        name
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp failed_gate(_), do: nil
+
+  defp spent_usd([]), do: %{}
+
+  defp spent_usd(keys) do
+    repositories = keys |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    numbers = keys |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    wanted = MapSet.new(keys)
+
+    Repo.all(
+      from e in ControlPlane.SpendEntry,
+        where: e.repository in ^repositories and e.ticket_number in ^numbers and e.unit == "usd",
+        group_by: [e.repository, e.ticket_number],
+        select: {{e.repository, e.ticket_number}, coalesce(sum(e.amount), 0.0)}
+    )
+    |> Enum.filter(fn {key, _} -> MapSet.member?(wanted, key) end)
+    |> Map.new(fn {key, usd} -> {key, usd * 1.0} end)
   end
 
   defp worker_known(%{no_worker: :unknown, approved_by: login} = waiting, connected),

@@ -39,7 +39,18 @@ export const world: World = {
       title: "A ticket that waits for a worker",
       workloads: 0,
       latest: null,
+      runs: [],
+      spendUsd: 0,
       waiting: { since: "2026-11-20T09:00:00Z", approvedBy: "octocat", noWorker: true },
+    },
+    {
+      ...summary,
+      number: 14,
+      title: "A ticket whose runs failed and a ticket with a very long title that has to wrap on a narrow screen",
+      workloads: 3,
+      latest: { id: "w-9", state: "failed", kind: "implementation", at: "2026-11-20T08:00:00Z" },
+      runs: [{ kind: "implementation", state: "failed", lens: null, at: "2026-11-20T08:00:00Z", failedGate: "format-rust" }],
+      needs: { kind: "failure", step: "format-rust", runs: 3 },
     },
   ],
   detail: { ...detail, pullRequest },
@@ -62,6 +73,9 @@ export function wireTickets(tickets: readonly TicketSummary[]) {
         no_worker: t.waiting.noWorker,
       },
       pull_request: t.pullRequest,
+      runs: t.runs.map((r) => ({ kind: r.kind, state: r.state, lens: r.lens, at: r.at, failed_gate: r.failedGate })),
+      spend_usd: t.spendUsd,
+      needs: t.needs,
     })),
   };
 }
