@@ -109,8 +109,15 @@ pub fn execute(
 /// that failed had said last. It is shared: clones see the same lines.
 #[derive(Debug, Clone)]
 pub struct Tail {
-    lines: Arc<Mutex<VecDeque<String>>>,
+    lines: Arc<Mutex<Kept>>,
     most: usize,
+}
+
+/// The lines held, and how many were printed in all.
+#[derive(Debug, Default)]
+struct Kept {
+    lines: VecDeque<String>,
+    printed: usize,
 }
 
 impl Tail {
@@ -118,16 +125,17 @@ impl Tail {
     #[must_use]
     pub fn new(most: usize) -> Self {
         Self {
-            lines: Arc::new(Mutex::new(VecDeque::new())),
+            lines: Arc::new(Mutex::new(Kept::default())),
             most,
         }
     }
 
     fn push(&self, line: String) {
-        if let Ok(mut lines) = self.lines.lock() {
-            lines.push_back(line);
-            while lines.len() > self.most {
-                lines.pop_front();
+        if let Ok(mut kept) = self.lines.lock() {
+            kept.printed += 1;
+            kept.lines.push_back(line);
+            while kept.lines.len() > self.most {
+                kept.lines.pop_front();
             }
         }
     }
@@ -137,12 +145,32 @@ impl Tail {
     pub fn text(&self) -> String {
         self.lines.lock().map_or_else(
             |_| String::new(),
-            |lines| {
-                lines
+            |kept| {
+                kept.lines
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join("\n")
+            },
+        )
+    }
+
+    /// The last `most` lines kept, joined with newlines, and how many lines printed before them
+    /// that are not among them.
+    #[must_use]
+    pub fn last(&self, most: usize) -> (String, usize) {
+        self.lines.lock().map_or_else(
+            |_| (String::new(), 0),
+            |kept| {
+                let shown = kept.lines.len().min(most);
+                let text = kept
+                    .lines
+                    .iter()
+                    .skip(kept.lines.len() - shown)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (text, kept.printed - shown)
             },
         )
     }

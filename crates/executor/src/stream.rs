@@ -9,8 +9,8 @@ use crate::redact::Redactor;
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::finished::Outcome;
 use contracts::v1alpha1::{
-    CostTotal, Event, Finished, GateRun, PullRequestOpened, RunRecord, SkillLoaded, TokenBreakdown,
-    Workload,
+    CostTotal, Event, Finished, GateFinished, GateRun, PullRequestOpened, RunRecord, SkillLoaded,
+    TokenBreakdown, Workload,
 };
 use pbjson_types::Timestamp;
 
@@ -131,6 +131,26 @@ impl<'a, W: Write> Stream<'a, W> {
         &self.costs
     }
 
+    /// Write that a gate ended, and keep with it in the record the last lines it printed and
+    /// how many came before them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error if the event could not be written.
+    pub fn emit_gate(
+        &mut self,
+        gate: GateFinished,
+        output: String,
+        omitted_lines: u32,
+    ) -> std::io::Result<()> {
+        self.emit(Kind::GateFinished(gate))?;
+        if let Some(kept) = self.gates.last_mut() {
+            kept.output = output;
+            kept.omitted_lines = omitted_lines;
+        }
+        Ok(())
+    }
+
     /// Write the next event.
     ///
     /// # Errors
@@ -151,6 +171,8 @@ impl<'a, W: Write> Stream<'a, W> {
             Kind::GateFinished(gate) => self.gates.push(GateRun {
                 name: gate.name.clone(),
                 result: gate.result.clone(),
+                output: String::new(),
+                omitted_lines: 0,
             }),
             _ => {}
         }
