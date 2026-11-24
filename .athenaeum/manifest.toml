@@ -85,3 +85,12 @@ run = ["scripts/test-attribution.sh"]
 when_paths = ["scripts/**"]
 timeout_seconds = 300
 ci_check = "commits"
+
+# Two migrations with the same version merge in git without a conflict and then stop Ecto from
+# migrating. The script reads files and git only, so a workspace can run it, and CI's
+# `control-plane` job runs the same script before it migrates.
+[gates.migrations]
+run = ["scripts/check-migrations.sh"]
+when_paths = ["control-plane/priv/repo/migrations/**"]
+timeout_seconds = 60
+ci_check = "control-plane"
