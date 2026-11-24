@@ -26,6 +26,21 @@ If you have a fix in mind, describe it in an issue instead. The decision is
 recorded in
 [ADR-0006](./docs/adr/0006-source-available-and-closed-to-outside-pull-requests.md).
 
+## Agents
+
+Issues and comments written by an automated agent are welcome on the same terms
+as anyone's: a clear description of a problem is useful whoever wrote it. Two
+things are asked of them:
+
+- **Say so.** An account that runs an agent says in its profile or in each
+  comment that an agent writes there, and who runs it.
+- **Do not offer to take work.** Tickets are built by the project's own
+  workers, so an offer to fix, implement or claim a ticket is not wanted.
+
+A pull request from an agent is a pull request from an outsider, and is closed
+without review. A comment that does not say it comes from an agent, or that
+offers to take work, is hidden or deleted without reply.
+
 ## Security
 
 Report vulnerabilities privately, as described in [SECURITY.md](./SECURITY.md),
