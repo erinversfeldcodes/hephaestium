@@ -528,7 +528,7 @@ defmodule ControlPlane.SettleTest do
       StandInGitHub.respond(
         gh,
         @runs,
-        runs([run(4, "ci", "completed", "cancelled"), run(9, "ci", "in_progress", nil)])
+        runs([run(9, "ci", "completed", "cancelled"), run(4, "ci-live", "in_progress", nil)])
       )
 
       assert {:waiting, _} = result(id)
@@ -537,7 +537,7 @@ defmodule ControlPlane.SettleTest do
       StandInGitHub.respond(
         gh,
         @runs,
-        runs([run(4, "ci", "completed", "cancelled"), run(9, "ci", "completed", "success")])
+        runs([run(9, "ci", "completed", "success"), run(4, "ci-live", "completed", "success")])
       )
 
       assert result(id) == :done
