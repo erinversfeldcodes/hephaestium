@@ -505,6 +505,57 @@ defmodule ControlPlane.SettleTest do
       assert rerun_writes(gh) == []
     end
 
+    test "a cancelled run beside a live run is waited on, not re-run", %{gh: gh, id: id} do
+      reruns(2)
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(4, "ci", "completed", "cancelled"), run(5, "e2e", "in_progress", nil)])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert rerun_writes(gh) == []
+      assert Workloads.get(id).settled_at == nil
+    end
+
+    test "a superseded cancelled run followed by a live run settles on the live run", %{
+      gh: gh,
+      id: id
+    } do
+      reruns(2)
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(4, "ci", "completed", "cancelled"), run(9, "ci", "in_progress", nil)])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert rerun_writes(gh) == []
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(4, "ci", "completed", "cancelled"), run(9, "ci", "completed", "success")])
+      )
+
+      assert result(id) == :done
+    end
+
+    test "a real failure beside a live run still fails", %{gh: gh, id: id} do
+      reruns(2)
+
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(4, "ci", "completed", "failure"), run(5, "e2e", "in_progress", nil)])
+      )
+
+      assert result(id) == {:failed, ["ci"]}
+      assert rerun_writes(gh) == []
+    end
+
     test "a cancelled check the ruleset does not require is re-run like any other", %{
       gh: gh,
       id: id
