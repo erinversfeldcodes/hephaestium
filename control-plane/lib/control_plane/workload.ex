@@ -10,6 +10,7 @@ defmodule ControlPlane.Workload do
     field :state, :string, default: "queued"
     field :workload, :map
     field :record, :map
+    field :provenance, :map
     field :reason, :string
     field :started_at, :utc_datetime_usec
     field :finished_at, :utc_datetime_usec

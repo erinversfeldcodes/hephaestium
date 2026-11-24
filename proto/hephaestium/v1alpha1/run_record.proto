@@ -63,6 +63,25 @@ message RunRecord {
   // what it spent on making it. The totals in `costs` are these added up. Empty for a run that
   // started one agent, whose costs are that agent's.
   repeated Step steps = 18;
+  // What ran the workload, so a result can be traced to the version of the harness and of
+  // Hephaestium that produced it. Absent from a record kept before the executor wrote it,
+  // which is unknown and never guessed.
+  Provenance provenance = 19;
+}
+
+// What a run ran under. Each run carries its own, so a ticket whose steps ran under different
+// releases can be told by comparing them.
+message Provenance {
+  // The Athenaeum release the executor was built with, as its tag, and the commit the tag
+  // named when it was built. The commit is empty where it is not known.
+  string athenaeum_tag = 1;
+  string athenaeum_commit = 2;
+  // The commit the executor was built from. Empty where the build could not tell.
+  string executor_commit = 3;
+  // The name of each skill the run loaded, in the order it loaded them.
+  repeated string skills = 4;
+  // The lens of a review, and each lens a run read its own change under, by name.
+  repeated string lenses = 5;
 }
 
 // How a step of the questioning ended, as the executor checked it.

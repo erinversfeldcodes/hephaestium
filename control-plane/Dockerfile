@@ -27,6 +27,10 @@ RUN npm run build
 # on the same Debian release as the runtime image, so it links the libraries that image has. The
 # cache mounts keep the dependencies compiled between builds that do change the Rust.
 FROM ${RUST} AS heph
+# The commit the image is built from. The build context holds no git history, so the commit is
+# given, and `heph` is built with it.
+ARG HEPHAESTIUM_COMMIT=
+ENV HEPHAESTIUM_COMMIT=${HEPHAESTIUM_COMMIT}
 WORKDIR /src
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY crates crates
@@ -114,6 +118,12 @@ ENV HEPH_API_STATIC_DIR=/app/dashboard
 # Intake runs this to build a workload (see config/runtime.exs). It reads the ticket through
 # `gh` and needs no checkout of the repository and no model key.
 ENV HEPH_BIN=/usr/local/bin/heph
+
+# The commit this image was built from, which the control plane keeps on each workload it makes.
+# It is given at build time (`--build-arg HEPHAESTIUM_COMMIT=<commit>`); an image built without
+# it says its build is unknown.
+ARG HEPHAESTIUM_COMMIT=
+ENV HEPH_BUILD_COMMIT=${HEPHAESTIUM_COMMIT}
 
 # The release is configured at start from environment variables (see config/runtime.exs);
 # no setting, key or credential is part of the image.

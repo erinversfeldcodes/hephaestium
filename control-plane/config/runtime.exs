@@ -348,6 +348,13 @@ settle =
       ref -> [athenaeum_ref: ref]
     end
 
+# The commit the image was built from, so a workload can say which build of the control plane
+# made it. The image sets it at build time; a run outside the image has none, and says so.
+case System.get_env("HEPH_BUILD_COMMIT", "") do
+  "" -> :ok
+  commit -> config :control_plane, :build_commit, commit
+end
+
 if settle != [] do
   config :control_plane, :settle, settle
 end
