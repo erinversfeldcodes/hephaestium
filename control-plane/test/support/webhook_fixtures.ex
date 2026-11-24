@@ -82,6 +82,17 @@ defmodule ControlPlane.WebhookFixtures do
     })
   end
 
+  def check_suite(action \\ "completed", pulls \\ [%{"number" => 7}]) do
+    base(%{
+      "action" => action,
+      "check_suite" => %{"head_sha" => "abc123", "pull_requests" => pulls}
+    })
+  end
+
+  # A commit status names a commit and no change, and has no action.
+  def status(state \\ "success"),
+    do: base(%{"sha" => "abc123", "state" => state, "description" => @text})
+
   def push(ref \\ "refs/heads/main"),
     do: base(%{"ref" => ref, "after" => "def456", "head_commit" => %{"message" => @text}})
 

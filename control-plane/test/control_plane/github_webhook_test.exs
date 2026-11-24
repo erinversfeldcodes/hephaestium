@@ -128,6 +128,37 @@ defmodule ControlPlane.GitHubWebhookTest do
                normalise("check_run", W.check_run("completed", []))
     end
 
+    test "of checks that began or are running, which only move the state of the checks" do
+      assert {:ok, %Event{kind: :checks_changed, number: 7, head: "abc123"}} =
+               normalise("check_run", W.check_run("created"))
+
+      assert {:ok, %Event{kind: :checks_changed, number: 7}} =
+               normalise("check_suite", W.check_suite("requested"))
+
+      assert {:ok, %Event{kind: :checks_completed, number: 7, head: "abc123"}} =
+               normalise("check_suite", W.check_suite())
+
+      assert {:ok, %Event{kind: :checks_completed, number: nil}} =
+               normalise("check_suite", W.check_suite("completed", []))
+    end
+
+    test "of a commit status, which names the commit and no change" do
+      assert {:ok, %Event{kind: :checks_changed, number: nil, head: "abc123"}} =
+               normalise("status", W.status("pending"))
+
+      for state <- ["success", "failure", "error"] do
+        assert {:ok, %Event{kind: :checks_completed, number: nil, head: "abc123"}} =
+                 normalise("status", W.status(state))
+      end
+    end
+
+    test "of a pull request opened, reopened or made ready" do
+      for action <- ["opened", "reopened", "ready_for_review"] do
+        assert {:ok, %Event{kind: :change_updated, cause: :opened, number: 7}} =
+                 normalise("pull_request", W.pull_request(action))
+      end
+    end
+
     test "of the base moved: a push to the repository's default branch" do
       assert {:ok, %Event{kind: :base_moved, number: nil, head: "def456"}} =
                normalise("push", W.push("refs/heads/main"))
@@ -158,7 +189,7 @@ defmodule ControlPlane.GitHubWebhookTest do
 
   describe "a delivery that is no event" do
     test "of a kind that is not listed, a ping, and installation events" do
-      for event <- ["star", "ping", "installation", "installation_repositories", "status", "fork"] do
+      for event <- ["star", "ping", "installation", "installation_repositories", "fork"] do
         assert normalise(event, W.labeled()) == :ignore, event
       end
     end
@@ -166,11 +197,9 @@ defmodule ControlPlane.GitHubWebhookTest do
     test "of an action that is not listed" do
       assert normalise("issues", W.issues("assigned")) == :ignore
       assert normalise("issues", W.issues("milestoned")) == :ignore
-      assert normalise("pull_request", W.pull_request("opened")) == :ignore
       assert normalise("pull_request", W.pull_request("labeled")) == :ignore
       assert normalise("pull_request_review", W.review("edited")) == :ignore
       assert normalise("issue_comment", Map.put(W.issue_comment(), "action", "edited")) == :ignore
-      assert normalise("check_run", W.check_run("created")) == :ignore
     end
 
     test "of a label that is not the ready label" do

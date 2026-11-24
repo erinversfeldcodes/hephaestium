@@ -340,6 +340,24 @@ pre {
   color: var(--error);
 }
 
+/* The dot beside a pull request's number: green passing, red failing, grey pending or none. */
+.checks-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.25rem;
+  border-radius: 9999px;
+  background: var(--muted);
+}
+
+.checks-dot[data-checks="passing"] {
+  background: var(--success);
+}
+
+.checks-dot[data-checks="failing"] {
+  background: var(--error);
+}
+
 .lane {
   margin-bottom: 1.5rem;
 }

@@ -208,6 +208,7 @@ describe("the API client", () => {
         settledAt: "2026-11-20T11:00:00Z",
         latest: { id: "w", state: "succeeded", kind: "revision", at: "2026-11-20T10:00:00Z" },
         waiting: null,
+        pullRequest: null,
       });
       expect(tickets[1]).toMatchObject({ title: null, settledAt: null });
       expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/tickets?limit=200");
@@ -258,6 +259,7 @@ describe("the API client", () => {
         number: 3,
         title: "A title",
         url: "https://github.com/o/r/issues/3",
+        pullRequest: null,
         workloads: [
           {
             id: "w",

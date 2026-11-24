@@ -1,7 +1,7 @@
 defmodule ControlPlane.GitHub.Webhook do
   @moduledoc """
   GitHub's webhooks: how a delivery is signed (HMAC-SHA256 of the body in
-  `X-Hub-Signature-256`), how it is named (`X-GitHub-Delivery`) and what each of the six
+  `X-Hub-Signature-256`), how it is named (`X-GitHub-Delivery`) and what each of the
   events subscribed to means in the control plane's own words. This is where GitHub's payloads
   are read, so nothing outside answers in them, and an event keeps none of the payload's text.
   """
@@ -37,7 +37,7 @@ defmodule ControlPlane.GitHub.Webhook do
   def normalise(headers, body, now) do
     with {:ok, id} <- delivery_id(headers),
          name when is_binary(name) <- header(headers, "x-github-event") do
-      if name in ~w(issues issue_comment pull_request pull_request_review check_run push) do
+      if name in ~w(issues issue_comment pull_request pull_request_review check_run check_suite status push) do
         with {:ok, %{} = payload} <- Jason.decode(body),
              {:ok, repository} <- repository(payload) do
           base = %Event{
@@ -107,6 +107,9 @@ defmodule ControlPlane.GitHub.Webhook do
     case {action, pull["merged"]} do
       {"closed", true} -> {:ok, %{change | kind: :change_merged}}
       {"closed", _} -> {:ok, %{change | kind: :change_closed}}
+      {"opened", _} -> {:ok, %{change | kind: :change_updated, cause: :opened}}
+      {"reopened", _} -> {:ok, %{change | kind: :change_updated, cause: :opened}}
+      {"ready_for_review", _} -> {:ok, %{change | kind: :change_updated, cause: :opened}}
       {"synchronize", _} -> {:ok, %{change | kind: :change_updated, cause: :synchronize}}
       {"edited", _} -> {:ok, %{change | kind: :change_updated, cause: :edited}}
       _ -> :ignore
@@ -133,18 +136,29 @@ defmodule ControlPlane.GitHub.Webhook do
       else: :ignore
   end
 
-  defp event("check_run", "completed", %{"check_run" => %{"head_sha" => sha} = run}, base)
+  # A run that ended is what settling waits for; one that began or is running only moves the
+  # state of the change's checks.
+  defp event("check_run", action, %{"check_run" => %{"head_sha" => sha} = run}, base)
        when is_binary(sha) do
-    number =
-      case run["pull_requests"] do
-        [%{"number" => number} | _] when is_integer(number) -> number
-        _ -> nil
-      end
-
-    {:ok, %{base | kind: :checks_completed, number: number, head: sha}}
+    kind = if action == "completed", do: :checks_completed, else: :checks_changed
+    {:ok, %{base | kind: kind, number: first_number(run["pull_requests"]), head: sha}}
   end
 
   defp event("check_run", _action, %{"check_run" => %{}}, _base), do: :ignore
+
+  defp event("check_suite", action, %{"check_suite" => %{"head_sha" => sha} = suite}, base)
+       when is_binary(sha) do
+    kind = if action == "completed", do: :checks_completed, else: :checks_changed
+    {:ok, %{base | kind: kind, number: first_number(suite["pull_requests"]), head: sha}}
+  end
+
+  defp event("check_suite", _action, %{"check_suite" => %{}}, _base), do: :ignore
+
+  # A commit status names a commit and no change.
+  defp event("status", _action, %{"sha" => sha} = payload, base) when is_binary(sha) do
+    kind = if payload["state"] == "pending", do: :checks_changed, else: :checks_completed
+    {:ok, %{base | kind: kind, number: nil, head: sha}}
+  end
 
   # Only a push to the default branch moves what a pull request is based on; its own branch
   # arrives as the pull request being synchronised.
@@ -157,4 +171,7 @@ defmodule ControlPlane.GitHub.Webhook do
   end
 
   defp event(_name, _action, _payload, _base), do: :error
+
+  defp first_number([%{"number" => number} | _]) when is_integer(number), do: number
+  defp first_number(_), do: nil
 end
