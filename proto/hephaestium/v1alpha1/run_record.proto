@@ -110,6 +110,12 @@ message GateRun {
   string name = 1;
   // Athenaeum's gate result exactly as the gate produced it.
   google.protobuf.Struct result = 2;
+  // The last lines the gate printed (at most 40), after the executor took out the secrets it
+  // holds. It can still carry private paths, so it is read only behind the login. Kept here and
+  // not in the result, which stays as the gate produced it.
+  string output = 3;
+  // How many lines the gate printed before those in `output`.
+  uint32 omitted_lines = 4;
 }
 
 // One agent a run started, and what it was for.

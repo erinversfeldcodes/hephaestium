@@ -332,9 +332,10 @@ defmodule ControlPlane.Api.Read do
   defp blank(value), do: value
 
   @doc """
-  The gates a workload ran, each with its name and what it came to. Only the gate's own result
-  is read: its outcome, why it did not run, the check it was left to, how long it took and its
-  exit code. None of it is an agent's text.
+  The gates a workload ran, each with its name and what it came to: its outcome, why it did not
+  run, the check it was left to, how long it took and its exit code, and the last lines it
+  printed (at most 40) with how many lines came before them. The output can carry private paths,
+  so this is read only behind the login. A record that holds more than 40 lines is cut again here.
   """
   @spec gates(%Workload{}) :: [map()]
   def gates(%Workload{record: %{"gates" => gates}}) when is_list(gates) do
@@ -349,10 +350,32 @@ defmodule ControlPlane.Api.Read do
         duration_ms: result["duration_ms"],
         exit_code: result["exit_code"]
       }
+      |> Map.merge(output(gate))
     end
   end
 
   def gates(%Workload{}), do: []
+
+  @output_lines 40
+
+  # The last lines a gate printed, and how many lines were left out: those the executor left out
+  # and any this cuts.
+  defp output(gate) do
+    text = if is_binary(gate["output"]), do: gate["output"], else: ""
+
+    left_out =
+      if is_integer(gate["omittedLines"]) and gate["omittedLines"] > 0,
+        do: gate["omittedLines"],
+        else: 0
+
+    lines = String.split(text, "\n")
+    cut = max(length(lines) - @output_lines, 0)
+
+    %{
+      output: lines |> Enum.drop(cut) |> Enum.join("\n"),
+      omitted_lines: left_out + cut
+    }
+  end
 
   @doc """
   Every completeness verdict a ticket has had, oldest first. Each is the verdict as it passed

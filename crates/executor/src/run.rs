@@ -1332,6 +1332,8 @@ fn environment(name: &str) -> Option<String> {
 /// How many of its last lines a gate that failed is remembered by, and how many bytes of them.
 const GATE_TAIL_LINES: usize = 60;
 const GATE_TAIL_BYTES: usize = 4_000;
+/// How many of a gate's last lines the run record keeps for the dashboard.
+const GATE_RECORD_LINES: usize = 40;
 
 /// Gates that did not pass: what the run says, and each one that did not with what it printed
 /// last, so the implementing agent can be told.
@@ -1526,10 +1528,15 @@ fn run_gates<W: Write>(
                 }
                 let value = serde_json::to_value(&result).map_err(|e| Refused(e.to_string()))?;
                 let result = serde_json::from_value(value).map_err(|e| Refused(e.to_string()))?;
-                stream.emit(Kind::GateFinished(GateFinished {
-                    name: name.clone(),
-                    result: Some(result),
-                }))?;
+                let (output, omitted) = printed.last(GATE_RECORD_LINES);
+                stream.emit_gate(
+                    GateFinished {
+                        name: name.clone(),
+                        result: Some(result),
+                    },
+                    output,
+                    u32::try_from(omitted).unwrap_or(u32::MAX),
+                )?;
             }
             Err(gate::NotRun::Could(gate::CouldNotRun::Cancelled)) => break,
             Err(error) => {
