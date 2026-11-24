@@ -18,6 +18,21 @@ defmodule ControlPlane.Finding do
 
   def location_line(_), do: nil
 
+  @doc """
+  Where a finding is, for the API: a path and a line, either of which is nil when the
+  lens did not give it. A location that is a plain string is the path alone.
+  """
+  @spec place(term()) :: %{path: String.t() | nil, line: integer() | nil} | nil
+  def place(%{"path" => path} = location) when is_binary(path) and path != "" do
+    line = location["line"]
+    %{path: path, line: if(is_number(line), do: line_number(line) |> trunc(), else: nil)}
+  end
+
+  def place(location) when is_binary(location) and location != "",
+    do: %{path: location, line: nil}
+
+  def place(_), do: nil
+
   defp line_number(line) when is_float(line) and line == trunc(line), do: trunc(line)
   defp line_number(line), do: line
 end

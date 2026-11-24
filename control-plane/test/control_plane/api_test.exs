@@ -779,11 +779,23 @@ defmodule ControlPlane.ApiTest do
           ]
         })
 
-      leak = %{"title" => "leaks a key", "severity" => "high", "blocking" => true}
+      leak = %{
+        "title" => "leaks a key",
+        "severity" => "high",
+        "blocking" => true,
+        "location" => %{"path" => "lib/a.ex", "line" => 12.0},
+        "evidence" => "the key is logged",
+        "revision" => "stop logging it"
+      }
+
       nit = %{"title" => "naming", "severity" => "low", "blocking" => false}
 
       for {lens, findings} <- [{"security", [leak, nit]}, {"security", [nit]}, {"style", []}] do
         id = seed_kind(30, %{"review" => %{"lens" => lens}}, "completed")
+
+        # Only the first security review was posted as a comment.
+        if lens == "security" and findings == [leak, nit],
+          do: Workloads.keep_report_url(id, "https://github.test/o/r/pull/9#issuecomment-1")
 
         :ok =
           Workloads.keep_record(id, %{
@@ -802,10 +814,32 @@ defmodule ControlPlane.ApiTest do
       assert %{"lens" => "security", "reviews" => 2, "found" => 2} = security
       assert %{"resolved" => 1, "remaining" => 1} = security
 
-      assert [%{"title" => "leaks a key", "state" => "resolved", "blocking" => true}, still] =
-               security["findings"]
+      assert [fixed, still] = security["findings"]
 
-      assert %{"title" => "naming", "state" => "remaining"} = still
+      assert %{
+               "title" => "leaks a key",
+               "state" => "resolved",
+               "blocking" => true,
+               "location" => %{"path" => "lib/a.ex", "line" => 12},
+               "evidence" => "the key is logged",
+               "revision" => "stop logging it",
+               "raised_round" => 1,
+               "rounds" => [1],
+               "fixed_round" => 2,
+               "comment_url" => "https://github.test/o/r/pull/9#issuecomment-1"
+             } = fixed
+
+      assert %{
+               "title" => "naming",
+               "state" => "remaining",
+               "location" => nil,
+               "evidence" => nil,
+               "raised_round" => 1,
+               "rounds" => [1, 2],
+               "fixed_round" => nil,
+               "comment_url" => "https://github.test/o/r/pull/9#issuecomment-1"
+             } = still
+
       assert %{"lens" => "style", "found" => 0, "remaining" => 0} = style
     end
 

@@ -74,7 +74,11 @@ defmodule ControlPlane.GitHub.CodeHost do
 
   @impl true
   def comment_on_change(repository, number, body) do
-    ok(GitHub.write("POST", "repos/#{repository}/issues/#{number}/comments", ["body=" <> body]))
+    case GitHub.write("POST", "repos/#{repository}/issues/#{number}/comments", ["body=" <> body]) do
+      {:ok, %{"html_url" => url}} when is_binary(url) -> {:ok, url}
+      {:ok, _} -> :ok
+      {:error, message} -> {:error, message}
+    end
   end
 
   @impl true
