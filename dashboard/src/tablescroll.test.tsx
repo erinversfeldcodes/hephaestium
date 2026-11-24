@@ -14,7 +14,10 @@ function expectScrolling(container: HTMLElement, tables: number) {
   const all = Array.from(container.querySelectorAll("table"));
   expect(all).toHaveLength(tables);
   for (const table of all) {
-    expect(table.closest(".table-scroll")).not.toBeNull();
+    const scroller = table.closest(".table-scroll");
+    expect(scroller).not.toBeNull();
+    // Without a place in the Tab order the keyboard cannot scroll it.
+    expect(scroller).toHaveAttribute("tabindex", "0");
   }
 }
 

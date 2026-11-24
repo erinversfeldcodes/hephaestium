@@ -32,6 +32,9 @@ Rules for any agent, and any person, changing this repository.
   that it works. Say which kind a check is.
 - A new gate or guard is shown failing on a planted violation before it is
   trusted.
+- A requirement about keyboard use, a colour theme or layout at a width is
+  written "a browser test shows ...", so that it is settled on a named test.
+  jsdom has no layout, focus or colour scheme and cannot show it.
 
 ## Code
 

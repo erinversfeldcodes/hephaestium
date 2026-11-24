@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Client, RunDetail } from "../api";
 import { when } from "../format";
+import { TableScroll } from "../TableScroll";
 import { Link } from "../Link";
 import { ticketPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
@@ -107,7 +108,7 @@ export function RunPage({
             all.length === 0 ? (
               <p>This run has kept no gates.</p>
             ) : (
-              <div className="table-scroll">
+              <TableScroll>
 <table aria-label="Gates">
                 <thead>
                   <tr>
@@ -130,7 +131,7 @@ export function RunPage({
                   ))}
                 </tbody>
               </table>
-</div>
+</TableScroll>
             )
           }
         </Shown>

@@ -250,6 +250,58 @@ jobs:
       - name: Built
         run: npm run build
 
+  # The dashboard in a real browser: by keyboard, in both themes and at 390px, with the control
+  # plane's API answered from the fixtures. jsdom has no layout, focus or colour scheme, so only
+  # this can show those. It is reported but is not yet in the `ci` gate: a browser test that
+  # flakes would block every merge, so it joins the gate's `needs` once it has passed ten runs in
+  # a row. A test that fails once is retried once, and the retry is reported as a warning.
+  # Measured locally: build under 1s, the whole suite 66s wall (128 tests, slowest 9.7s). On a runner
+  # the install of Chromium and its libraries adds a few minutes, so 15 minutes is a wide margin;
+  # past it GitHub cancels the job, which is reported as failed and costs at most 15 runner minutes.
+  dashboard-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: dashboard/.node-version
+      - name: Dependencies, exactly as locked
+        run: npm ci
+      # The browser is downloaded once for a version of Playwright, which the lock file names.
+      - name: Chromium, cached between runs
+        id: browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('dashboard/package-lock.json') }}
+      - name: Chromium
+        if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - name: The system libraries Chromium needs
+        run: npx playwright install-deps chromium
+      - name: Browser tests
+        run: npm run test:browser
+      - name: Screenshots of each page, theme and width, for a person to look at
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dashboard-screenshots
+          path: dashboard/browser-screenshots
+          if-no-files-found: warn
+      - name: Traces of the tests that failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dashboard-browser-traces
+          path: dashboard/browser-results
+          if-no-files-found: ignore
+
   # The control plane is deployed as a container image, so the image is built here, and the
   # release inside it is started against a real Postgres the way the platform starts it: the
   # migrate command first, then the server. That the health check says 200 with the database
