@@ -11,6 +11,7 @@ defmodule ControlPlane.Api.Read do
     Account,
     DeviceTokens,
     Event,
+    Finding,
     PullRequests,
     Repo,
     WaitingTickets,
@@ -224,6 +225,12 @@ defmodule ControlPlane.Api.Read do
   is still there when the newest review under its lens, which is the one that read the latest
   commit, makes it again, and is resolved when an earlier review made it and that one does not.
   A finding is the same finding when its title and where it is are the same.
+
+  Rounds are the reviews under a lens, counted from 1 in the order they were made. A finding
+  carries the round that first raised it, every round that made it, the round that fixed it
+  (the first review after its last appearance, or nil while it is still there), and the URL of
+  the comment that review was posted as (nil when it was not posted). What the record does not
+  have is nil.
   """
   @spec review_effort(String.t(), integer()) :: map()
   def review_effort(repository, number) do
@@ -235,11 +242,12 @@ defmodule ControlPlane.Api.Read do
           do: step
 
     reviewed =
-      for %Workload{workload: %{"review" => %{"lens" => lens}}, record: record} <- workloads,
+      for %Workload{workload: %{"review" => %{"lens" => lens}}, record: record} = workload <-
+            workloads,
           is_binary(lens),
           %{"findings" => findings} <- [(record || %{})["review"] || %{}],
           is_list(findings),
-          do: {lens, findings}
+          do: {lens, %{findings: for(%{} = f <- findings, do: f), url: workload.report_url}}
 
     lenses =
       reviewed
@@ -262,20 +270,34 @@ defmodule ControlPlane.Api.Read do
 
   defp lens_effort(lens, rounds) do
     key = fn finding -> {finding["title"], finding["location"]} end
-    latest = rounds |> List.last() |> Enum.map(key) |> MapSet.new()
+    numbered = rounds |> Enum.with_index(1) |> Enum.map(fn {round, n} -> {n, round} end)
+    last = length(rounds)
 
     found =
-      rounds
-      |> List.flatten()
-      |> Enum.uniq_by(key)
-      |> Enum.map(fn finding ->
+      numbered
+      |> Enum.flat_map(fn {n, round} -> Enum.map(round.findings, &{n, round, &1}) end)
+      |> Enum.group_by(fn {_, _, finding} -> key.(finding) end)
+      |> Enum.map(fn {_key, [{raised, round, finding} | _] = seen} ->
+        appeared = seen |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+        latest = List.last(appeared)
+
         %{
+          order: {raised, Enum.find_index(round.findings, &(key.(&1) == key.(finding)))},
           title: finding["title"],
           severity: finding["severity"],
           blocking: finding["blocking"] == true,
-          state: if(key.(finding) in latest, do: "remaining", else: "resolved")
+          state: if(latest == last, do: "remaining", else: "resolved"),
+          location: Finding.place(finding["location"]),
+          evidence: text(finding["evidence"]),
+          revision: text(finding["revision"]),
+          raised_round: raised,
+          rounds: appeared,
+          fixed_round: if(latest == last, do: nil, else: latest + 1),
+          comment_url: round.url
         }
       end)
+      |> Enum.sort_by(& &1.order)
+      |> Enum.map(&Map.delete(&1, :order))
 
     %{
       lens: lens,
@@ -286,6 +308,9 @@ defmodule ControlPlane.Api.Read do
       findings: found
     }
   end
+
+  defp text(value) when is_binary(value) and value != "", do: value
+  defp text(_), do: nil
 
   @doc "What kind of run a workload's document asks for."
   @spec kind(map() | nil) :: String.t()

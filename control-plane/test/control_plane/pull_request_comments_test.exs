@@ -225,6 +225,20 @@ defmodule ControlPlane.PullRequestCommentsTest do
     assert body =~ "`a lens`"
   end
 
+  test "the address GitHub gives the comment is kept on the workload", %{
+    gh: gh,
+    parent: parent
+  } do
+    name = String.replace(@pr_comments, ~r{[/?=&:%]}, "_")
+    url = "https://github.com/o/r/pull/52#issuecomment-7"
+    File.write!(Path.join(gh.dir, "data/#{name}.POST.json"), Jason.encode!(%{"html_url" => url}))
+
+    workload = review(parent, "rust", "OUTCOME_COMPLETED", verdict("approved"))
+    assert :ok = Tickets.ended(workload)
+
+    assert Workloads.get(workload.id).report_url == url
+  end
+
   test "a review writes its comment once, however often it is ended", %{gh: gh, parent: parent} do
     workload = review(parent, "rust", "OUTCOME_COMPLETED", verdict("approved"))
 

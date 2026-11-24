@@ -52,6 +52,9 @@ defmodule ControlPlane.PullRequestComments do
         :ok ->
           :ok
 
+        {:ok, url} ->
+          Workloads.keep_report_url(workload.id, url)
+
         {:error, message} ->
           Workloads.release_report(workload.id)
           Logger.warning("could not comment on #{workload.repository}##{number}: #{message}")

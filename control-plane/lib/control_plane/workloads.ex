@@ -393,6 +393,13 @@ defmodule ControlPlane.Workloads do
     end
   end
 
+  @doc "Keep where the comment that was written for this workload can be read."
+  @spec keep_report_url(Ecto.UUID.t(), String.t()) :: :ok
+  def keep_report_url(id, url) when is_binary(url) do
+    Repo.update_all(from(w in Workload, where: w.id == ^id), set: [report_url: url])
+    :ok
+  end
+
   @doc "Give the claim back, because the comment could not be written, so it is tried again."
   @spec release_report(Ecto.UUID.t()) :: :ok
   def release_report(id) do
