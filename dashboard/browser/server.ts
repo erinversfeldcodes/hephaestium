@@ -86,6 +86,8 @@ export async function answerFromFixtures(page: Page, origin: string): Promise<An
           lastSeenAt: null,
           revokedAt: null,
           connected: false,
+          running: 0,
+          slots: 1,
         };
         tokens = [made, ...tokens];
         return route.fulfill(json({ ...made, token: "heph_secret_once" }, 201));
