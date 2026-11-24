@@ -656,6 +656,88 @@ defmodule ControlPlane.ApiTest do
       assert get_as("/api/workloads/not-a-uuid").status == 404
     end
 
+    test "a run says what ran it, as its own record holds it and not as the setting is today" do
+      previous = Application.get_env(:control_plane, :build_commit)
+      previous_settle = Application.get_env(:control_plane, :settle)
+      Application.put_env(:control_plane, :build_commit, "c0ffee")
+      Application.put_env(:control_plane, :settle, athenaeum_ref: "v1.0.0")
+
+      on_exit(fn ->
+        Application.put_env(:control_plane, :build_commit, previous)
+        Application.put_env(:control_plane, :settle, previous_settle)
+      end)
+
+      run = fn tag ->
+        id = Ecto.UUID.generate()
+
+        {:ok, _} =
+          Fixtures.workload(id)
+          |> put_in(["ticket", "number"], "31")
+          |> Workloads.create(athenaeum_ref: "v1.0.0")
+
+        :ok =
+          Workloads.keep_record(id, %{
+            "outcome" => "OUTCOME_COMPLETED",
+            "provenance" => %{
+              "athenaeumTag" => tag,
+              "athenaeumCommit" => String.duplicate("a", 40),
+              "executorCommit" => String.duplicate("b", 40),
+              "skills" => ["tdd"],
+              "lenses" => ["elixir"]
+            }
+          })
+
+        id
+      end
+
+      first = run.("v0.26.1")
+      second = run.("v0.27.0")
+
+      # The setting moves on after the runs; what each run says must not.
+      Application.put_env(:control_plane, :settle, athenaeum_ref: "v9.9.9")
+
+      served = json(get_as("/api/workloads/#{first}"))["provenance"]
+
+      assert served["control_plane"] == %{
+               "known" => true,
+               "commit" => "c0ffee",
+               "athenaeum_ref" => "v1.0.0"
+             }
+
+      assert served["executor"] == %{
+               "known" => true,
+               "athenaeum_tag" => "v0.26.1",
+               "athenaeum_commit" => String.duplicate("a", 40),
+               "commit" => String.duplicate("b", 40),
+               "skills" => ["tdd"],
+               "lenses" => ["elixir"]
+             }
+
+      # A ticket whose runs differ says so: each run carries its own release.
+      tags =
+        for w <- json(get_as("/api/tickets/#{@repository}/31"))["workloads"],
+            do: {w["id"], w["provenance"]["executor"]["athenaeum_tag"]}
+
+      assert Enum.sort(tags) == Enum.sort([{first, "v0.26.1"}, {second, "v0.27.0"}])
+    end
+
+    test "a run kept before it was recorded is shown as unknown" do
+      id = Ecto.UUID.generate()
+
+      {:ok, _} = Fixtures.workload(id) |> put_in(["ticket", "number"], "32") |> Workloads.create()
+
+      Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^id),
+        set: [provenance: nil]
+      )
+
+      :ok = Workloads.keep_record(id, %{"outcome" => "OUTCOME_COMPLETED"})
+
+      assert json(get_as("/api/workloads/#{id}"))["provenance"] == %{
+               "control_plane" => %{"known" => false},
+               "executor" => %{"known" => false}
+             }
+    end
+
     test "a page of a workload's events, in order, from a cursor" do
       id =
         seed(12, [

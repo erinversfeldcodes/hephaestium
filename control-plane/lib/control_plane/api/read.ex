@@ -179,9 +179,49 @@ defmodule ControlPlane.Api.Read do
       started_at: w.started_at,
       finished_at: w.finished_at,
       settled_at: w.settled_at,
-      created_at: w.inserted_at
+      created_at: w.inserted_at,
+      provenance: provenance(w)
     }
   end
+
+  @doc """
+  What ran a workload: the control plane that made it and the executor that ran it. A part the
+  workload was kept without is `%{known: false}`; it is never filled in from what is set today,
+  because a run can only be compared with another by what it ran under.
+  """
+  @spec provenance(%Workload{}) :: map()
+  def provenance(%Workload{} = w) do
+    %{control_plane: control_plane(w.provenance), executor: executor(w.record)}
+  end
+
+  defp control_plane(%{"controlPlaneCommit" => commit} = kept) do
+    %{
+      known: true,
+      commit: commit,
+      athenaeum_ref: kept["athenaeumRef"]
+    }
+  end
+
+  defp control_plane(%{} = kept) when map_size(kept) > 0,
+    do: %{known: true, commit: nil, athenaeum_ref: kept["athenaeumRef"]}
+
+  defp control_plane(_), do: %{known: false}
+
+  defp executor(%{"provenance" => %{} = kept}) do
+    %{
+      known: true,
+      athenaeum_tag: blank(kept["athenaeumTag"]),
+      athenaeum_commit: blank(kept["athenaeumCommit"]),
+      commit: blank(kept["executorCommit"]),
+      skills: kept["skills"] || [],
+      lenses: kept["lenses"] || []
+    }
+  end
+
+  defp executor(_), do: %{known: false}
+
+  defp blank(""), do: nil
+  defp blank(value), do: value
 
   @doc """
   The gates a workload ran, each with its name and what it came to. Only the gate's own result

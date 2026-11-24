@@ -145,6 +145,14 @@ and the design in [the walking skeleton](../docs/design/walking-skeleton.md).
   review of the pushed commit never carries them, nor anything of what the first round found.
   When a run listed its agents, the ticket's comment says what the implementation, the reading
   and the fixing each spent, units kept apart.
+- Each workload says what ran it. The control plane keeps, on the workload it makes, the commit
+  its image was built from (`HEPH_BUILD_COMMIT`, set from the `HEPHAESTIUM_COMMIT` build argument)
+  and, for a review, an evaluation or a gap step, the Athenaeum release it read at that moment.
+  The executor's run record carries the release it was built with (tag and commit), the commit
+  it was built from, the skills it loaded and the lenses it read under. `GET /api/workloads/:id`
+  and each workload of `GET /api/tickets/:owner/:name/:number` serve both as `provenance`; a part
+  a workload was kept without is `{"known": false}`, never read from today's setting, so a ticket
+  whose runs differ is seen by comparing the runs' own.
 - Asking for reviews is off by default and chosen per repository:
   `HEPH_REVIEWS=owner/name,...`, with `HEPH_ATHENAEUM_REF=v0.17.0` naming the
   Athenaeum release the lenses are read from (an operator's choice, never anything a

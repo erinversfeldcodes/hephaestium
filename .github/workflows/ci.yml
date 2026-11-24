@@ -277,7 +277,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the image
-        run: docker build --file control-plane/Dockerfile --tag control-plane:ci .
+        run: docker build --file control-plane/Dockerfile --build-arg HEPHAESTIUM_COMMIT="$GITHUB_SHA" --tag control-plane:ci .
       - name: The image carries a heph that runs and builds a workload
         run: control-plane/image-test/check.sh control-plane:ci
       - name: The migrate command brings an empty database to the current schema

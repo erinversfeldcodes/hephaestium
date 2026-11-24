@@ -218,9 +218,12 @@ for entry in json.load(sys.stdin):
 addresses=$(fly ips list --app "$app" --json 2>/dev/null || echo '[]')
 v4=$(address_of v4 shared_v4)
 
+# The image is built from this commit and says so: the build context holds no git history.
+commit=$(git -C "$root" rev-parse HEAD) || die "could not read the commit being deployed"
+
 echo "==> deploying ${app}"
 (cd "$root" && fly deploy --config control-plane/fly.toml --app "$app" --ha=false --yes \
-  --env "HEPH_API_BASE_URL=${base_url}") || die "fly deploy failed for ${app}"
+  --env "HEPH_API_BASE_URL=${base_url}" --build-arg "HEPHAESTIUM_COMMIT=${commit}") || die "fly deploy failed for ${app}"
 
 # What a person would check first: the dashboard's page is served, and the API refuses a request
 # with no session.
