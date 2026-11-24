@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { AgentText, Client, ReviewEffort, Run, Verdict } from "../api";
 import { amount, amounts, when } from "../format";
+import { TableScroll } from "../TableScroll";
 import { Link } from "../Link";
 import { PullRequestLink } from "../PullRequestLink";
 import { runPath } from "../route";
@@ -111,7 +112,7 @@ function ReviewEffortPanel({ effort }: { readonly effort: ReviewEffort }) {
         {effort.localRounds} rounds before the push, {effort.reviews} reviews
         and {effort.revisions} revisions after it.
       </p>
-      <div className="table-scroll">
+      <TableScroll>
 <table aria-label="Findings by lens">
         <thead>
           <tr>
@@ -134,7 +135,7 @@ function ReviewEffortPanel({ effort }: { readonly effort: ReviewEffort }) {
           ))}
         </tbody>
       </table>
-</div>
+</TableScroll>
       {effort.lenses.map((lens) =>
         lens.findings.length === 0 ? null : (
           <ul key={lens.lens} aria-label={`${lens.lens} findings`}>
@@ -187,7 +188,7 @@ export function TicketDetailPage({
 
             <section aria-labelledby="runs-heading">
               <h3 id="runs-heading">Runs</h3>
-              <div className="table-scroll">
+              <TableScroll>
 <table>
                 <thead>
                   <tr>
@@ -218,7 +219,7 @@ export function TicketDetailPage({
                   ))}
                 </tbody>
               </table>
-</div>
+</TableScroll>
             </section>
 
             <section aria-labelledby="words-heading">

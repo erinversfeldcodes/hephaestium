@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
+import { configDefaults } from "vitest/config";
 
 // The control plane serves the built files on the API's own listener, so in production the
 // page and the API share an origin. The dev server stands in for that by passing the API's
@@ -21,6 +22,8 @@ export default defineConfig(({ mode }) => {
       // The stylesheet's own test reads it as text, and vitest blanks css files unless asked.
       css: true,
       globals: true,
+      // The browser tests are Playwright's and run under its own runner.
+      exclude: [...configDefaults.exclude, "browser/**"],
       setupFiles: ["./src/test-setup.ts"],
     },
   };

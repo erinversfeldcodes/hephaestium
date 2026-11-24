@@ -1,5 +1,6 @@
 import type { Client } from "../api";
 import { when } from "../format";
+import { TableScroll } from "../TableScroll";
 import { Link } from "../Link";
 import { ticketPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
@@ -17,7 +18,7 @@ export function TicketListPage({ client }: { readonly client: Client }) {
           return rows.length === 0 ? (
             <p>No ticket has had a run yet.</p>
           ) : (
-            <div className="table-scroll">
+            <TableScroll>
 <table>
               <thead>
                 <tr>
@@ -50,7 +51,7 @@ export function TicketListPage({ client }: { readonly client: Client }) {
                 ))}
               </tbody>
             </table>
-</div>
+</TableScroll>
           );
         }}
       </Shown>

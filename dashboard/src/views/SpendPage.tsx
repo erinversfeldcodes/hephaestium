@@ -1,5 +1,6 @@
 import type { Client } from "../api";
 import { amounts } from "../format";
+import { TableScroll } from "../TableScroll";
 import { Link } from "../Link";
 import { spendPath } from "../route";
 import { Shown, useRemote } from "../useRemote";
@@ -59,7 +60,7 @@ function Days({ client, repository }: { readonly client: Client; readonly reposi
         ) : (
           <>
             <p>{`${repository}, the last ${DAYS} days`}</p>
-            <div className="table-scroll">
+            <TableScroll>
 <table>
               <thead>
                 <tr>
@@ -76,7 +77,7 @@ function Days({ client, repository }: { readonly client: Client; readonly reposi
                 ))}
               </tbody>
             </table>
-</div>
+</TableScroll>
           </>
         )
       }

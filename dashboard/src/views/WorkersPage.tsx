@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 import type { Client, DeviceToken, IssuedToken } from "../api";
 import { when } from "../format";
+import { TableScroll } from "../TableScroll";
 import { Shown, useRemote } from "../useRemote";
 
 const CONFIG_DIR = "~/.config/hephaestium";
@@ -132,7 +133,7 @@ export function WorkersPage({
           rows.length === 0 ? (
             <p>You have no device tokens.</p>
           ) : (
-            <div className="table-scroll">
+            <TableScroll>
 <table>
               <thead>
                 <tr>
@@ -161,7 +162,7 @@ export function WorkersPage({
                 ))}
               </tbody>
             </table>
-</div>
+</TableScroll>
           )
         }
       </Shown>
