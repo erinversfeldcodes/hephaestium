@@ -30,6 +30,7 @@ defmodule ControlPlane.Leases do
     Event,
     ExecutorLink,
     Repo,
+    RevisionNeeded,
     Tickets,
     Workload,
     WorkloadLease,
@@ -75,9 +76,19 @@ defmodule ControlPlane.Leases do
 
     case claimed do
       {:ok, workload} ->
-        # The ticket stops looking approved, as when the local runner starts an executor.
-        Tickets.started(workload)
-        {:ok, workload}
+        case RevisionNeeded.check(workload) do
+          :needed ->
+            # The ticket stops looking approved, as when the local runner starts an executor.
+            Tickets.started(workload)
+            {:ok, workload}
+
+          {:not_needed, reason} ->
+            # Its pull request merged or closed while it waited: it is not given, and the
+            # next one is looked for.
+            release(workload.id)
+            Workloads.not_needed(workload.id, reason)
+            claim(token)
+        end
 
       {:error, :none} ->
         :none

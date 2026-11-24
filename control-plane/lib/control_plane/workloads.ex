@@ -252,7 +252,7 @@ defmodule ControlPlane.Workloads do
 
   defp ticket_number(_), do: :error
 
-  @terminal ~w(completed failed blocked timed_out cancelled)
+  @terminal ~w(completed failed blocked timed_out cancelled not_needed)
 
   @doc "The states a workload does not leave."
   def terminal_states, do: @terminal
@@ -298,6 +298,30 @@ defmodule ControlPlane.Workloads do
       from(w in Workload, where: w.id == ^id and w.state not in ^@terminal),
       set: [
         state: "failed",
+        reason: ControlPlane.Clean.deep(reason),
+        finished_at: now,
+        updated_at: now
+      ]
+    )
+
+    :ok
+  end
+
+  @doc """
+  End a workload as not needed, with the reason: it had nothing left to do, which is no
+  failure. It may replace a failure that was only a symptom of that (a revision that could not
+  check out a branch that merged and was deleted), but never an end that was real.
+  """
+  @spec not_needed(Ecto.UUID.t(), String.t()) :: :ok
+  def not_needed(id, reason) do
+    now = DateTime.utc_now()
+
+    Repo.update_all(
+      from(w in Workload,
+        where: w.id == ^id and (w.state not in ^@terminal or w.state in ["failed", "timed_out"])
+      ),
+      set: [
+        state: "not_needed",
         reason: ControlPlane.Clean.deep(reason),
         finished_at: now,
         updated_at: now
