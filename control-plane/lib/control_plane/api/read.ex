@@ -41,11 +41,13 @@ defmodule ControlPlane.Api.Read do
   """
   @spec tickets(non_neg_integer(), non_neg_integer()) :: [map()]
   def tickets(limit, offset) do
-    rows = with_workloads(limit + offset)
-    waiting = for w <- WaitingTickets.list(limit + offset), do: waiting_ticket(w)
+    watched = watched()
+    rows = with_workloads(limit + offset, watched)
+    waiting = for w <- WaitingTickets.list(limit + offset, watched), do: waiting_ticket(w)
 
     page =
-      (rows ++ waiting)
+      rows
+      |> join_waiting(waiting)
       |> Enum.sort_by(& &1.sort_at, {:desc, DateTime})
       |> Enum.drop(offset)
       |> Enum.take(limit)
@@ -73,19 +75,55 @@ defmodule ControlPlane.Api.Read do
       |> Map.put(:pull_request, pulls[key])
       |> Map.put(:runs, row_runs)
       |> Map.put(:spend_usd, Map.get(spent, key, 0.0))
-      |> Map.put(:needs, needs(row, asked[key], row_runs))
+      |> Map.put(:needs, needs(row, asked[key], row_runs, pulls[key]))
     end)
   end
 
-  # What a person is asked for on a ticket: the question a run stopped to ask, or the step a run
-  # failed at when nothing has started a run since. A settled ticket, and one that needs nothing,
-  # carry nil.
-  defp needs(%{settled_at: settled}, _question, _runs) when not is_nil(settled), do: nil
+  # The repositories the control plane watches. A ticket of any other repository is not on the
+  # board: its repository may be deleted or no longer served, and nothing will ever settle it.
+  defp watched, do: Application.get_env(:control_plane, :intake, [])[:repositories] || []
 
-  defp needs(_row, question, runs) do
+  # A ticket is one row. One that has workloads and waits again keeps its latest workload,
+  # count, runs and spend, and takes the waiting that the approval gives; one that has no
+  # workload is the waiting row alone.
+  defp join_waiting(rows, waiting) do
+    by_key = Map.new(waiting, &{{&1.repository, &1.number}, &1})
+    started = MapSet.new(rows, &{&1.repository, &1.number})
+
+    joined =
+      Enum.map(rows, fn row ->
+        case by_key[{row.repository, row.number}] do
+          nil ->
+            row
+
+          wait ->
+            %{row | waiting: wait.waiting, sort_at: later(row.sort_at, wait.sort_at)}
+        end
+      end)
+
+    joined ++ Enum.reject(waiting, &MapSet.member?(started, {&1.repository, &1.number}))
+  end
+
+  defp later(a, b), do: if(DateTime.compare(a, b) == :lt, do: b, else: a)
+
+  # What a person is asked for on a ticket: the question a run stopped to ask, or the step a run
+  # failed at when nothing has started a run since. A settled ticket, one that waits, one whose
+  # pull request ended, and one that needs nothing, carry nil.
+  defp needs(%{settled_at: settled}, _question, _runs, _pull) when not is_nil(settled), do: nil
+
+  defp needs(row, question, runs, pull) do
     case {question, Enum.reverse(runs)} do
       {text, _} when is_binary(text) and text != "" ->
         %{kind: "question", text: text |> Account.clean() |> String.trim()}
+
+      # Approved again and waiting for a worker or for a blocker: the earlier failure was
+      # answered by the approval, and a person has nothing to do until a run starts.
+      {_, _} when not is_nil(row.waiting) ->
+        nil
+
+      # The pull request ended, merged or closed: there is nothing left for a person to retry.
+      {_, _} when is_map(pull) and pull.state in ["merged", "closed"] ->
+        nil
 
       {_, [%{state: state} = latest | earlier]} when state in ["failed", "timed_out"] ->
         same =
@@ -187,9 +225,10 @@ defmodule ControlPlane.Api.Read do
     }
   end
 
-  defp with_workloads(limit) do
+  defp with_workloads(limit, watched) do
     latest =
       from w in Workload,
+        where: w.repository in ^watched,
         distinct: [w.repository, w.ticket_number],
         order_by: [w.repository, w.ticket_number, desc: w.inserted_at, desc: w.id],
         select: %{
