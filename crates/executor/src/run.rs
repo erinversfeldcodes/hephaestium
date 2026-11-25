@@ -487,6 +487,21 @@ fn deliver_if_asked<W: Write>(
         Ok(committed) => committed,
         Err(reason) => return Ok((Outcome::Failed, reason)),
     };
+    // Reading the pull request's description reaches the network, before anything is published.
+    let worth_delivering = beating(options.heartbeat, stream, |tick| {
+        deliver::refuse_unchanged_description(
+            workload,
+            workspace,
+            &options.gh,
+            token,
+            deferred,
+            &committed,
+            tick,
+        )
+    })?;
+    if let Err(reason) = worth_delivering {
+        return Ok((Outcome::Failed, reason));
+    }
     stream.emit(Kind::DeliveryBegan(DeliveryBegan {}))?;
     // The push and the pull request's creation reach the network and can take minutes.
     let delivered = beating(options.heartbeat, stream, |tick| {
@@ -1029,6 +1044,21 @@ fn read_before_push<W: Write>(
             }
         }
         round += 1;
+    }
+
+    let worth_delivering = beating(options.heartbeat, stream, |tick| {
+        deliver::refuse_unchanged_description(
+            workload,
+            workspace,
+            &options.gh,
+            token,
+            &deferred,
+            &committed,
+            tick,
+        )
+    })?;
+    if let Err(reason) = worth_delivering {
+        return Ok((Outcome::Failed, reason));
     }
 
     // Said before the push and not after it: a run whose executor is lost from here on may have
