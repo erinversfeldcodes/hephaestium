@@ -177,6 +177,8 @@ pub fn run(
         (outcome, reason)
     };
 
+    // A gate or a script may have left something running too; nothing the run started outlives it.
+    let _ = heph::process::stop_processes_under(&workspace);
     let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
     record.steps = steps.into_inner();
     keep(&mut record, verdict)?;
