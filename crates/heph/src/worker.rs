@@ -845,18 +845,57 @@ mod tests {
 
     #[test]
     fn a_process_left_by_a_killed_worker_is_stopped() {
-        // A worker that died holds nothing, whether or not it ever made a lock file.
+        use std::io::{BufRead as _, BufReader};
+        use std::process::Stdio;
+
         let runs = std::env::temp_dir().join(format!("heph-killed-{}", std::process::id()));
         let died = runs.join("owner-repo").join("3-died");
         std::fs::create_dir_all(&died).expect("a directory");
+        // A real process, apart from this one, takes the lock: this test binary run again
+        // on the helper below, which holds the directory until it is killed.
+        let mut holder = std::process::Command::new(std::env::current_exe().expect("exe"))
+            .args([
+                "--exact",
+                "worker::tests::lock_holder_for_another_test",
+                "--nocapture",
+            ])
+            .env("HEPH_TEST_HOLD", &died)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("the holder");
+        let lines = BufReader::new(holder.stdout.take().expect("stdout")).lines();
+        let held = lines
+            .map_while(Result::ok)
+            .any(|line| line.contains("holding-the-run-directory"));
         let mut left = sleeper(&died);
 
+        let spared = held && {
+            stop_what_finished_runs_left(&options_for(&runs));
+            std::thread::sleep(Duration::from_millis(500));
+            left.try_wait().expect("wait").is_none()
+        };
+        holder.kill().expect("SIGKILL the holder");
+        let _ = holder.wait();
         stop_what_finished_runs_left(&options_for(&runs));
 
         let left_stopped = ended_within_five_seconds(&mut left);
         let _ = left.kill();
         let _ = std::fs::remove_dir_all(&runs);
-        assert!(left_stopped, "the dead worker's process was left");
+        assert!(held, "the holder never took the lock");
+        assert!(spared, "the sweep stopped a process while its worker lived");
+        assert!(left_stopped, "the killed worker's process was left");
+    }
+
+    /// Not a test of its own: the process the one above starts and kills. Run alone it does
+    /// nothing, as the variable is not set.
+    #[test]
+    fn lock_holder_for_another_test() {
+        let Some(directory) = std::env::var_os("HEPH_TEST_HOLD") else {
+            return;
+        };
+        let _held = run_lock::hold(Path::new(&directory)).expect("held");
+        println!("holding-the-run-directory");
+        std::thread::sleep(Duration::from_secs(120));
     }
 
     #[test]
