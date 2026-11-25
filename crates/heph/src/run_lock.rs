@@ -76,7 +76,17 @@ mod tests {
         assert!(is_held(&dir));
         assert!(hold(&dir).is_err(), "a second holder is refused");
         drop(held);
-        assert!(!is_held(&dir));
+        // A test running beside this one may be between fork and exec, a child that holds
+        // this open file for that moment, and a lock lives as long as any holder of the
+        // open file, so the release is waited for.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while is_held(&dir) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the directory stays held after its holder let go"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

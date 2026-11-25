@@ -832,6 +832,13 @@ mod tests {
         // The finished run's holder let go; the live run's holder is another worker, which
         // takes its own lock on the file just as a worker in another process does.
         drop(run_lock::hold(&finished).expect("held"));
+        // A test beside this one may be between fork and exec, a child that holds the lock's
+        // open file for that moment, so the release is waited for.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while run_lock::is_held(&finished) {
+            assert!(Instant::now() < deadline, "the finished run stays held");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let other_workers_hold = run_lock::hold(&live).expect("held");
         let mut left = sleeper(&finished.join("work"));
         let left_id = left.id();
