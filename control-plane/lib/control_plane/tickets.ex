@@ -466,7 +466,7 @@ defmodule ControlPlane.Tickets do
             "A question for you:\n\n#{Account.block(question)}\n\nAnswer it in the form on the dashboard, under the question, signed in: an answer written as a comment on this ticket is not read by the agent. Applying `#{@ready}` again without answering asks it again."
 
           link ->
-            "The agent has a question for you. Read it, signed in, on the dashboard: #{link}\n\nAnswer it there, in the form under the question: an answer written as a comment on this ticket is not read by the agent."
+            "The agent has a question for you. Read it, signed in, on the dashboard: #{link}\n\nAnswer it there, in the form under the question: an answer written as a comment on this ticket is not read by the agent. Sending it applies `#{@ready}` for you and starts a new workload."
         end
 
       _ ->
