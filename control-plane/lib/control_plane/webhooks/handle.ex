@@ -98,7 +98,7 @@ defmodule ControlPlane.Webhooks.Handle do
   # does not keep, so each workload awaiting settlement in the repository is looked at. That is
   # what the poll does, for the few that await.
   defp handle(%Event{kind: :checks_completed, number: nil} = event) do
-    for workload <- Workloads.awaiting_settlement(), workload.repository == event.repository do
+    for workload <- Workloads.awaiting_settlement(event.repository) do
       Settle.one(workload)
     end
   end
