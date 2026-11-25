@@ -1452,11 +1452,24 @@ fn run_one_gate(
             declared,
             result.command.clone(),
             result.duration_ms,
-            format!("timed out after {}s", declared.timeout_seconds),
+            format!(
+                "timed out after {}s{}",
+                declared.timeout_seconds,
+                load_note()
+            ),
         )
         .map_or(Ok(result), Ok),
         other => other,
     }
+}
+
+/// What to add to a timeout so that a slow machine reads as slow: the load average the worker
+/// saw when it stopped the command.
+fn load_note() -> String {
+    format!(
+        "; the load average on this machine, over one, five and fifteen minutes, was {}",
+        heph::process::load_average().unwrap_or_else(|| "not readable".to_owned())
+    )
 }
 
 /// Run every gate the manifest declares in the workspace, in name order, and
@@ -1514,7 +1527,12 @@ fn run_gates<W: Write>(
                     result.outcome,
                     gate::Outcome::Failed | gate::Outcome::TimedOut
                 ) {
-                    failures.push(format!("gate {name} {}", result.outcome));
+                    let load = if result.outcome == gate::Outcome::TimedOut {
+                        load_note()
+                    } else {
+                        String::new()
+                    };
+                    failures.push(format!("gate {name} {}{load}", result.outcome));
                     checks.push(failed_gate(
                         name,
                         result.outcome.to_string(),

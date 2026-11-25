@@ -671,17 +671,7 @@ pub fn processes_under(directory: &Path) -> Vec<Found> {
 
 fn working_directories() -> Vec<Found> {
     if Path::new("/proc/self/cwd").exists() {
-        let Ok(entries) = std::fs::read_dir("/proc") else {
-            return Vec::new();
-        };
-        return entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
-                let directory = std::fs::read_link(entry.path().join("cwd")).ok()?;
-                Some(Found { pid, directory })
-            })
-            .collect();
+        return proc_working_directories(Path::new("/proc"));
     }
     let Ok(output) = Command::new("lsof")
         .args(["-a", "-d", "cwd", "-F", "pn"])
@@ -691,9 +681,30 @@ fn working_directories() -> Vec<Found> {
     else {
         return Vec::new();
     };
+    parse_lsof(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Read each numbered entry of a `/proc`-shaped directory for the link to its working directory.
+fn proc_working_directories(proc: &Path) -> Vec<Found> {
+    let Ok(entries) = std::fs::read_dir(proc) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
+            let directory = std::fs::read_link(entry.path().join("cwd")).ok()?;
+            Some(Found { pid, directory })
+        })
+        .collect()
+}
+
+/// Read the output of `lsof -F pn`: a `p` line names a process, and the `n` lines after it
+/// name its working directory.
+fn parse_lsof(text: &str) -> Vec<Found> {
     let mut found = Vec::new();
     let mut pid = None;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in text.lines() {
         if let Some(number) = line.strip_prefix('p') {
             pid = number.parse::<i32>().ok();
         } else if let (Some(name), Some(pid)) = (line.strip_prefix('n'), pid) {
@@ -745,10 +756,81 @@ pub fn load_average() -> Option<String> {
             .ok()?;
         String::from_utf8(output.stdout).ok()
     })?;
+    parse_load_average(&text)
+}
+
+/// The first three numbers of `/proc/loadavg` (`0.52 0.58 0.59 1/467 12345`) or of macOS's
+/// `vm.loadavg` (`{ 1.52 1.40 1.37 }`).
+fn parse_load_average(text: &str) -> Option<String> {
     let numbers: Vec<&str> = text
         .split_whitespace()
         .filter(|word| word.parse::<f64>().is_ok())
         .take(3)
         .collect();
     (numbers.len() == 3).then(|| numbers.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_linux_load_average_is_read() {
+        assert_eq!(
+            parse_load_average("274.10 120.00 40.5 3/467 12345\n").as_deref(),
+            Some("274.10 120.00 40.5")
+        );
+    }
+
+    #[test]
+    fn a_macos_load_average_is_read() {
+        assert_eq!(
+            parse_load_average("{ 1.52 1.40 1.37 }\n").as_deref(),
+            Some("1.52 1.40 1.37")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_load_average_is_none() {
+        assert_eq!(parse_load_average("nonsense"), None);
+        assert_eq!(parse_load_average("1.0 2.0"), None);
+    }
+
+    #[test]
+    fn lsof_output_gives_each_process_its_directory() {
+        let found = parse_lsof("p12\nfcwd\nn/work/a\np34\nfcwd\nn/work/b c\n");
+        assert_eq!(
+            found,
+            vec![
+                Found {
+                    pid: 12,
+                    directory: PathBuf::from("/work/a")
+                },
+                Found {
+                    pid: 34,
+                    directory: PathBuf::from("/work/b c")
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_proc_directory_gives_each_numbered_entry_its_working_directory() {
+        let base = std::env::temp_dir().join(format!("heph-proc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("42")).unwrap();
+        std::fs::create_dir_all(base.join("self")).unwrap();
+        std::fs::create_dir_all(base.join("7")).unwrap();
+        std::os::unix::fs::symlink("/work/run", base.join("42/cwd")).unwrap();
+        let found = proc_working_directories(&base);
+        std::fs::remove_dir_all(&base).unwrap();
+        // "self" is not a number and "7" has no readable cwd link.
+        assert_eq!(
+            found,
+            vec![Found {
+                pid: 42,
+                directory: PathBuf::from("/work/run")
+            }]
+        );
+    }
 }
