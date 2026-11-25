@@ -382,3 +382,14 @@ fn every_prompt_tells_the_agent_to_generate_a_migration_version_and_never_write_
         assert!(prompt.contains("never write or edit a migration's version by hand"));
     }
 }
+
+#[test]
+fn every_first_prompt_says_what_can_be_run_here_for_each_kind_of_test() {
+    let prompt = prompt_of(&common::workload(
+        "0123456789abcdef0123456789abcdef01234567",
+    ));
+
+    assert!(prompt.contains("mix test"), "{prompt}");
+    assert!(prompt.contains("npx vitest run"), "{prompt}");
+    assert!(prompt.contains("already fetched"), "{prompt}");
+}
