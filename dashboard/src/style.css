@@ -443,31 +443,64 @@ pre {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 2px;
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.track i {
+/* The segment is taller than its bar so that it is easy to hover and to tap. */
+.track li {
+  padding: 6px 0;
+  cursor: default;
+}
+
+.track li::before {
+  content: "";
+  display: block;
   height: 6px;
   background: var(--line);
 }
 
-.track i:first-child {
+.track li:first-child::before {
   border-radius: 3px 0 0 3px;
 }
 
-.track i:last-child {
+.track li:last-child::before {
   border-radius: 0 3px 3px 0;
 }
 
-.track i[data-state="done"] {
+.track li[data-state="done"]::before {
   background: var(--success);
 }
 
-.track i[data-state="now"] {
+.track li[data-state="now"]::before {
   background: var(--accent);
 }
 
-.track i[data-state="bad"] {
+.track li[data-state="bad"]::before {
   background: var(--error);
+}
+
+/* The label sits under the whole track, not under its segment, so that it stays on a narrow screen. */
+.track li:hover::after,
+.track li:focus-visible::after,
+.track li:focus::after {
+  content: attr(data-say);
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 2;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 0.75rem;
+  white-space: normal;
+  pointer-events: none;
 }
 
 .stage {
