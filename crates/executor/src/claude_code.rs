@@ -196,6 +196,15 @@ fn base_moved_section(moved: &contracts::v1alpha1::BaseMoved, when: &str) -> Str
         }
         text.push('\n');
     }
+    if !moved.conflicted_files.is_empty() {
+        text.push_str(
+            "Merging them left conflicts in the working tree. Where both changed the same lines, the file holds conflict markers (`<<<<<<<`, `=======` and `>>>>>>>`) around the two versions, or one side deleted a file the other changed. Resolve each of these files, keeping what both changes set out to do, so that no marker is left; deleting a file is a valid resolution when the change no longer needs it. The merge is committed by the runtime once they are resolved. Files in conflict:\n",
+        );
+        for file in &moved.conflicted_files {
+            let _ = writeln!(text, "- {}", file.replace('`', "'"));
+        }
+        text.push('\n');
+    }
     text.push_str(
         "Before anything else, confirm two things against the tree as it now stands. First, that the ticket's problem still exists: if another change has addressed it, wholly or in part, say which commit did, and do not build a duplicate of it. Second, that your change still does what it set out to now that what came in is there. Run again whatever proved it, and do not reuse an earlier result. If both hold and nothing needs changing, say so in your account and make no change.\n\n",
     );
