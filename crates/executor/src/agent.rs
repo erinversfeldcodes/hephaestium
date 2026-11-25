@@ -90,7 +90,11 @@ pub fn run<W: Write>(
         )));
     }
     let plan = adapter.plan(workload, workspace);
-    let environment = environment_for(&plan.env_names, workload, secrets);
+    let mut environment = environment_for(&plan.env_names, workload, secrets);
+    // What `mix`, `npm` and `npx` need to run a workspace's tests: a home and a database.
+    environment.extend(crate::toolenv::environment(workload, workspace, |name| {
+        std::env::var(name).ok()
+    }));
 
     let limits = workload.limits.as_ref().expect("checked when read");
     let timeout_seconds = limits.timeout.as_ref().expect("checked when read");

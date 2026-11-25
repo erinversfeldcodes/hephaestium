@@ -94,6 +94,10 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
     text.push_str(
         "If the change needs a database migration, make it with `mix ecto.gen.migration`, which stamps the version with the time to the second, and never write or edit a migration's version by hand: agents working at once who each pick a round number pick the same one, and a repeated version stops the migrations from running.\n\n",
     );
+    let server = std::env::var(crate::toolenv::SERVER).ok();
+    text.push_str(&crate::toolenv::prompt_section(
+        crate::toolenv::database_url(server.as_deref(), workspace).is_some(),
+    ));
     text.push_str(
         "Do not start a background process that outlives the command that started it, and do not generate artificial CPU load on the machine: other workloads share it, and a loop left running slows all of them past their timeouts. A proof that something fails before a change and passes after it under load is made with a bounded command that exits.\n\n",
     );

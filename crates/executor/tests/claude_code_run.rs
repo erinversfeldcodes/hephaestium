@@ -82,7 +82,10 @@ fn a_claude_code_workload_runs_the_adapter_with_an_empty_config_dir_the_token_an
             .any(|l| l.starts_with("CLAUDE_CONFIG_DIR=") && l.ends_with(".claude-config")),
         "{env}"
     );
-    for forbidden in ["HEPH_TEST_SECRET", "ANTHROPIC_API_KEY", "HOME="] {
+    // The home is the shared one for the workspace's tools, never the maintainer's own.
+    let tool_home = format!("HOME={}", ran.scratch.path("work/.tool-home").display());
+    assert!(env.lines().any(|l| l == tool_home), "{env}");
+    for forbidden in ["HEPH_TEST_SECRET", "ANTHROPIC_API_KEY"] {
         assert!(
             !env.contains(forbidden),
             "{forbidden} reached the agent:\n{env}"
