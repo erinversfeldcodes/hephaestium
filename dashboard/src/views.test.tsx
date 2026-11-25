@@ -58,12 +58,12 @@ describe("a ticket", () => {
     render(<TicketDetailPage client={fakeClient()} repository="erinversfeldcodes/gazebolang" number={12} />);
 
     expect(await screen.findByRole("heading", { name: /Teach the parser about guards/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "On GitHub" })).toHaveAttribute("href", detail.url);
+    expect(screen.getByRole("link", { name: /On GitHub/ })).toHaveAttribute("href", detail.url);
 
     const runs = within(screen.getByRole("region", { name: "Runs" })).getAllByRole("row").slice(1);
     expect(runs).toHaveLength(2);
     expect(within(runs[0]!).getByText("implementation")).toBeInTheDocument();
-    expect(within(runs[0]!).getByText("succeeded")).toBeInTheDocument();
+    expect(within(runs[0]!).getByText("finished")).toBeInTheDocument();
     expect(within(runs[0]!).getByText("octocat")).toBeInTheDocument();
     expect(within(runs[1]!).getByText("running")).toBeInTheDocument();
 
