@@ -6,6 +6,7 @@ defmodule ControlPlane.Jobs.SettleTickets do
   @impl Oban.Worker
   def perform(_job) do
     results = ControlPlane.Settle.run()
+    ControlPlane.Settle.closed_tickets()
     ControlPlane.Webhooks.missed(:checks_completed, Enum.count(results, &acted?/1))
     :ok
   end
