@@ -370,6 +370,7 @@ defmodule ControlPlane.ApiTest do
       {"POST", ["api", "tickets", ":owner", ":name", ":number", "reply"]},
       {"POST", ["api", "device-tokens", ":id", "revoke"]},
       {"POST", ["worker", "claim"]},
+      {"POST", ["worker", "workloads", "held"]},
       {"POST", ["worker", "workloads", ":id", "events"]},
       {"POST", ["worker", "workloads", ":id", "heartbeat"]},
       {"POST", ["worker", "workloads", ":id", "record"]},

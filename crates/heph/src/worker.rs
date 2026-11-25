@@ -902,6 +902,7 @@ mod tests {
             runs_dir: Some(runs.clone()),
             executor: None,
             workloads: 1,
+            keep_runs_for: Duration::from_hours(168),
         };
         SERVING
             .lock()

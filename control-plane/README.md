@@ -236,7 +236,8 @@ migrated by the `test` alias.
 
 The executor that is run is `HEPH_EXECUTOR` (the one called `executor` on the path
 if it is not set), and each run keeps its files, as `heph run` does, under
-`HEPH_RUNS_DIR` (`$XDG_STATE_HOME/hephaestium/runs`, else `~/.local/state/hephaestium/runs`, if it is not set). A run's checkout (`work/`) is deleted when the run completes, and a run that did
+`HEPH_RUNS_DIR` (`$XDG_STATE_HOME/hephaestium/runs`, else `~/.local/state/hephaestium/runs`,
+if it is not set). A run's checkout (`work/`) is deleted when the run completes, and a run that did
 not complete keeps its checkout for `HEPH_WORKSPACE_KEEP_HOURS` hours (72 if it is not set) and
 is swept hourly after that; the workload, events, log and record of every run are kept. A run is not
 started when the disk the runs are kept on has less than `HEPH_MIN_FREE_MB` megabytes free (10240 if

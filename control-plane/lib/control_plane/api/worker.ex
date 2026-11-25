@@ -15,7 +15,6 @@ defmodule ControlPlane.Api.Worker do
   | `POST /worker/workloads/:id/events` | `{"events": [...]}`: kept in order by the stream's rules. |
   | `POST /worker/workloads/:id/heartbeat` | Keeps the lease while nothing else is sent. |
   | `POST /worker/workloads/:id/record` | The run record, at the end. |
-
   | `POST /worker/workloads/held` | `{"ids": [...]}`: which of those workloads still need the workspace the executor made for them, as `{"held": [...]}`. Those not ended, and those that completed with a pull request not yet settled. The executor clears the others' workspaces after its retention period. |
   | `POST /worker/workloads/:id/release` | The operator stopped the executor: the workload is given back, to be queued again or failed as a lapse would decide. |
 
