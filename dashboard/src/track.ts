@@ -32,12 +32,18 @@ export interface TrackInput {
 }
 
 export interface Track {
-  readonly steps: readonly { readonly id: StepId; readonly label: string; readonly state: StepState }[];
+  readonly steps: readonly { readonly id: StepId; readonly label: string; readonly state: StepState; readonly say: string }[];
   /** Where the ticket is, in a few words: "In review". */
   readonly stage: string;
   /** More about where, or null: "2 of 3 lenses read". */
   readonly detail: string | null;
 }
+
+const stateWords: Readonly<Record<StepState, string>> = { done: "done", now: "in progress", bad: "failed", todo: "not yet" };
+
+/** One segment in words: "Review: in progress, 2 of 3 lenses read". The detail belongs to the step the ticket is at. */
+const say = (id: StepId, state: StepState, detail: string | null): string =>
+  `${labels[id]}: ${stateWords[state]}${detail !== null && (state === "now" || state === "bad") ? `, ${detail}` : ""}`;
 
 /** The line in words that says where a ticket is: "In review, 2 of 3 lenses read". */
 export function stageWords(track: Track): string {
@@ -61,13 +67,16 @@ export function trackOf({ workloads, pullRequest, settled }: TrackInput): Track 
   const at = (current: StepId, mark: "now" | "bad", stage: string, detail: string | null = null): Track => {
     const index = order.indexOf(current);
     return {
-      steps: order.map((id, i) => ({ id, label: labels[id], state: i < index ? "done" : i === index ? mark : "todo" })),
+      steps: order.map((id, i) => {
+        const state: StepState = i < index ? "done" : i === index ? mark : "todo";
+        return { id, label: labels[id], state, say: say(id, state, detail) };
+      }),
       stage,
       detail,
     };
   };
   const finished = (stage: string): Track => ({
-    steps: order.map((id) => ({ id, label: labels[id], state: "done" as const })),
+    steps: order.map((id) => ({ id, label: labels[id], state: "done" as const, say: say(id, "done", null) })),
     stage,
     detail: null,
   });
