@@ -357,6 +357,39 @@ defmodule ControlPlane.WebhookHandlersTest do
       assert Enum.sort(changes(host_calls())) == ["52", "53"]
     end
 
+    test "a delivery for one pull request does not load another ticket's workload" do
+      mine = awaiting(52)
+      other = awaiting(53)
+
+      handler = "workloads-query-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler,
+        [:control_plane, :repo, :query],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:query, metadata.query, metadata.params})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      assert [^mine] = Workloads.for_change(@repo, 52)
+      refute other.id in Enum.map(Workloads.for_change(@repo, 52), & &1.id)
+
+      # The number is part of the query, so the other pull request's row never leaves the database.
+      assert_received {:query, _query, params}
+      assert "https://github.com/#{@repo}/pull/52" in params
+    end
+
+    test "checks that name no change load only that repository's workloads" do
+      awaiting(52)
+      assert [only] = Workloads.awaiting_settlement(@repo)
+      assert only.repository == @repo
+      assert Workloads.awaiting_settlement("someone/else") == []
+    end
+
     test "a workload that is already settled is not settled again by a late repeat" do
       settled(52)
 
