@@ -159,36 +159,38 @@ defmodule ControlPlane.Api.Read do
           number: w.ticket_number,
           state: w.state,
           at: w.inserted_at,
-          document: w.workload,
-          gates: fragment("?->'gates'", w.record)
+          kind:
+            fragment(
+              "(select k from unnest(array['revision', 'review', 'completeness', 'gap']) with ordinality as t(k, n) where jsonb_exists(?, k) order by n limit 1)",
+              w.workload
+            ),
+          lens: fragment("?->'review'->>'lens'", w.workload),
+          failed_gate:
+            fragment(
+              """
+              (select g->>'name'
+                 from jsonb_array_elements(case when jsonb_typeof(? -> 'gates') = 'array' then ? -> 'gates' else '[]'::jsonb end)
+                      with ordinality as e(g, n)
+                where g->>'name' is not null
+                  and g->'result'->>'outcome' in ('failed', 'timed out', 'timed_out')
+                order by n limit 1)
+              """,
+              w.record,
+              w.record
+            )
         }
     )
     |> Enum.filter(&MapSet.member?(wanted, {&1.repository, &1.number}))
     |> Enum.group_by(&{&1.repository, &1.number}, fn w ->
-      kind = kind(w.document)
-
       %{
-        kind: kind,
+        kind: w.kind || "implementation",
         state: w.state,
-        lens: get_in(w.document || %{}, ["review", "lens"]),
+        lens: w.lens,
         at: utc(w.at),
-        failed_gate: failed_gate(w.gates)
+        failed_gate: w.failed_gate
       }
     end)
   end
-
-  defp failed_gate(gates) when is_list(gates) do
-    Enum.find_value(gates, fn
-      %{"name" => name, "result" => %{"outcome" => outcome}}
-      when outcome in ["failed", "timed out", "timed_out"] ->
-        name
-
-      _ ->
-        nil
-    end)
-  end
-
-  defp failed_gate(_), do: nil
 
   defp spent_usd([]), do: %{}
 
