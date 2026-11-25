@@ -43,9 +43,12 @@ defmodule ControlPlane.Application do
     end
   end
 
-  # The sweep for lapsed leases, only when executors on developers' machines run the work.
+  # The sweep for lapsed leases, only when executors on developers' machines run the work and
+  # recurring jobs are not turned off (it polls the database on a timer).
   defp executor_link do
-    if ControlPlane.ExecutorLink.enabled?(), do: [ControlPlane.ExecutorLink.Reaper], else: []
+    if ControlPlane.ExecutorLink.enabled?() and ControlPlane.ExecutorLink.config(:reap, true),
+      do: [ControlPlane.ExecutorLink.Reaper],
+      else: []
   end
 
   # The listener the platform's health check calls. Not started unless a port is set, so a

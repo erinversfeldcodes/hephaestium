@@ -9,8 +9,8 @@ defmodule ControlPlane.HostedConfigTest do
 
   @runtime Path.expand("../../config/runtime.exs", __DIR__)
   @names ~w(DATABASE_URL HEPH_PG_SOCKET_DIR HEPH_DB_SSL HEPH_DB_POOL_SIZE HEPH_OBAN_NOTIFIER
-            HEPH_HEALTH_PORT HEPH_REVIEW_APP_ID HEPH_REVIEW_APP_KEY HEPH_REVIEW_APP_KEY_FILE
-            HEPH_API_PORT HEPH_API_SECRET_KEY_BASE HEPH_API_SECRET_KEY_BASE_FILE
+            HEPH_HEALTH_PORT HEPH_RECURRING_JOBS HEPH_REVIEW_APP_ID HEPH_REVIEW_APP_KEY HEPH_REVIEW_APP_KEY_FILE
+            HEPH_API_PORT HEPH_EXECUTOR_LINK HEPH_API_SECRET_KEY_BASE HEPH_API_SECRET_KEY_BASE_FILE
             HEPH_API_GITHUB_CLIENT_ID HEPH_API_GITHUB_CLIENT_SECRET
             HEPH_API_GITHUB_CLIENT_SECRET_FILE HEPH_API_ALLOWED_LOGINS HEPH_API_BASE_URL)
 
@@ -153,6 +153,64 @@ defmodule ControlPlane.HostedConfigTest do
         read([{"HEPH_REVIEW_APP_ID", "1"}, {"HEPH_REVIEW_APP_KEY_FILE", "/run/secrets/app.pem"}])
 
       assert config[:review_app] == [app_id: "1", key_file: "/run/secrets/app.pem"]
+    end
+  end
+
+  describe "recurring jobs" do
+    @preview Path.expand("../../fly.preview.toml", __DIR__)
+
+    test "are left as configured unless they are turned off" do
+      refute Keyword.has_key?(read([]), Oban)
+      refute Keyword.has_key?(read([{"HEPH_RECURRING_JOBS", "on"}]), Oban)
+    end
+
+    test "off leaves Oban no cron plugin, no staging poll and no leader election" do
+      oban = read([{"HEPH_RECURRING_JOBS", "off"}])[Oban]
+      assert oban[:plugins] == []
+      assert oban[:stage_interval] == :infinity
+      assert oban[:peer] == false
+
+      scheduled = ControlPlane.Schedule.oban([repo: ControlPlane.Repo] ++ oban, false)
+      assert scheduled[:plugins] == []
+    end
+
+    test "off also stops the lapsed-lease sweep, which polls the database on a timer" do
+      link = read([{"HEPH_RECURRING_JOBS", "off"}])[:executor_link]
+      assert link[:reap] == false
+
+      api = [
+        {"HEPH_API_PORT", "4000"},
+        {"HEPH_API_SECRET_KEY_BASE", String.duplicate("k", 64)},
+        {"HEPH_API_GITHUB_CLIENT_ID", "the-id"},
+        {"HEPH_API_GITHUB_CLIENT_SECRET", "the-secret"},
+        {"HEPH_API_ALLOWED_LOGINS", "octocat"},
+        {"HEPH_API_BASE_URL", "https://heph.example"},
+        {"HEPH_EXECUTOR_LINK", "workers"}
+      ]
+
+      on = read(api)[:executor_link]
+      assert on[:enabled] == true
+      refute Keyword.has_key?(on, :reap)
+
+      preview = [{"HEPH_RECURRING_JOBS", "off"} | api]
+      link = read(preview)[:executor_link]
+      assert link[:enabled] == true
+      assert link[:reap] == false
+    end
+
+    test "a value that is neither on nor off stops the start" do
+      error = assert_raise RuntimeError, fn -> read([{"HEPH_RECURRING_JOBS", "never"}]) end
+      assert error.message =~ "HEPH_RECURRING_JOBS"
+    end
+
+    test "a preview's configuration turns them off, and drops the check that queries the database" do
+      config = File.read!(@preview)
+      assert config =~ ~r/^\s*HEPH_RECURRING_JOBS\s*=\s*"off"/m
+      refute config =~ ~r/^\s*\[checks/m, "a periodic database check keeps Neon's compute awake"
+      refute config =~ "/health"
+      assert config =~ ~r/auto_stop_machines\s*=\s*"stop"/
+      assert config =~ ~r/auto_start_machines\s*=\s*true/
+      assert config =~ ~r/min_machines_running\s*=\s*0/
     end
   end
 end
