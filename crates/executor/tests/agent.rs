@@ -397,29 +397,39 @@ fn running_with_no_agent_selected_is_refused() {
 }
 
 #[test]
-fn a_running_agent_is_told_when_half_and_three_quarters_of_its_time_have_gone() {
-    // The stand-in asks how long is left at the start, after half and after three quarters of a
-    // eight second limit, and keeps what it was told.
+fn a_running_agent_can_reach_the_clock_and_is_told_how_long_is_left() {
     let ran = ran(
         "agent-clock",
-        |w| w["limits"]["timeout"] = json!("8s"),
-        "clock=\"$PWD.time-left\"; sh \"$clock\" > told-start; sleep 4.5; sh \"$clock\" > told-half; sleep 2.0; sh \"$clock\" > told-late; echo done",
+        |w| w["limits"]["timeout"] = json!("600s"),
+        "sh \"$PWD.time-left\" > told-start; echo done",
         &[],
     );
-    let told = |name: &str| {
-        std::fs::read_to_string(workspace_of(&ran).join(name)).expect("what the agent was told")
-    };
-
-    let start = told("told-start");
+    let start = std::fs::read_to_string(workspace_of(&ran).join("told-start"))
+        .expect("what the agent was told");
+    assert!(
+        start.contains("10 minute(s) left of 10 minute(s)"),
+        "{start}"
+    );
     assert!(!start.contains("Half"), "{start}");
-    assert!(!start.contains("Three quarters"), "{start}");
-    let half = told("told-half");
-    assert!(half.contains("Half"), "{half}");
-    assert!(!half.contains("Three quarters"), "{half}");
-    let late = told("told-late");
-    assert!(late.contains("Three quarters"), "{late}");
+}
+
+#[test]
+fn a_running_agent_is_told_at_half_and_at_three_quarters_and_to_stop_verifying() {
+    // The agent asks at instants set ahead of the real clock, so nothing waits: with 600 seconds,
+    // 300 ahead is half and 450 ahead is three quarters.
+    let ran = ran(
+        "agent-clock-notices",
+        |w| w["limits"]["timeout"] = json!("600s"),
+        "TIME_LEFT_NOW=$(( $(date +%s) + 300 )) sh \"$PWD.time-left\" > told-half; \
+         TIME_LEFT_NOW=$(( $(date +%s) + 450 )) sh \"$PWD.time-left\" > told-late; echo done",
+        &[],
+    );
+    let dir = workspace_of(&ran);
+    let half = std::fs::read_to_string(dir.join("told-half")).expect("half");
+    assert!(half.contains("Half of your time"), "{half}");
+    assert!(!half.contains("Stop verifying"), "{half}");
+    let late = std::fs::read_to_string(dir.join("told-late")).expect("late");
     assert!(late.contains("Stop verifying"), "{late}");
-    assert!(late.contains("what you did not run"), "{late}");
 }
 
 #[test]

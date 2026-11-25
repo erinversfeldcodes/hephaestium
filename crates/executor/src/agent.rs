@@ -40,14 +40,15 @@ pub fn clock_path(workspace: &Path) -> PathBuf {
 }
 
 /// The script that says how long is left, and, once half and then three quarters of the time
-/// have gone, says so. It works the answer out when it is run, from the instants the run
+/// have gone, says so. `TIME_LEFT_NOW` replaces the instant it is asked, so that a test can ask at
+/// fixed instants without waiting. It works the answer out when it is run, from the instants the run
 /// starts and must end, so it is right whenever it is asked and needs no process of its own.
 fn clock_script(started: u64, ends: u64) -> String {
     format!(
         r#"#!/bin/sh
 started={started}
 ends={ends}
-now=$(date +%s)
+now=${{TIME_LEFT_NOW:-$(date +%s)}}
 total=$((ends - started))
 elapsed=$((now - started))
 left=$((ends - now))
@@ -240,4 +241,47 @@ pub fn run<W: Write>(
             plan.command.first().map_or("", String::as_str)
         )),
     })
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::clock_script;
+
+    /// What the script says when asked at `now`, for a run of 800 seconds starting at 1000.
+    fn told_at(now: u64) -> String {
+        let dir = std::env::temp_dir().join(format!("clock-{}-{now}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("time-left");
+        std::fs::write(&script, clock_script(1000, 1800)).expect("write");
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .env("TIME_LEFT_NOW", now.to_string())
+            .output()
+            .expect("run");
+        std::fs::remove_dir_all(&dir).ok();
+        String::from_utf8(out.stdout).expect("utf8")
+    }
+
+    #[test]
+    fn the_notices_come_at_half_and_three_quarters() {
+        let start = told_at(1000);
+        assert!(
+            !start.contains("Half") && !start.contains("Three quarters"),
+            "{start}"
+        );
+        let before_half = told_at(1399);
+        assert!(!before_half.contains("Half"), "{before_half}");
+        let half = told_at(1400);
+        assert!(
+            half.contains("Half") && !half.contains("Three quarters"),
+            "{half}"
+        );
+        let before = told_at(1599);
+        assert!(!before.contains("Three quarters"), "{before}");
+        let late = told_at(1600);
+        assert!(late.contains("Three quarters"), "{late}");
+        assert!(late.contains("Stop verifying"), "{late}");
+        assert!(late.contains("what you did not run"), "{late}");
+        assert!(told_at(1800).contains("time is up"));
+    }
 }
