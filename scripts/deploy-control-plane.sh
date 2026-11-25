@@ -94,6 +94,9 @@ case $mode in
     require NEON_STAGING_API_KEY NEON_STAGING_PROJECT_ID
     derive_preview_names "$branch" || exit 1
     app=$PREVIEW_APP
+    # The preview's own file: its jobs are off and its machine stops when idle, so that its
+    # database can suspend.
+    fly_config=fly.preview.toml
     neon_key=$NEON_STAGING_API_KEY
     neon_project=$NEON_STAGING_PROJECT_ID
     base_url="https://${app}.fly.dev"
@@ -125,6 +128,7 @@ case $mode in
       fi
     done
     app=${FLY_APP:-hephaestium-control-plane}
+    fly_config=fly.toml
     if [[ $app == heph-cp-pr-* ]]; then
       die "FLY_APP '${app}' is a preview's name; production never deploys onto one"
     fi
@@ -222,7 +226,7 @@ v4=$(address_of v4 shared_v4)
 commit=$(git -C "$root" rev-parse HEAD) || die "could not read the commit being deployed"
 
 echo "==> deploying ${app}"
-(cd "$root" && fly deploy --config control-plane/fly.toml --app "$app" --ha=false --yes \
+(cd "$root" && fly deploy --config "control-plane/${fly_config}" --app "$app" --ha=false --yes \
   --env "HEPH_API_BASE_URL=${base_url}" --build-arg "HEPHAESTIUM_COMMIT=${commit}") || die "fly deploy failed for ${app}"
 
 # What a person would check first: the dashboard's page is served, and the API refuses a request
