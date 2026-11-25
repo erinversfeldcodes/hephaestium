@@ -11,3 +11,5 @@ deps/
 node_modules/
 dashboard/dist/
 control-plane/tmp/
+
+erl_crash.dump
