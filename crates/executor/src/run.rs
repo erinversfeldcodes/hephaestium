@@ -99,7 +99,10 @@ pub fn run(
     // Which agents the run started and what each spent, when it reads its own change.
     let steps = RefCell::new(Vec::<Step>::new());
     let (outcome, reason) = match prepare(options, &workload, &workspace, secrets, &mut stream) {
-        Ok((manifest, since)) => {
+        Ok((manifest, since, conflict)) => {
+            // What the agent is told, when the base conflicted with the branch, includes the
+            // commits that came in and the files in conflict.
+            let workload = with_conflict(&workload, conflict.as_ref());
             // A review or an evaluation is held to changing nothing, so what the
             // workspace is before the agent runs is kept to compare with what it is after.
             let before = if read_only(&workload) {
@@ -152,6 +155,7 @@ pub fn run(
                         &workspace,
                         &manifest,
                         since,
+                        conflict.as_ref(),
                         &mut stream,
                     )?
                 }
@@ -346,12 +350,12 @@ fn prepare<W: Write>(
     workspace: &Path,
     secrets: &Secrets,
     stream: &mut Stream<'_, W>,
-) -> Result<(Manifest, String), String> {
+) -> Result<(Manifest, String, Option<Merge>), String> {
     // The clone and the merge of the base can take minutes on a large repository, and the
     // bootstrap steps longer, so each is waited for with a heartbeat written at the interval.
-    let commit = beating(options.heartbeat, stream, |tick| {
+    let (commit, conflict) = beating(options.heartbeat, stream, |tick| {
         clone(options, secrets, workload, workspace, tick)?;
-        bring_in_base(workload, workspace, tick)?;
+        let conflict = bring_in_base(workload, workspace, tick)?;
         // A review of a pushed commit works in a fresh clone, which does not hold the file the
         // implementer wrote their account in, so the account is read from the pull request.
         if let Some(review) = workload
@@ -379,11 +383,12 @@ fn prepare<W: Write>(
         ) {
             deliver::check_push(workload, workspace, &options.gh, token, tick)?;
         }
-        Ok::<_, String>(
+        Ok::<_, String>((
             git_output(&["rev-parse", "HEAD"], workspace)?
                 .trim()
                 .to_owned(),
-        )
+            conflict,
+        ))
     })
     .map_err(|e| format!("the event could not be written: {e}"))??;
     stream
@@ -410,7 +415,7 @@ fn prepare<W: Write>(
         Ok::<_, String>(())
     })
     .map_err(|e| format!("the event could not be written: {e}"))??;
-    Ok((manifest, commit))
+    Ok((manifest, commit, conflict))
 }
 
 /// A revision works on the branch as it is and on the base branch as it is now,
@@ -418,10 +423,15 @@ fn prepare<W: Write>(
 /// the agent starts. It is a merge commit, never a rebase, so the push that
 /// delivers the revision is still a plain fast-forward of the branch.
 ///
-/// A conflict ends the run with the files named, and the branch is untouched.
-fn bring_in_base(workload: &Workload, workspace: &Path, tick: &mut Tick<'_>) -> Result<(), String> {
+/// A conflict is left in the working tree, merge unfinished, and returned: the agent
+/// resolves it, and [`conclude_conflict`] commits the merge once it has.
+fn bring_in_base(
+    workload: &Workload,
+    workspace: &Path,
+    tick: &mut Tick<'_>,
+) -> Result<Option<Merge>, String> {
     let Some(revision) = workload.revision.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     let base = &workload
         .repository
@@ -438,38 +448,109 @@ fn bring_in_base(workload: &Workload, workspace: &Path, tick: &mut Tick<'_>) -> 
     )
     .is_ok()
     {
-        return Ok(());
+        return Ok(None);
     }
+    let commits: Vec<String> = git_output(
+        &["log", "--format=%h %s", "-n", "30", &format!("HEAD..{tip}")],
+        workspace,
+    )?
+    .lines()
+    .map(str::to_owned)
+    .collect();
+    let ours = git_output(
+        &["diff", "--name-only", &format!("{tip}...HEAD")],
+        workspace,
+    )?;
+    let gained = git_output(
+        &["diff", "--name-only", &format!("HEAD...{tip}")],
+        workspace,
+    )?;
+    let overlap: Vec<String> = gained
+        .lines()
+        .filter(|file| ours.lines().any(|mine| mine == *file))
+        .map(str::to_owned)
+        .collect();
     let message = format!("Merge branch '{base}' into {}", revision.branch);
     if git_ticking(
-        &["merge", "--no-ff", "--no-edit", "-m", &message, &tip],
+        &with_identity(&["merge", "--no-ff", "--no-edit", "-m", &message, &tip]),
         workspace,
         "could not merge the base branch",
         Some(tick.reborrow()),
     )
     .is_ok()
     {
-        return Ok(());
+        return Ok(None);
     }
-    let files = git_output(&["diff", "--name-only", "--diff-filter=U"], workspace)
-        .unwrap_or_default()
-        .lines()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let _ = git_ticking(
-        &["merge", "--abort"],
+    let conflicted: Vec<String> =
+        git_output(&["diff", "--name-only", "--diff-filter=U"], workspace)?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+    if conflicted.is_empty() {
+        let _ = git_ticking(
+            &["merge", "--abort"],
+            workspace,
+            "could not abort the merge",
+            Some(tick.reborrow()),
+        );
+        return Err(format!(
+            "the base branch '{base}' could not be merged into the branch, and git named no conflicting file"
+        ));
+    }
+    Ok(Some(Merge {
+        tip: git_output(&["rev-parse", &tip], workspace)?
+            .trim()
+            .to_owned(),
+        commits,
+        overlap,
+        conflicted,
+    }))
+}
+
+/// The workload as the agent is first asked about it: a revision whose branch conflicted with
+/// the base is told what came in and which files are in conflict.
+fn with_conflict(workload: &Workload, conflict: Option<&Merge>) -> Workload {
+    let mut told = workload.clone();
+    if let (Some(merge), Some(revision)) = (conflict, told.revision.as_mut()) {
+        let moved = moved_by(merge);
+        revision.base_moved = Some(BaseMoved {
+            conflicted_files: merge.conflicted.clone(),
+            ..moved
+        });
+    }
+    told
+}
+
+/// What the agent resolved of a conflict with the base: no file may still hold a conflict
+/// marker, and then the merge is committed, so the push is a fast-forward of the branch. A file
+/// the agent deleted is resolved. Returns the merge commit, which is what the change is
+/// judged against.
+fn conclude_conflict(workspace: &Path, merge: &Merge) -> Result<String, String> {
+    let left: Vec<&str> = merge
+        .conflicted
+        .iter()
+        .filter(|file| holds_a_marker(&workspace.join(file)))
+        .map(String::as_str)
+        .collect();
+    if !left.is_empty() {
+        return Err(format!(
+            "the branch conflicts with the base branch in {}, and the agent left a conflict marker in them, so nothing was pushed",
+            left.join(", ")
+        ));
+    }
+    git(
+        &["add", "--all"],
         workspace,
-        "could not abort the merge",
-        Some(tick.reborrow()),
-    );
-    Err(format!(
-        "the branch conflicts with the base branch '{base}' in {}",
-        if files.is_empty() {
-            "files that could not be listed"
-        } else {
-            &files
-        }
-    ))
+        "could not stage the resolved merge",
+    )?;
+    git(
+        &with_identity(&["commit", "--quiet", "--no-verify", "--no-edit"]),
+        workspace,
+        "could not commit the resolved merge",
+    )?;
+    Ok(git_output(&["rev-parse", "HEAD"], workspace)?
+        .trim()
+        .to_owned())
 }
 
 /// Open the pull request when the run was asked to and holds the token to, and say how
@@ -554,13 +635,19 @@ fn asked_again(workload: &Workload, merge: &Merge) -> Workload {
     let mut asked = workload.clone();
     asked.revision = Some(Revision {
         attempt: 1,
-        base_moved: Some(BaseMoved {
-            commits: merge.commits.clone(),
-            overlapping_files: merge.overlap.clone(),
-        }),
+        base_moved: Some(moved_by(merge)),
         ..Revision::default()
     });
     asked
+}
+
+/// What came in, as the agent is told it.
+fn moved_by(merge: &Merge) -> BaseMoved {
+    BaseMoved {
+        commits: merge.commits.clone(),
+        overlapping_files: merge.overlap.clone(),
+        conflicted_files: Vec::new(),
+    }
 }
 
 /// What asking the agent a second time needs, besides the workload.
@@ -582,6 +669,7 @@ fn finish_first_run<W: Write>(
     workspace: &Path,
     manifest: &Manifest,
     since: String,
+    conflict: Option<&Merge>,
     stream: &mut Stream<'_, W>,
 ) -> Result<(Outcome, String), Refused> {
     let (options, secrets) = (asking.options, asking.secrets);
@@ -590,6 +678,13 @@ fn finish_first_run<W: Write>(
         stream.ask(&question);
         return Ok((Outcome::Blocked, blocked_reason(workload)));
     }
+    // A revision whose branch conflicted with the base: what the agent resolved is committed as
+    // the merge, and the files are judged against that commit and not the old head.
+    let since = match conflict.map(|merge| conclude_conflict(workspace, merge)) {
+        Some(Ok(merged)) => merged,
+        Some(Err(reason)) => return Ok((Outcome::Failed, reason)),
+        None => since,
+    };
     let carried = carry_if(
         credential(options, secrets),
         delivering,

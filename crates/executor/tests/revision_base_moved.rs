@@ -104,6 +104,26 @@ fn the_prompt_of_a_revision_for_a_moved_base_names_what_came_in() {
 }
 
 #[test]
+fn the_prompt_names_the_files_in_conflict_and_says_deleting_one_is_allowed() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let mut moved = base_moved();
+    moved["conflictedFiles"] = json!(["web/first.txt"]);
+    let prompt = prompt_of(&revising(head, &one_failure(), Some(moved)));
+
+    assert!(prompt.contains("- web/first.txt"), "{prompt}");
+    assert!(prompt.contains("conflict markers"), "{prompt}");
+    assert!(
+        prompt.contains("deleting a file is a valid resolution"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt_of(&revising(head, &one_failure(), Some(base_moved())))
+            .contains("conflict markers"),
+        "a base that moved without a conflict does not mention markers"
+    );
+}
+
+#[test]
 fn it_asks_the_agent_to_reconfirm_the_problem_and_its_change() {
     let head = "0123456789abcdef0123456789abcdef01234567";
     let prompt = prompt_of(&revising(head, &json!([]), Some(base_moved())));

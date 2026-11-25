@@ -143,24 +143,86 @@ fn files_the_base_gained_are_not_counted_as_the_agents_change() {
     );
 }
 
+/// Resolves the conflict in `web/first.txt` the way an agent would, and only if it is there to
+/// be resolved: a run that never showed the agent the markers resolves nothing.
+const RESOLVE: &str = "grep -q '^<<<<<<<' web/first.txt && printf 'resolved\\n' > web/first.txt;";
+
+fn conflicting_rig(name: &str, manifest_text: &str) -> (Rig, String, String) {
+    let (rig, head) = rig_with_branch_manifest(name, manifest_text);
+    let main = main_moves(&rig, "web/first.txt", "a different first attempt\n");
+    (rig, head, main)
+}
+
 #[test]
-fn a_conflict_with_the_base_fails_the_run_and_pushes_nothing() {
-    let (rig, head) = rig_with_branch("base-conflict");
-    main_moves(&rig, "web/first.txt", "a different first attempt\n");
+fn a_conflict_with_the_base_reaches_the_agent_and_a_resolved_tree_is_delivered() {
+    let (rig, head, main) = conflicting_rig("base-conflict-resolved", &manifest(&[]));
+
+    let script = agent_script(RESOLVE);
+    let (ran, source) = run_revision(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    let (outcome, reason) = finished(&ran.events());
+    assert_eq!(outcome, Outcome::Completed, "{reason}");
+    assert_eq!(
+        git(&source, &["show", &format!("{PR_BRANCH}:web/first.txt")]),
+        "resolved",
+        "what the agent resolved is what was pushed"
+    );
+    let merge = format!("{PR_BRANCH}^");
+    assert_eq!(git(&source, &["rev-parse", &format!("{merge}^1")]), head);
+    assert_eq!(
+        git(&source, &["rev-parse", &format!("{merge}^2")]),
+        main,
+        "the resolution is a merge of the base's tip into the branch"
+    );
+}
+
+#[test]
+fn the_gates_judge_the_tree_the_agent_resolved_and_not_the_conflicted_one() {
+    // Passes only once the agent has reconfirmed the file: the gate runs after it.
+    let text = manifest(&[])
+        + "\n[gates.resolved]\nrun = [\"sh\", \"-c\", \"grep -q resolved web/first.txt\"]\ntimeout_seconds = 30\nwhen_paths = [\"web/first.txt\"]\n";
+    let (rig, head, _) = conflicting_rig("base-conflict-gates", &text);
+
+    let (ran, _) = run_revision(rig, &revising(&head), &agent_script(RESOLVE));
+
+    let (outcome, reason) = finished(&ran.events());
+    assert_eq!(outcome, Outcome::Completed, "{reason}");
+}
+
+#[test]
+fn a_conflict_marker_the_agent_leaves_is_never_committed() {
+    let (rig, head, _) = conflicting_rig("base-conflict-left", &manifest(&[]));
 
     let (ran, source) = run_revision(rig, &revising(&head), &agent_script(""));
 
     assert_eq!(ran.code(), 0, "{}", ran.stderr());
     let (outcome, reason) = finished(&ran.events());
     assert_eq!(outcome, Outcome::Failed);
-    assert!(
-        reason.contains("conflict"),
-        "the reason names the conflict: {reason}"
-    );
+    assert!(reason.contains("web/first.txt"), "names the file: {reason}");
+    assert!(reason.contains("conflict"), "says why: {reason}");
     assert_eq!(
         git(&source, &["rev-parse", PR_BRANCH]),
         head,
-        "the branch is as it was"
+        "nothing was pushed: the branch is as it was"
+    );
+}
+
+#[test]
+fn deleting_the_conflicting_file_is_a_resolution() {
+    let (rig, head, _) = conflicting_rig("base-conflict-deleted", &manifest(&[]));
+
+    let (ran, source) = run_revision(rig, &revising(&head), &agent_script("rm web/first.txt;"));
+
+    let (outcome, reason) = finished(&ran.events());
+    assert_eq!(outcome, Outcome::Completed, "{reason}");
+    assert_eq!(
+        git(
+            &source,
+            &["ls-tree", "--name-only", PR_BRANCH, "web/first.txt"]
+        ),
+        "",
+        "the file is gone from what was pushed"
     );
 }
 
