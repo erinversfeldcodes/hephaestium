@@ -550,30 +550,40 @@ defmodule ControlPlane.Api.Read do
   """
   @spec questions() :: [map()]
   def questions do
-    Repo.all(
-      from w in Workload,
-        as: :asked,
-        where: w.state == "blocked",
-        where: fragment("coalesce(?->>'question', '') <> ''", w.record),
-        where:
-          not exists(
-            from l in Workload,
-              where:
-                l.repository == parent_as(:asked).repository and
-                  l.ticket_number == parent_as(:asked).ticket_number and
-                  l.inserted_at > parent_as(:asked).inserted_at,
-              select: 1
-          ),
-        order_by: [desc: w.finished_at, desc: w.inserted_at]
-    )
-    |> Enum.map(fn w ->
+    waiting =
+      Repo.all(
+        from w in Workload,
+          as: :asked,
+          where: w.state == "blocked",
+          where: fragment("coalesce(?->>'question', '') <> ''", w.record),
+          where:
+            not exists(
+              from l in Workload,
+                where:
+                  l.repository == parent_as(:asked).repository and
+                    l.ticket_number == parent_as(:asked).ticket_number and
+                    l.inserted_at > parent_as(:asked).inserted_at,
+                select: 1
+            ),
+          order_by: [desc: w.finished_at, desc: w.inserted_at]
+      )
+
+    answers =
+      ControlPlane.Answers.for_tickets(Enum.map(waiting, &{&1.repository, &1.ticket_number}))
+
+    Enum.map(waiting, fn w ->
       %{
         workload: w.id,
         repository: w.repository,
         ticket: w.ticket_number,
         title: get_in(w.workload, ["ticket", "title"]),
         question: w.record["question"],
-        asked_at: w.finished_at
+        asked_at: w.finished_at,
+        earlier_answer:
+          ControlPlane.Answers.earlier(
+            Map.get(answers, {w.repository, w.ticket_number}, []),
+            w.record["question"]
+          )
       }
     end)
   end

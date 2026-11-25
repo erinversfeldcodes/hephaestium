@@ -458,10 +458,10 @@ defmodule ControlPlane.Tickets do
       question when question not in [nil, ""] ->
         case Dashboard.run_link(workload) do
           nil ->
-            "A question for you:\n\n#{Account.block(question)}\n\nAnswer it here and apply `#{@ready}` again to start a new workload."
+            "A question for you:\n\n#{Account.block(question)}\n\nAnswer it in the form on the dashboard, under the question, signed in: an answer written as a comment on this ticket is not read by the agent. Applying `#{@ready}` again without answering asks it again."
 
           link ->
-            "The agent has a question for you. Read it, signed in, on the dashboard: #{link}\n\nThen apply `#{@ready}` again to start a new workload."
+            "The agent has a question for you. Read it, signed in, on the dashboard: #{link}\n\nAnswer it there, in the form under the question: an answer written as a comment on this ticket is not read by the agent."
         end
 
       _ ->

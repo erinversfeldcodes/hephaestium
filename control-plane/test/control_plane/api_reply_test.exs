@@ -77,6 +77,56 @@ defmodule ControlPlane.ApiReplyTest do
     :ok = Workloads.keep_record(id, %{"outcome" => "OUTCOME_BLOCKED", "question" => question})
   end
 
+  defp approve(gh, at) do
+    StandInGitHub.respond(gh, Tracker.ready_endpoint(@repo, "heph:ready"), [
+      %{
+        "number" => 12,
+        "state" => "open",
+        "title" => "A ticket",
+        "labels" => [%{"name" => "heph:ready"}]
+      }
+    ])
+
+    StandInGitHub.respond(gh, Tracker.events_endpoint(@repo, 12), [
+      %{
+        "event" => "labeled",
+        "created_at" => at,
+        "actor" => %{"login" => "octocat"},
+        "label" => %{"name" => "heph:ready"}
+      }
+    ])
+
+    StandInGitHub.respond_graphql(gh, 12, %{
+      "data" => %{"repository" => %{"issue" => %{"userContentEdits" => %{"nodes" => []}}}}
+    })
+
+    StandInGitHub.heph_prints(
+      gh,
+      Fixtures.workload()
+      |> put_in(["ticket", "number"], "12")
+      |> put_in(["approval"], %{"approvedBy" => "octocat", "approvedAt" => at})
+    )
+  end
+
+  # A later workload on the ticket that ends blocked with a question.
+  defp ask_again(number, question) do
+    id = Ecto.UUID.generate()
+
+    {:ok, _} =
+      Fixtures.workload(id)
+      |> put_in(["ticket", "number"], Integer.to_string(number))
+      |> Workloads.create()
+
+    :ok = Workloads.keep_record(id, %{"outcome" => "OUTCOME_BLOCKED", "question" => question})
+    {:ok, _} = ControlPlane.Events.append(id, Fixtures.event(id, 1, Fixtures.started()))
+
+    {:ok, _} =
+      ControlPlane.Events.append(
+        id,
+        Fixtures.event(id, 2, Fixtures.finished("OUTCOME_BLOCKED", "q"))
+      )
+  end
+
   # The cookies a login makes: the session, and the user token the login was given.
   defp cookies(login, token) do
     conn(:get, "/")
@@ -180,6 +230,39 @@ defmodule ControlPlane.ApiReplyTest do
 
       assert ["workload 12 --repo #{@repo} --approver octocat --approved-at 2026-11-18T09:00:00Z"] ==
                StandInGitHub.heph_calls(gh)
+    end
+
+    test "the answer is part of the request of the workload that follows, and of the one after it",
+         %{gh: gh} do
+      assert reply([]).status == 200
+      approve(gh, "2026-11-18T09:00:00Z")
+      assert [%{ticket: 12, result: :started}] = Intake.run(@repo)
+
+      [asked, second] = Workloads.for_ticket(@repo, 12)
+
+      assert second.workload["answers"] == [
+               %{"question" => "Which database?", "answer" => "Use Postgres."}
+             ]
+
+      assert asked.answer == "Use Postgres."
+
+      # The second workload fails a gate and the ticket is approved again: the answer is
+      # carried although the person was never asked a second time.
+      approve(gh, "2026-11-19T09:00:00Z")
+      assert [%{ticket: 12, result: :started}] = Intake.run(@repo)
+
+      [_, _, third] = Workloads.for_ticket(@repo, 12)
+
+      assert third.workload["answers"] == [
+               %{"question" => "Which database?", "answer" => "Use Postgres."}
+             ]
+    end
+
+    test "a question asked again is shown with the answer already given" do
+      assert reply([]).status == 200
+      ask_again(12, "which database?")
+
+      assert [%{earlier_answer: "Use Postgres."}] = ControlPlane.Api.Read.questions()
     end
   end
 

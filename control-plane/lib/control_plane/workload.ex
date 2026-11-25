@@ -21,6 +21,7 @@ defmodule ControlPlane.Workload do
     field :budget_base, :integer, default: 0
     field :reruns, :map, default: %{}
     field :parent_id, :binary_id
+    field :answer, :string
 
     timestamps()
   end

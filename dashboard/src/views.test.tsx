@@ -218,6 +218,21 @@ describe("a question waiting for a person", () => {
     expect(panel.querySelector("b")).toBeNull();
   });
 
+  it("shows the answer already given beside a question that is asked again, as text", async () => {
+    const asked = { ...question, earlierAnswer: "Use <b>Postgres</b>." };
+    render(<TicketDetailPage client={fakeClient({ question: async () => asked })} repository="o/r" number={12} />);
+
+    expect(await screen.findByText("Use <b>Postgres</b>.")).toBeInTheDocument();
+    expect(screen.getByText(/answered before/)).toBeInTheDocument();
+  });
+
+  it("shows no earlier answer for a question not asked before", async () => {
+    render(<TicketDetailPage client={fakeClient({ question: async () => question })} repository="o/r" number={12} />);
+
+    await screen.findByText(question.question);
+    expect(screen.queryByText(/answered before/)).not.toBeInTheDocument();
+  });
+
   it("shows no question, and no reply box, when none waits", async () => {
     render(<TicketDetailPage client={fakeClient()} repository="o/r" number={12} />);
 
