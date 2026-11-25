@@ -177,6 +177,8 @@ pub fn run(
         (outcome, reason)
     };
 
+    // A gate or a script may have left something running too; nothing the run started outlives it.
+    let _ = heph::process::stop_processes_under(&workspace);
     let mut record = stream.finish(&workload, outcome, &reason, executor_version)?;
     record.steps = steps.into_inner();
     keep(&mut record, verdict)?;
@@ -487,6 +489,21 @@ fn deliver_if_asked<W: Write>(
         Ok(committed) => committed,
         Err(reason) => return Ok((Outcome::Failed, reason)),
     };
+    // Reading the pull request's description reaches the network, before anything is published.
+    let worth_delivering = beating(options.heartbeat, stream, |tick| {
+        deliver::refuse_unchanged_description(
+            workload,
+            workspace,
+            &options.gh,
+            token,
+            deferred,
+            &committed,
+            tick,
+        )
+    })?;
+    if let Err(reason) = worth_delivering {
+        return Ok((Outcome::Failed, reason));
+    }
     stream.emit(Kind::DeliveryBegan(DeliveryBegan {}))?;
     // The push and the pull request's creation reach the network and can take minutes.
     let delivered = beating(options.heartbeat, stream, |tick| {
@@ -1031,6 +1048,21 @@ fn read_before_push<W: Write>(
         round += 1;
     }
 
+    let worth_delivering = beating(options.heartbeat, stream, |tick| {
+        deliver::refuse_unchanged_description(
+            workload,
+            workspace,
+            &options.gh,
+            token,
+            &deferred,
+            &committed,
+            tick,
+        )
+    })?;
+    if let Err(reason) = worth_delivering {
+        return Ok((Outcome::Failed, reason));
+    }
+
     // Said before the push and not after it: a run whose executor is lost from here on may have
     // published, and must not be started again, however the push went.
     stream.emit(Kind::DeliveryBegan(DeliveryBegan {}))?;
@@ -1450,11 +1482,24 @@ fn run_one_gate(
             declared,
             result.command.clone(),
             result.duration_ms,
-            format!("timed out after {}s", declared.timeout_seconds),
+            format!(
+                "timed out after {}s{}",
+                declared.timeout_seconds,
+                load_note()
+            ),
         )
         .map_or(Ok(result), Ok),
         other => other,
     }
+}
+
+/// What to add to a timeout so that a slow machine reads as slow: the load average the worker
+/// saw when it stopped the command.
+fn load_note() -> String {
+    format!(
+        "; the load average on this machine, over one, five and fifteen minutes, was {}",
+        heph::process::load_average().unwrap_or_else(|| "not readable".to_owned())
+    )
 }
 
 /// Run every gate the manifest declares in the workspace, in name order, and
@@ -1512,7 +1557,12 @@ fn run_gates<W: Write>(
                     result.outcome,
                     gate::Outcome::Failed | gate::Outcome::TimedOut
                 ) {
-                    failures.push(format!("gate {name} {}", result.outcome));
+                    let load = if result.outcome == gate::Outcome::TimedOut {
+                        load_note()
+                    } else {
+                        String::new()
+                    };
+                    failures.push(format!("gate {name} {}{load}", result.outcome));
                     checks.push(failed_gate(
                         name,
                         result.outcome.to_string(),

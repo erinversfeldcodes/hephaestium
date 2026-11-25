@@ -81,6 +81,19 @@ describe("a ticket's track", () => {
     expect(trackOf(cases[0]!.input).steps.map((s) => s.label)).toEqual(["Run", "Gates", "Review", "CI", "Merged", "Judged"]);
   });
 
+  it("says each segment's name and state in words, for a running, a failed and a finished ticket", () => {
+    const says = (input: TrackInput) => trackOf(input).steps.map((s) => s.say);
+    expect(says({ workloads: [run("completed"), review("a", "completed"), review("b", "completed"), review("c", "running")], pullRequest: pull("open", "passing"), settled: false })).toEqual([
+      "Run: done", "Gates: done", "Review: in progress, 2 of 3 lenses read", "CI: not yet", "Merged: not yet", "Judged: not yet",
+    ]);
+    expect(says({ workloads: [run("completed"), review("a", "completed")], pullRequest: pull("open", "failing"), settled: false })).toEqual([
+      "Run: done", "Gates: done", "Review: done", "CI: failed", "Merged: not yet", "Judged: not yet",
+    ]);
+    expect(says({ workloads: [run("completed"), judge("completed")], pullRequest: pull("merged"), settled: true })).toEqual([
+      "Run: done", "Gates: done", "Review: done", "CI: done", "Merged: done", "Judged: done",
+    ]);
+  });
+
   it("counts a lens once, however many of its reviews there are", () => {
     const track = trackOf({
       workloads: [run("completed"), review("a", "completed"), review("a", "completed"), review("b", "running")],

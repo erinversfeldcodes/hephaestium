@@ -58,12 +58,12 @@ describe("a ticket", () => {
     render(<TicketDetailPage client={fakeClient()} repository="erinversfeldcodes/gazebolang" number={12} />);
 
     expect(await screen.findByRole("heading", { name: /Teach the parser about guards/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "On GitHub" })).toHaveAttribute("href", detail.url);
+    expect(screen.getByRole("link", { name: /On GitHub/ })).toHaveAttribute("href", detail.url);
 
     const runs = within(screen.getByRole("region", { name: "Runs" })).getAllByRole("row").slice(1);
     expect(runs).toHaveLength(2);
     expect(within(runs[0]!).getByText("implementation")).toBeInTheDocument();
-    expect(within(runs[0]!).getByText("succeeded")).toBeInTheDocument();
+    expect(within(runs[0]!).getByText("finished")).toBeInTheDocument();
     expect(within(runs[0]!).getByText("octocat")).toBeInTheDocument();
     expect(within(runs[1]!).getByText("running")).toBeInTheDocument();
 
@@ -405,9 +405,21 @@ describe("the board", () => {
     expect(moving).toHaveTextContent("no PR yet");
     expect(moving).toHaveTextContent("$1.50");
     expect(moving).toHaveTextContent("2 runs");
-    expect([...moving.querySelectorAll(".track i")].map((i) => i.getAttribute("data-state"))).toEqual(["now", "todo", "todo", "todo", "todo", "todo"]);
+    expect([...moving.querySelectorAll(".track li")].map((i) => i.getAttribute("data-state"))).toEqual(["now", "todo", "todo", "todo", "todo", "todo"]);
     expect(within(row("Other repo")).getByRole("link", { name: /#9/ })).toHaveAttribute("href", "https://example.test/9");
-    expect([...row("Failed one").querySelectorAll(".track i")].map((i) => i.getAttribute("data-state"))).toEqual(["bad", "todo", "todo", "todo", "todo", "todo"]);
+    expect([...row("Failed one").querySelectorAll(".track li")].map((i) => i.getAttribute("data-state"))).toEqual(["bad", "todo", "todo", "todo", "todo", "todo"]);
+  });
+
+  it("labels each segment of the track for assistive technology, and marks the current one", async () => {
+    render(<BoardPage client={fakeClient({ tickets: async () => rows })} />);
+    await screen.findByRole("link", { name: "Moving one" });
+    const segments = within(row("Moving one")).getAllByRole("listitem");
+    expect(segments.map((s) => s.getAttribute("aria-label"))).toEqual([
+      "Run: in progress", "Gates: not yet", "Review: not yet", "CI: not yet", "Merged: not yet", "Judged: not yet",
+    ]);
+    expect(segments.map((s) => s.getAttribute("aria-current"))).toEqual(["step", null, null, null, null, null]);
+    segments[0]!.focus();
+    expect(segments[0]).toHaveFocus();
   });
 
   it("says when there is nothing, loading, and failure like the other pages", async () => {

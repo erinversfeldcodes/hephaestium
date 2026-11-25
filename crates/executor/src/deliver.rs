@@ -407,7 +407,27 @@ pub fn amend_locally(committed: &Committed, workspace: &Path) -> Result<(), Stri
     stage(workspace)?;
     if !committed.made.get() {
         // Nothing was committed, so there is nothing of this run's to amend: the head is the
-        // pull request's own, which is never rewritten.
+        // pull request's own, which is never rewritten. A fix that left the files and the
+        // message as they were (it touched only the description, which is kept out of the
+        // repository) is nothing to commit: an empty commit would dismiss approvals and
+        // restart the checks for no change.
+        let staged_something = !run(
+            &["git", "diff", "--cached", "--name-only"],
+            workspace,
+            "",
+            "git diff",
+        )?
+        .is_empty();
+        let head_message = run(
+            &["git", "log", "-1", "--format=%B"],
+            workspace,
+            "",
+            "git log",
+        )?
+        .join("\n");
+        if !staged_something && head_message.trim() == read_message(workspace)? {
+            return Ok(());
+        }
         run(
             &["git", "switch", "-c", &committed.branch],
             workspace,
@@ -470,17 +490,78 @@ pub fn fetch_description(
     token: &str,
     tick: &mut Tick<'_>,
 ) -> Result<(), String> {
-    let lines = run_ticking(
+    let mut text = current_description(url, workspace, gh, token, tick)?;
+    text.push('\n');
+    std::fs::write(workspace.join(DESCRIPTION_FILE), text)
+        .map_err(|e| format!("could not keep the pull request's description: {e}"))
+}
+
+/// The description the pull request has now.
+fn current_description(
+    url: &str,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    tick: &mut Tick<'_>,
+) -> Result<String, String> {
+    run_ticking(
         &[gh, "pr", "view", url, "--json", "body", "--jq", ".body"],
         workspace,
         token,
         "could not read the pull request's description",
         tick,
-    )?;
-    let mut text = lines.join("\n");
-    text.push('\n');
-    std::fs::write(workspace.join(DESCRIPTION_FILE), text)
-        .map_err(|e| format!("could not keep the pull request's description: {e}"))
+    )
+    .map(|lines| lines.join("\n"))
+}
+
+/// Refuse a revision whose only delivery is a description that is the pull request's own,
+/// word for word: it did nothing, and saying so is better than reporting a revision that
+/// changed nothing as completed. A revision that made a commit has a change to deliver
+/// whatever its description says.
+///
+/// # Errors
+///
+/// Returns why there is nothing to deliver, or why the current description could not be read.
+pub fn refuse_unchanged_description(
+    workload: &Workload,
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    deferred: &[Deferred],
+    committed: &Committed,
+    tick: &mut Tick<'_>,
+) -> Result<(), String> {
+    let Some(revision) = workload.revision.as_ref().filter(|_| !committed.made.get()) else {
+        return Ok(());
+    };
+    let message = read_message(workspace)?;
+    let resolution = read_resolution(workspace);
+    let written = written_description(workspace);
+    let description = Description {
+        message: &message,
+        written: written.as_deref(),
+        deferred,
+        resolution: &resolution,
+    };
+    let number = workload.ticket.as_ref().map_or(0, |ticket| ticket.number);
+    let new = body(workload, &description, number);
+    let current = current_description(&revision.pull_request_url, workspace, gh, token, tick)?;
+    // The host keeps the line endings of whatever was typed in a browser, and a trailing
+    // blank line means nothing.
+    let same = |text: &str| {
+        text.lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_owned()
+    };
+    if same(&new) == same(&current) {
+        return Err(
+            "the agent changed nothing, so there is nothing to deliver: the description it wrote is the pull request's own".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// Whether the token can push to the repository, found out before an agent starts and
@@ -600,6 +681,7 @@ pub fn push_and_open(
             url: revision.pull_request_url.clone(),
             number: revision.pull_request_number,
             head_branch: branch,
+            nothing_pushed: !committed.made.get(),
         });
     }
 
@@ -705,6 +787,7 @@ fn open_pull_request(
         url,
         number,
         head_branch: branch.to_owned(),
+        nothing_pushed: false,
     })
 }
 

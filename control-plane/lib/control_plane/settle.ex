@@ -18,7 +18,9 @@ defmodule ControlPlane.Settle do
       GitHub unable to say) waits, and nothing is written: unknown is never green.
 
   Only the newest run of a check counts, because a cancelled duplicate run leaves a
-  failed run of the same name behind. The ticket is marked settled only once its
+  failed run of the same name behind. While any run on the commit is still live, a
+  cancelled check is waited on, not failed or re-run: the live run may be the one that
+  superseded it. The ticket is marked settled only once its
   labels and comment were written; if they could not be, it is tried again.
   """
 
@@ -603,12 +605,23 @@ defmodule ControlPlane.Settle do
           run != nil and run.state == :completed,
           do: {name, timed_out(workload, run)}
 
+    # A run that is still going on the commit may be the one that superseded a cancelled
+    # run of the same concurrency group, so while any is live a cancelled check is not a
+    # result: it is waited on, not failed, revised or re-run.
+    live? = Enum.any?(looked_at, fn {_name, run} -> run != nil and run.state != :completed end)
+
+    {superseded, ended} =
+      if live?,
+        do: Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end),
+        else: {[], ended}
+
     bad = for {name, run} <- ended, run.conclusion not in @good, do: {name, run}
     cancelled = for {name, run} <- bad, run.conclusion == "cancelled", do: {name, run}
     failed = Enum.map(bad, &elem(&1, 0))
 
     unfinished =
-      for {name, run} <- looked_at, is_nil(run) or run.state != :completed, do: name
+      for({name, run} <- looked_at, is_nil(run) or run.state != :completed, do: name) ++
+        Enum.map(superseded, &elem(&1, 0))
 
     real = bad -- cancelled
     revisable = revisable(workload, pull_and_number)

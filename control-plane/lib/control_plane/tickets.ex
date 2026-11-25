@@ -404,7 +404,7 @@ defmodule ControlPlane.Tickets do
     record = workload.record || %{}
 
     [
-      "**Hephaestium:** #{headline(workload.state, revision?(workload))}",
+      "**Hephaestium:** #{headline(workload.state, revision?(workload), record)}",
       reason(workload),
       question(workload.state, workload, record),
       account(workload),
@@ -416,17 +416,22 @@ defmodule ControlPlane.Tickets do
     |> Enum.join("\n\n")
   end
 
-  defp headline("completed", true),
+  # A revision that changed only the pull request's description pushed no commit, and says
+  # so: the branch, and the approvals and checks on it, are as they were.
+  defp headline("completed", true, %{"pullRequest" => %{"nothingPushed" => true}}),
+    do: "a revision completed and updated the pull request's description; nothing was pushed."
+
+  defp headline("completed", true, _),
     do: "a revision completed and pushed to the pull request's branch."
 
-  defp headline("completed", _), do: "the workload completed and opened a pull request."
-  defp headline("failed", true), do: "the revision failed."
-  defp headline("failed", _), do: "the workload failed."
-  defp headline("timed_out", true), do: "the revision timed out."
-  defp headline("timed_out", _), do: "the workload timed out."
-  defp headline("blocked", _), do: "the workload is blocked."
-  defp headline("cancelled", _), do: "the workload was cancelled."
-  defp headline(other, _), do: "the workload is #{other}."
+  defp headline("completed", _, _), do: "the workload completed and opened a pull request."
+  defp headline("failed", true, _), do: "the revision failed."
+  defp headline("failed", _, _), do: "the workload failed."
+  defp headline("timed_out", true, _), do: "the revision timed out."
+  defp headline("timed_out", _, _), do: "the workload timed out."
+  defp headline("blocked", _, _), do: "the workload is blocked."
+  defp headline("cancelled", _, _), do: "the workload was cancelled."
+  defp headline(other, _, _), do: "the workload is #{other}."
 
   defp revision?(%Workload{workload: %{"revision" => _}}), do: true
   defp revision?(_), do: false
