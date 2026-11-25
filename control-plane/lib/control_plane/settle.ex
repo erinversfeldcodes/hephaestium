@@ -32,9 +32,11 @@ defmodule ControlPlane.Settle do
     CodeHost,
     Evaluations,
     Finding,
+    PullRequests,
     ReviewApproval,
     Reviews,
     Tickets,
+    Tracker,
     Workload,
     Workloads
   }
@@ -79,6 +81,39 @@ defmodule ControlPlane.Settle do
       message = "could not settle #{workload.id}: " <> Exception.message(exception)
       Logger.error(message)
       {:error, message}
+  end
+
+  @doc """
+  Settle the workloads of a ticket whose newest workload failed when the ticket has closed or
+  its pull request has merged or closed: nothing is left for a person to do on it, so the board
+  must not ask. A ticket that is still open with nothing restarted is left, and a ticket the
+  tracker cannot be read for is looked at again next time.
+  """
+  @spec closed_tickets() :: [%{ticket: {String.t(), integer()}, result: term()}]
+  def closed_tickets do
+    repositories = Application.get_env(:control_plane, :intake, [])[:repositories] || []
+    failed = Workloads.unsettled_failures(repositories)
+    pulls = PullRequests.for_tickets(failed)
+
+    for {repository, number} = ticket <- failed do
+      result =
+        if pulls[ticket] && pulls[ticket].state in ["merged", "closed"],
+          do: :pull_request_ended,
+          else: ticket_state(repository, number)
+
+      if result in [:pull_request_ended, :ticket_closed],
+        do: Workloads.settle_ticket(repository, number)
+
+      %{ticket: ticket, result: result}
+    end
+  end
+
+  defp ticket_state(repository, number) do
+    case Tracker.ticket(repository, number) do
+      {:ok, %{state: :closed}} -> :ticket_closed
+      {:ok, _open} -> :open
+      {:error, message} -> {:error, message}
+    end
   end
 
   @doc """
