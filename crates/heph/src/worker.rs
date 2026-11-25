@@ -446,7 +446,11 @@ fn make_run_directory(claim: &Claim, options: &Options) -> Result<PathBuf, Strin
     );
     let ticket = safe(workload["ticket"]["number"].as_str().unwrap_or("0")).unwrap_or("0");
 
+    let keep = run::keep_window(None)?;
     let runs = run::runs_dir(options.runs_dir.as_deref())?;
+    for warning in &workspaces::sweep(&runs, keep, std::time::SystemTime::now()).warnings {
+        eprintln!("heph: warning: {warning}");
+    }
     let directory = runs.join(repository).join(format!("{ticket}-{id}"));
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -576,8 +580,11 @@ fn serve(
         .trim_start_matches("OUTCOME_")
         .to_lowercase();
     println!("workload {}: {outcome}", claim.id);
-    // The workspace stays: a pull request that was opened may be revised from it, and the
-    // control plane says when it is no longer needed.
+    if outcome == "completed"
+        && let Err(warning) = workspaces::delete_checkout(&directory)
+    {
+        eprintln!("heph: warning: {warning}");
+    }
     Ok(())
 }
 
