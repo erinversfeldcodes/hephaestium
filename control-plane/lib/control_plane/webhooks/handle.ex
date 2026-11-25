@@ -12,7 +12,17 @@ defmodule ControlPlane.Webhooks.Handle do
 
   require Logger
 
-  alias ControlPlane.{Evaluations, Gaps, Intake, PullRequests, Settle, Tracker, Workloads}
+  alias ControlPlane.{
+    Evaluations,
+    Gaps,
+    Intake,
+    PullRequests,
+    Settle,
+    Tracker,
+    WaitingTickets,
+    Workloads
+  }
+
   alias ControlPlane.Webhooks.Event
 
   @spec run(Event.t()) :: term()
@@ -69,6 +79,9 @@ defmodule ControlPlane.Webhooks.Handle do
   end
 
   defp handle(%Event{kind: :ticket_closed} = event) do
+    :ok = Workloads.settle_ticket(event.repository, event.number)
+    :ok = WaitingTickets.clear(event.repository, event.number)
+
     if Evaluations.enabled?(event.repository) do
       case Tracker.parent(event.repository, event.number) do
         {:ok, nil} -> :no_parent
