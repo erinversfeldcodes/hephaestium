@@ -158,7 +158,8 @@ fn a_gate_that_timed_out_and_names_a_ci_check_is_deferred_and_one_that_does_not_
     assert!(
         result["reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("timed out after 1s")),
+            .is_some_and(|reason| reason.contains("timed out after 1s")
+                && reason.contains("the load average on this machine")),
         "{result}"
     );
     assert!(body.contains("check `slow`"), "{body}");
@@ -167,6 +168,13 @@ fn a_gate_that_timed_out_and_names_a_ci_check_is_deferred_and_one_that_does_not_
 
     let events = ran.events();
     assert_eq!(finished(&events).0, Outcome::Failed, "{}", ran.stderr());
+    assert!(
+        finished(&events)
+            .1
+            .contains("the load average on this machine"),
+        "{}",
+        finished(&events).1
+    );
     assert_eq!(
         result_of(&gate_results(&events), "slow")["outcome"],
         json!("timed_out")
