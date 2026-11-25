@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentText, Client, ReviewEffort, Run, TicketDetail, Verdict } from "../api";
+import type { AgentText, Client, Gate, ReviewEffort, Run, TicketDetail, Verdict } from "../api";
 import { ago, amount, amounts, when } from "../format";
 import { isActive, runWord } from "../runwords";
 import { span, timelineOf } from "../timeline";
@@ -289,6 +289,55 @@ function WhereItIs({ detail, settled }: { readonly detail: TicketDetail; readonl
   );
 }
 
+/** What happened at the gates, as one line: how many of each outcome, and why the first one that did not pass did not. */
+function gateLine(gates: readonly Gate[]): string {
+  const counts = new Map<string, number>();
+  for (const gate of gates) {
+    const outcome = gate.outcome ?? "not recorded";
+    counts.set(outcome, (counts.get(outcome) ?? 0) + 1);
+  }
+  const parts = [...counts].map(([outcome, n]) => `${n} ${outcome}`);
+  const noted = gates.find((gate) => gate.outcome !== "passed" && gate.reason !== null);
+  return `${gates.length} ${gates.length === 1 ? "gate" : "gates"}: ${parts.join(", ")}${
+    noted === undefined ? "" : `. ${noted.name}: ${noted.reason}`
+  }`;
+}
+
+/** The gates of the latest run that kept any, as chips with a line under them saying what happened. */
+function GatesPanel({ client, runs }: { readonly client: Client; readonly runs: readonly Run[] }) {
+  const ids = runs.map((run) => run.id).join(",");
+  const kept = useRemote(async () => {
+    const all = await Promise.all(runs.map((run) => client.gates(run.id)));
+    return all.filter((gates) => gates.length > 0).at(-1) ?? null;
+  }, [client, ids]);
+  return (
+    <section className="panel" aria-labelledby="gates-heading">
+      <h3 id="gates-heading">Gates</h3>
+      <Shown state={kept}>
+        {(gates) =>
+          gates === null ? (
+            <p>No run has kept a gate.</p>
+          ) : (
+            <>
+              <div className="actions" role="list" aria-label="Gates">
+                {gates.map((gate) => (
+                  <span className="chip" role="listitem" key={gate.name}>
+                    <span className="state" data-state={gate.outcome ?? "none"}>
+                      {gate.outcome ?? "-"}
+                    </span>
+                    {gate.name}
+                  </span>
+                ))}
+              </div>
+              <p className="small">{gateLine(gates)}</p>
+            </>
+          )
+        }
+      </Shown>
+    </section>
+  );
+}
+
 function RunsPanel({ detail, now }: { readonly detail: TicketDetail; readonly now: number }) {
   const { lanes, axis } = timelineOf(detail.workloads, now, detail.pullRequest?.state === "merged");
   return (
@@ -398,6 +447,8 @@ export function TicketDetailPage({
             <QuestionPanel client={client} repository={repository} number={number} />
 
             <RunsPanel detail={detail} now={now} />
+
+            <GatesPanel client={client} runs={detail.workloads} />
 
             <section className="panel" aria-labelledby="words-heading">
               <h3 id="words-heading">What the agent said</h3>

@@ -126,3 +126,52 @@ describe("words for a run and for a ticket", () => {
     expect(await within(where).findByText("Done")).toBeInTheDocument();
   });
 });
+
+describe("the gates", () => {
+  it("shows chips for the gates and a line under them saying what happened", async () => {
+    page();
+    const panel = await screen.findByRole("region", { name: "Gates" });
+    const chips = await within(panel).findAllByRole("listitem");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("passedformat");
+    expect(chips[1]).toHaveTextContent("deferredtest");
+    expect(panel).toHaveTextContent("2 gates: 1 passed, 1 deferred. test: timed out after 60s");
+  });
+
+  it("says so when no run kept a gate", async () => {
+    page({ gates: async () => [] });
+    expect(await screen.findByText("No run has kept a gate.")).toBeInTheDocument();
+  });
+});
+
+describe("the runs panel's states and axis", () => {
+  it("words waiting, stopped and timed-out runs, and labels the axis in round minutes", async () => {
+    page({
+      ticket: async () => ({
+        ...detail,
+        workloads: [run("a", "implementation", "queued", 0, null), run("b", "revision", "cancelled", 0, 40), run("c", "review", "timed_out", 40, 60)],
+      }),
+    });
+    const panel = await screen.findByRole("region", { name: "Runs" });
+    const lanes = within(panel).getAllByRole("listitem");
+    expect(lanes[0]).toHaveTextContent("waiting");
+    expect(lanes[1]).toHaveTextContent("40 min · stopped");
+    expect(lanes[2]).toHaveTextContent("20 min · timed out");
+  });
+
+  it("labels the axis in round minutes up to what the runs reach", async () => {
+    page({ ticket: async () => ({ ...detail, workloads: [run("a", "implementation", "completed", 0, 40), run("b", "review", "completed", 40, 60)] }) });
+    const panel = await screen.findByRole("region", { name: "Runs" });
+    const labels = [...panel.querySelectorAll(".axis .ticks span")].map((n) => n.textContent);
+    expect(labels).toEqual(["0", "15 min", "30 min", "45 min", "1 h"]);
+  });
+
+  it("does not say done for a merged ticket that has not been judged", async () => {
+    page({
+      ticket: async () => ({ ...detail, pullRequest: pull("merged"), workloads: [run("a", "implementation", "completed", 0, 40)] }),
+      verdicts: async () => [],
+    });
+    const where = await screen.findByRole("region", { name: "Where it is" });
+    expect(within(where).queryByText("Done")).toBeNull();
+  });
+});
