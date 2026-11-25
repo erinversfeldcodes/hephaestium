@@ -296,6 +296,11 @@ pub fn run(
 /// escaped it, or that an executor which was itself killed never got to stop. A directory held by
 /// any process, this worker or another on the machine, is a live run and is left alone.
 fn stop_what_finished_runs_left(options: &Options) {
+    stop_what_finished_runs_left_logging(options, &mut std::io::stderr());
+}
+
+/// As `stop_what_finished_runs_left`, saying each stop to `log`.
+fn stop_what_finished_runs_left_logging(options: &Options, log: &mut dyn std::io::Write) {
     let Ok(runs) = run::runs_dir(options.runs_dir.as_deref()) else {
         return;
     };
@@ -313,7 +318,8 @@ fn stop_what_finished_runs_left(options: &Options) {
         if crate::run_lock::is_held(&run) {
             continue;
         }
-        eprintln!(
+        let _ = writeln!(
+            log,
             "heph: worker: stopping process {}, left running in {}: nobody holds the run {}, so it is taken for finished",
             found.pid,
             found.directory.display(),
@@ -826,9 +832,12 @@ mod tests {
         drop(run_lock::hold(&finished).expect("held"));
         let other_workers_hold = run_lock::hold(&live).expect("held");
         let mut left = sleeper(&finished.join("work"));
+        let left_id = left.id();
         let mut kept = sleeper(&live);
 
-        stop_what_finished_runs_left(&options_for(&runs));
+        let mut said = Vec::new();
+        stop_what_finished_runs_left_logging(&options_for(&runs), &mut said);
+        let said = String::from_utf8_lossy(&said).into_owned();
 
         let left_stopped = ended_within_five_seconds(&mut left);
         let kept_alive = kept.try_wait().expect("wait").is_none();
@@ -837,6 +846,16 @@ mod tests {
         let _ = left.kill();
         let _ = std::fs::remove_dir_all(&runs);
         assert!(left_stopped, "the finished run's process was left");
+        assert!(
+            said.contains(&format!("stopping process {left_id}"))
+                && said.contains("nobody holds the run")
+                && said.contains("1-finished"),
+            "the stop was not logged with its run and reason: {said}"
+        );
+        assert!(
+            !said.contains("2-live"),
+            "the live run was logged as stopped: {said}"
+        );
         assert!(
             kept_alive,
             "the other worker's live run's process was stopped"
@@ -868,6 +887,7 @@ mod tests {
             .map_while(Result::ok)
             .any(|line| line.contains("holding-the-run-directory"));
         let mut left = sleeper(&died);
+        let left_id = left.id();
 
         let spared = held && {
             stop_what_finished_runs_left(&options_for(&runs));
@@ -876,7 +896,9 @@ mod tests {
         };
         holder.kill().expect("SIGKILL the holder");
         let _ = holder.wait();
-        stop_what_finished_runs_left(&options_for(&runs));
+        let mut said = Vec::new();
+        stop_what_finished_runs_left_logging(&options_for(&runs), &mut said);
+        let said = String::from_utf8_lossy(&said).into_owned();
 
         let left_stopped = ended_within_five_seconds(&mut left);
         let _ = left.kill();
@@ -884,6 +906,12 @@ mod tests {
         assert!(held, "the holder never took the lock");
         assert!(spared, "the sweep stopped a process while its worker lived");
         assert!(left_stopped, "the killed worker's process was left");
+        assert!(
+            said.contains(&format!("stopping process {left_id}"))
+                && said.contains("nobody holds the run")
+                && said.contains("3-died"),
+            "the stop was not logged with its run and reason: {said}"
+        );
     }
 
     /// Not a test of its own: the process the one above starts and kills. Run alone it does
