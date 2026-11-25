@@ -130,7 +130,7 @@ pub fn run(
             )?;
             match ended {
                 End::Done if read_only(&workload) => {
-                    match judged(&workload, &workspace, before.as_ref()) {
+                    match judged(&workload, &workspace, before.as_ref(), stream.account()) {
                         Ok(said) => {
                             verdict = Some(said);
                             (Outcome::Completed, String::new())
@@ -249,11 +249,12 @@ fn judged(
     workload: &Workload,
     workspace: &Path,
     before: Option<&review::Snapshot>,
+    said: Option<&str>,
 ) -> Result<Said, String> {
     if workload.completeness.is_some() {
         evaluated(workload, workspace, before).map(Said::Completeness)
     } else if workload.gap.is_some() {
-        stepped(workload, workspace, before).map(Said::Gap)
+        stepped(workload, workspace, before, said).map(Said::Gap)
     } else {
         reviewed(workload, workspace, before).map(Said::Review)
     }
@@ -287,6 +288,7 @@ fn stepped(
     workload: &Workload,
     workspace: &Path,
     before: Option<&review::Snapshot>,
+    said: Option<&str>,
 ) -> Result<contracts::v1alpha1::GapStep, String> {
     let ticket = workload.ticket.as_ref().map_or(0, |t| t.number);
     if let Some(before) = before {
@@ -295,7 +297,7 @@ fn stepped(
             return Err(changed);
         }
     }
-    gap::step(workspace, ticket)
+    gap::step(workspace, ticket, said)
 }
 
 /// What a review has to show for itself once the agent is done: the workspace is
