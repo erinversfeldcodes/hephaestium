@@ -318,6 +318,8 @@ fn stop_what_finished_runs_left_logging(options: &Options, log: &mut dyn std::io
         if crate::run_lock::is_held(&run) {
             continue;
         }
+        // A log that cannot be written (a closed stderr, a full pipe) must not
+        // stop the sweep from stopping the process, so the error is ignored.
         let _ = writeln!(
             log,
             "heph: worker: stopping process {}, left running in {}: nobody holds the run {}, so it is taken for finished",
