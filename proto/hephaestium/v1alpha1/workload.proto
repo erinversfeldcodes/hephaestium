@@ -184,6 +184,9 @@ message BaseMoved {
   repeated string commits = 1;
   // Files that both those commits and the pull request's change touch.
   repeated string overlapping_files = 2;
+  // Files where both changed the same lines, so that merging the base branch in left
+  // conflict markers in the working tree for the agent to resolve.
+  repeated string conflicted_files = 3;
 }
 
 // One check that failed, and what it said. The excerpt is output a person's code

@@ -95,6 +95,10 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
     text.push_str(
         "If the change needs a database migration, make it with `mix ecto.gen.migration`, which stamps the version with the time to the second, and never write or edit a migration's version by hand: agents working at once who each pick a round number pick the same one, and a repeated version stops the migrations from running.\n\n",
     );
+    let server = std::env::var(crate::toolenv::SERVER).ok();
+    text.push_str(&crate::toolenv::prompt_section(
+        crate::toolenv::database_url(server.as_deref(), workspace).is_some(),
+    ));
     text.push_str(
         "Do not start a background process that outlives the command that started it, and do not generate artificial CPU load on the machine: other workloads share it, and a loop left running slows all of them past their timeouts. A proof that something fails before a change and passes after it under load is made with a bounded command that exits.\n\n",
     );
@@ -215,6 +219,15 @@ fn base_moved_section(moved: &contracts::v1alpha1::BaseMoved, when: &str) -> Str
     if !moved.overlapping_files.is_empty() {
         text.push_str("Files that both they and your change touch:\n");
         for file in &moved.overlapping_files {
+            let _ = writeln!(text, "- {}", file.replace('`', "'"));
+        }
+        text.push('\n');
+    }
+    if !moved.conflicted_files.is_empty() {
+        text.push_str(
+            "Merging them left conflicts in the working tree. Where both changed the same lines, the file holds conflict markers (`<<<<<<<`, `=======` and `>>>>>>>`) around the two versions, or one side deleted a file the other changed. Resolve each of these files, keeping what both changes set out to do, so that no marker is left; deleting a file is a valid resolution when the change no longer needs it. The merge is committed by the runtime once they are resolved. Files in conflict:\n",
+        );
+        for file in &moved.conflicted_files {
             let _ = writeln!(text, "- {}", file.replace('`', "'"));
         }
         text.push('\n');
