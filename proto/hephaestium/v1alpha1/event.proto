@@ -163,6 +163,10 @@ message PullRequestOpened {
   string url = 1;
   int64 number = 2;
   string head_branch = 3;
+  // True when a revision changed only the pull request's description: the branch was not
+  // pushed to, so nothing the checks or approvals saw was replaced. It is a negative so that a
+  // record written before it existed reads as a push.
+  bool nothing_pushed = 4;
 }
 
 // The workload is over. It is the last event, and there is one.
