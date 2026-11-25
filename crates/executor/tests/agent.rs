@@ -395,3 +395,42 @@ fn running_with_no_agent_selected_is_refused() {
     assert!(ran.stderr().contains("agent"), "{}", ran.stderr());
     assert_eq!(ran.output.stdout, b"");
 }
+
+#[test]
+fn a_running_agent_is_told_when_half_and_three_quarters_of_its_time_have_gone() {
+    // The stand-in asks how long is left at the start, after half and after three quarters of a
+    // eight second limit, and keeps what it was told.
+    let ran = ran(
+        "agent-clock",
+        |w| w["limits"]["timeout"] = json!("8s"),
+        "clock=\"$PWD.time-left\"; sh \"$clock\" > told-start; sleep 4.5; sh \"$clock\" > told-half; sleep 2.0; sh \"$clock\" > told-late; echo done",
+        &[],
+    );
+    let told = |name: &str| {
+        std::fs::read_to_string(workspace_of(&ran).join(name)).expect("what the agent was told")
+    };
+
+    let start = told("told-start");
+    assert!(!start.contains("Half"), "{start}");
+    assert!(!start.contains("Three quarters"), "{start}");
+    let half = told("told-half");
+    assert!(half.contains("Half"), "{half}");
+    assert!(!half.contains("Three quarters"), "{half}");
+    let late = told("told-late");
+    assert!(late.contains("Three quarters"), "{late}");
+    assert!(late.contains("Stop verifying"), "{late}");
+    assert!(late.contains("what you did not run"), "{late}");
+}
+
+#[test]
+fn a_run_stopped_at_its_time_keeps_what_the_agent_had_changed() {
+    let ran = ran(
+        "agent-timeout-keeps",
+        |w| w["limits"]["timeout"] = json!("1s"),
+        "echo changed > edited.txt; sleep 60",
+        &[],
+    );
+    assert_eq!(ran.record().outcome, Outcome::TimedOut as i32);
+    let kept = std::fs::read_to_string(workspace_of(&ran).join("edited.txt")).expect("kept");
+    assert_eq!(kept.trim(), "changed");
+}

@@ -94,6 +94,7 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
     text.push_str(
         "If the change needs a database migration, make it with `mix ecto.gen.migration`, which stamps the version with the time to the second, and never write or edit a migration's version by hand: agents working at once who each pick a round number pick the same one, and a repeated version stops the migrations from running.\n\n",
     );
+    text.push_str(&time_section(workload, workspace));
     text.push_str(
         "Do not start a background process that outlives the command that started it, and do not generate artificial CPU load on the machine: other workloads share it, and a loop left running slows all of them past their timeouts. A proof that something fails before a change and passes after it under load is made with a bounded command that exits.\n\n",
     );
@@ -101,6 +102,32 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
         "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `.heph-commit-message` in the current directory: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body. Also write the pull request's description to `.heph-description.md` in the current directory, in these sections and no others: `## What the ticket asked for`, a brief summary of what the ticket required of this change; `## What this changes`, what this pull request introduces, each claim with how it was shown (a named test, or a command and its result); and `## Risks and shortcomings`, any known risk, and anything you could not confirm or did not check (leave this section out if there is none). Keep it brief, and do not write a section for what remains: the runtime writes `## What remains` from `.heph-resolution`. Also write `.heph-resolution` in the current directory: the single word `complete` if your change resolves everything the ticket asks, done and shown to work and not only passing the checks, or `partial: ` followed by what remains. A pull request that says `complete` closes its ticket when it merges, and a ticket is closed only when every item that affects it is resolved, so say `complete` only if it is true. Then say in one short paragraph what you changed.",
     );
     text
+}
+
+/// What the agent is told about its time: how much it has, when that ends, how to ask how
+/// much is left, and what wasting it looks like. The limit is the one the executor enforces,
+/// read from the workload, so a changed limit changes what is said.
+fn time_section(workload: &Workload, workspace: &Path) -> String {
+    let seconds = workload
+        .limits
+        .as_ref()
+        .and_then(|l| l.timeout.as_ref())
+        .map_or(0, |t| u64::try_from(t.seconds).unwrap_or(0));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!(
+        "You have {minutes} minutes for this run, and it ends at {ends}: then you are stopped, and what you had not finished is lost. Ask how long is left with `sh {clock}`; it also tells you when half and when three quarters of your time have gone, so ask before you start anything long and after each long command. When a quarter is left, stop verifying and deliver what you can, saying in the description what was not run: reviews still judge what you deliver. Run only the tests your change touches, and never a second copy of a suite that is already running. Do not wait on processes by name: `pgrep -f \"mix test\"` waits for every run's tests on this machine, not only yours. Wait only on a process you started and whose id you hold, and never sleep or poll for more than a minute.\n\n",
+        minutes = seconds.div_ceil(60),
+        ends = utc_clock(now + seconds),
+        clock = crate::agent::clock_path(workspace).display(),
+    )
+}
+
+/// The time of day in UTC, as hours and minutes, of a count of seconds since the epoch.
+fn utc_clock(epoch_seconds: u64) -> String {
+    let in_day = epoch_seconds % 86_400;
+    format!("{:02}:{:02} UTC", in_day / 3_600, in_day % 3_600 / 60)
 }
 
 /// A revision's part of the prompt. The pull request was opened for this ticket

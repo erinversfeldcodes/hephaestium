@@ -3,7 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use contracts::v1alpha1::event::Kind;
@@ -26,6 +26,54 @@ pub enum End {
     /// The executor was told to stop, and the agent was stopped with everything it
     /// started.
     Cancelled,
+}
+
+/// Where the agent asks how long is left: a script beside the workspace, so that it is not part
+/// of the repository. It is written for every agent, so that no adapter has to tell time.
+#[must_use]
+pub fn clock_path(workspace: &Path) -> PathBuf {
+    let name = workspace
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    workspace.with_file_name(format!("{name}.time-left"))
+}
+
+/// The script that says how long is left, and, once half and then three quarters of the time
+/// have gone, says so. It works the answer out when it is run, from the instants the run
+/// starts and must end, so it is right whenever it is asked and needs no process of its own.
+fn clock_script(started: u64, ends: u64) -> String {
+    format!(
+        r#"#!/bin/sh
+started={started}
+ends={ends}
+now=$(date +%s)
+total=$((ends - started))
+elapsed=$((now - started))
+left=$((ends - now))
+if [ "$left" -le 0 ]; then
+  echo "Your time is up."
+  exit 0
+fi
+echo "$(( (left + 59) / 60 )) minute(s) left of $(( (total + 59) / 60 )) minute(s), and the run ends at $(date -u -r "$ends" '+%H:%M UTC' 2>/dev/null || date -u -d "@$ends" '+%H:%M UTC')."
+if [ $((elapsed * 4)) -ge $((total * 3)) ]; then
+  echo "Three quarters of your time have gone. Stop verifying now: do not start another suite or wait on anything. Deliver what you have, write the commit message, description and resolution, and say in the description what you did not run."
+elif [ $((elapsed * 2)) -ge "$total" ]; then
+  echo "Half of your time has gone."
+fi
+"#
+    )
+}
+
+/// Write the clock the agent asks, for a run that has `timeout` from now.
+fn write_clock(workspace: &Path, timeout: Duration) -> std::io::Result<()> {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    std::fs::write(
+        clock_path(workspace),
+        clock_script(started, started + timeout.as_secs()),
+    )
 }
 
 /// The environment the agent has: the secrets its adapter names, and for an evaluation
@@ -84,7 +132,16 @@ pub fn run<W: Write>(
     spent: &Cell<f64>,
     stream_out: &mut Stream<'_, W>,
 ) -> Result<End, Refused> {
-    if let Err(error) = adapter.prepare(workload, workspace) {
+    let limits = workload.limits.as_ref().expect("checked when read");
+    let timeout_seconds = limits.timeout.as_ref().expect("checked when read");
+    let timeout = Duration::new(
+        u64::try_from(timeout_seconds.seconds).unwrap_or(0),
+        u32::try_from(timeout_seconds.nanos).unwrap_or(0),
+    );
+    if let Err(error) = adapter
+        .prepare(workload, workspace)
+        .and_then(|()| write_clock(workspace, timeout))
+    {
         return Ok(End::Failed(format!(
             "the agent could not be prepared: {error}"
         )));
@@ -92,12 +149,6 @@ pub fn run<W: Write>(
     let plan = adapter.plan(workload, workspace);
     let environment = environment_for(&plan.env_names, workload, secrets);
 
-    let limits = workload.limits.as_ref().expect("checked when read");
-    let timeout_seconds = limits.timeout.as_ref().expect("checked when read");
-    let timeout = Duration::new(
-        u64::try_from(timeout_seconds.seconds).unwrap_or(0),
-        u32::try_from(timeout_seconds.nanos).unwrap_or(0),
-    );
     let budget = limits.budget.as_ref().expect("checked when read");
 
     let out = RefCell::new(stream_out);
