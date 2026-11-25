@@ -97,9 +97,45 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
     text.push_str(
         "Do not start a background process that outlives the command that started it, and do not generate artificial CPU load on the machine: other workloads share it, and a loop left running slows all of them past their timeouts. A proof that something fails before a change and passes after it under load is made with a bounded command that exits.\n\n",
     );
+    text.push_str(&testing_section(workload, workspace));
     text.push_str(
         "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `.heph-commit-message` in the current directory: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body. Also write the pull request's description to `.heph-description.md` in the current directory, in these sections and no others: `## What the ticket asked for`, a brief summary of what the ticket required of this change; `## What this changes`, what this pull request introduces, each claim with how it was shown (a named test, or a command and its result); and `## Risks and shortcomings`, any known risk, and anything you could not confirm or did not check (leave this section out if there is none). Keep it brief, and do not write a section for what remains: the runtime writes `## What remains` from `.heph-resolution`. Also write `.heph-resolution` in the current directory: the single word `complete` if your change resolves everything the ticket asks, done and shown to work and not only passing the checks, or `partial: ` followed by what remains. A pull request that says `complete` closes its ticket when it merges, and a ticket is closed only when every item that affects it is resolved, so say `complete` only if it is true. Then say in one short paragraph what you changed.",
     );
+    text
+}
+
+/// What the agent is told about running tests: run those that cover the change, once, and
+/// leave the whole suites to the gates and CI, which run them anyway. The repository's manifest
+/// says how to run the tests for a set of changed files, so the agent is given each component's
+/// command. A manifest that cannot be read gives the rule alone: the agent is never given a
+/// command that was guessed.
+fn testing_section(workload: &Workload, workspace: &Path) -> String {
+    let mut text = String::from(
+        "Run the tests that cover your change, once. Do not run whole-workspace test suites, and do not wait in loops on a suite that is slow: the gates run after you and CI runs after the push, so they run the rest, and several workloads share this machine.\n\n",
+    );
+    let manifest =
+        std::fs::read_to_string(workspace.join(crate::workload::manifest_path(workload)))
+            .ok()
+            .and_then(|text| heph::manifest::parse(&text).ok());
+    let Some(manifest) = manifest else {
+        return text;
+    };
+    let mut commands = String::new();
+    for (name, component) in &manifest.components {
+        if let Some(command) = &component.test_changed {
+            let _ = writeln!(
+                commands,
+                "- {name}: from `{root}`, run `{command}` followed by the paths of the files you changed under it, relative to it",
+                root = component.root,
+                command = command.join(" "),
+            );
+        }
+    }
+    if !commands.is_empty() {
+        text.push_str("The repository says how to run only the tests for the files you changed:\n");
+        text.push_str(&commands);
+        text.push('\n');
+    }
     text
 }
 

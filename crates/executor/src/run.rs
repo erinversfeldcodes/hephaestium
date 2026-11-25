@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use contracts::v1alpha1::agent_runtime::Kind as AgentKind;
 use contracts::v1alpha1::event::Kind;
@@ -31,7 +31,7 @@ use crate::prepush::{self, Reading};
 use crate::redact::Redactor;
 use crate::review;
 use crate::secrets::{self, Secrets};
-use crate::stream::{Spent, Stream};
+use crate::stream::{Phase, Spent, Stream};
 use crate::{transcript, workload};
 
 /// How long cloning and checking out may take.
@@ -1511,6 +1511,20 @@ fn load_note() -> String {
 /// failed printed last. A heartbeat is written every `heartbeat` while a gate runs, so a gate
 /// that takes minutes is not taken for a run that went silent.
 fn run_gates<W: Write>(
+    manifest: &Manifest,
+    workspace: &Path,
+    since: &str,
+    secrets: &Secrets,
+    heartbeat: Duration,
+    stream: &mut Stream<'_, W>,
+) -> Result<Result<Vec<deliver::Deferred>, GatesFailed>, Refused> {
+    let began = Instant::now();
+    let ran = run_gates_untimed(manifest, workspace, since, secrets, heartbeat, stream);
+    stream.add_time(Phase::Gates, began);
+    ran
+}
+
+fn run_gates_untimed<W: Write>(
     manifest: &Manifest,
     workspace: &Path,
     since: &str,

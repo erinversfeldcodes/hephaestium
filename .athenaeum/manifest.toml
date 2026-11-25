@@ -9,6 +9,7 @@ schema_version = 0
 pack = "rust"
 root = "."
 paths = ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+test_changed = ["scripts/test-changed.sh", "rust"]
 
 # The contracts and the cases that grade a reader of them.
 [components.contracts]
@@ -21,6 +22,7 @@ paths = ["proto/**", "cases/**", "buf.yaml", "buf.gen.yaml"]
 pack = "elixir"
 root = "control-plane"
 paths = ["control-plane/**"]
+test_changed = ["../scripts/test-changed.sh", "elixir"]
 
 # What is not code and is read as the project's own account of itself: the decisions, the
 # README and the design notes. No pack names a lens for prose; the lenses that apply to every

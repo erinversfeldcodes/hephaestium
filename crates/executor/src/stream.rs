@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::redact::Redactor;
 use contracts::v1alpha1::event::Kind;
@@ -63,6 +63,17 @@ impl Spent {
 ///
 /// The sequence is gapless from 1 and the times never go backwards, because the
 /// stream is the only place either is decided.
+/// Where a run's time goes, for the three parts the record tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// The agent that makes the change, whether it started first or again.
+    Agent,
+    /// The repository's gates.
+    Gates,
+    /// An agent that reads the change under a lens.
+    Review,
+}
+
 pub struct Stream<'a, W: Write> {
     out: &'a mut W,
     workload_id: String,
@@ -81,6 +92,8 @@ pub struct Stream<'a, W: Write> {
     // What the run asks a person, when it ended by asking.
     question: String,
     redactor: Redactor,
+    // How long each phase has taken, summed over every time it ran.
+    spent_time: [Duration; 3],
 }
 
 impl<'a, W: Write> Stream<'a, W> {
@@ -98,7 +111,13 @@ impl<'a, W: Write> Stream<'a, W> {
             last_message: None,
             question: String::new(),
             redactor: Redactor::default(),
+            spent_time: [Duration::ZERO; 3],
         }
+    }
+
+    /// Count the time since `began` as spent in `phase`.
+    pub fn add_time(&mut self, phase: Phase, began: Instant) {
+        self.spent_time[phase as usize] += began.elapsed();
     }
 
     /// The last thing the agent said in words, if it said anything besides whitespace.
@@ -265,6 +284,13 @@ impl<'a, W: Write> Stream<'a, W> {
             // agent's. The executor lists them for a run that reads its own change.
             steps: Vec::new(),
             provenance: None,
+            agent_ms: millis(self.spent_time[Phase::Agent as usize]),
+            gates_ms: millis(self.spent_time[Phase::Gates as usize]),
+            review_ms: millis(self.spent_time[Phase::Review as usize]),
         })
     }
+}
+
+fn millis(time: Duration) -> u64 {
+    u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
 }

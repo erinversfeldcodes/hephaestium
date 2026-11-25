@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::{Heartbeat, Workload};
@@ -13,7 +13,7 @@ use heph::process::{Go, Streamed, stream};
 use crate::adapter::Adapter;
 use crate::run::{Refused, say};
 use crate::secrets::Secrets;
-use crate::stream::Stream;
+use crate::stream::{Phase, Stream};
 
 /// How the agent's part of the run ended.
 pub enum End {
@@ -76,6 +76,30 @@ fn environment_for(
 /// If the workload has no timeout or budget. Reading a workload refuses one
 /// without them, so reaching here without them is a defect in the caller.
 pub fn run<W: Write>(
+    adapter: &dyn Adapter,
+    workload: &Workload,
+    workspace: &Path,
+    heartbeat: Duration,
+    secrets: &Secrets,
+    spent: &Cell<f64>,
+    stream_out: &mut Stream<'_, W>,
+) -> Result<End, Refused> {
+    // Every agent passes through here, so this is the one place its time is counted: a reader
+    // is told from the agent that makes the change by the workload it was given.
+    let phase = if workload.review.is_some() {
+        Phase::Review
+    } else {
+        Phase::Agent
+    };
+    let began = Instant::now();
+    let ended = run_untimed(
+        adapter, workload, workspace, heartbeat, secrets, spent, stream_out,
+    );
+    stream_out.add_time(phase, began);
+    ended
+}
+
+fn run_untimed<W: Write>(
     adapter: &dyn Adapter,
     workload: &Workload,
     workspace: &Path,
