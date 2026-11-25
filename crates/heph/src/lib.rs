@@ -18,6 +18,7 @@ pub mod lock;
 pub mod manifest;
 pub mod process;
 pub mod run;
+pub mod run_lock;
 pub mod schema;
 pub mod sync;
 pub mod worker;
