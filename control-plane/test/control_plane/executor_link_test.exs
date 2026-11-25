@@ -118,6 +118,55 @@ defmodule ControlPlane.ExecutorLinkTest do
     )
   end
 
+  describe "which workspaces a worker may clear" do
+    defp set(id, changes),
+      do: Repo.update_all(from(w in Workload, where: w.id == ^id), set: changes)
+
+    test "a workload that is leased or still going is held", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      queued_only = queued()
+
+      assert %{status: 200, body: %{"held" => held}} =
+               StandInWorker.held(ctx.port, ctx.mine, [id, queued_only])
+
+      assert Enum.sort(held) == Enum.sort([id, queued_only])
+    end
+
+    test "a completed workload with a pull request that is not settled is held, and is not once settled",
+         ctx do
+      id = queued()
+      pull = %{"pullRequest" => %{"url" => "https://github.com/acme/widgets/pull/9"}}
+      set(id, state: "completed", record: pull)
+
+      assert %{body: %{"held" => [^id]}} = StandInWorker.held(ctx.port, ctx.mine, [id])
+
+      set(id, settled_at: DateTime.utc_now())
+      assert %{body: %{"held" => []}} = StandInWorker.held(ctx.port, ctx.mine, [id])
+    end
+
+    test "a workload that failed, was cancelled or is not known is not held", ctx do
+      failed = queued()
+      cancelled = queued()
+      set(failed, state: "failed")
+      set(cancelled, state: "cancelled")
+      unknown = Ecto.UUID.generate()
+
+      assert %{status: 200, body: %{"held" => []}} =
+               StandInWorker.held(ctx.port, ctx.mine, [failed, cancelled, unknown])
+    end
+
+    test "is refused without a device token, and a body without ids is a mistake", ctx do
+      assert %{status: 401} = StandInWorker.held(ctx.port, nil, [])
+
+      assert %{status: 400} =
+               StandInWorker.request(ctx.port, :post, "/worker/workloads/held",
+                 token: ctx.mine,
+                 body: %{}
+               )
+    end
+  end
+
   describe "a worker with a valid token" do
     test "claims a workload and streams events that are kept in order", ctx do
       id = queued()

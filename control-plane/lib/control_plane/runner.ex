@@ -39,10 +39,22 @@ defmodule ControlPlane.Runner do
     end
   end
 
-  @doc "Where each run keeps its files."
+  @doc """
+  Where each run keeps its files: the configured directory, else `hephaestium/runs` under
+  `$XDG_STATE_HOME`, else under `~/.local/state`. Never the temp folder, which the system does
+  not clean on a schedule a run can rely on and which nothing reads back.
+  """
   @spec runs_dir() :: Path.t()
-  def runs_dir,
-    do: config(:runs_dir) || Path.join(System.tmp_dir!(), "hephaestium-runs")
+  def runs_dir do
+    config(:runs_dir) || Path.join([state_home(), "hephaestium", "runs"])
+  end
+
+  defp state_home do
+    case System.get_env("XDG_STATE_HOME") do
+      path when is_binary(path) and path != "" -> path
+      _ -> Path.join([System.user_home!(), ".local", "state"])
+    end
+  end
 
   @doc false
   def config(key, default \\ nil),
