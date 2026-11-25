@@ -158,6 +158,16 @@ pub fn run<W: Write>(
     )
     .map_err(|error| Refused(format!("waiting for the agent failed: {error}")))?;
 
+    // Whatever the agent left running outside its process group goes too, however it ended,
+    // before anything reads the workspace or the next step starts.
+    for process in heph::process::stop_processes_under(workspace) {
+        say(&format!(
+            "stopped process {} the agent left running in {}",
+            process.pid,
+            process.directory.display()
+        ));
+    }
+
     if let Some(error) = write_failed.into_inner() {
         return Err(error.into());
     }
@@ -165,7 +175,8 @@ pub fn run<W: Write>(
         Streamed::Exited(0) => End::Done,
         Streamed::Exited(code) => End::Failed(format!("the agent exited with code {code}")),
         Streamed::TimedOut => End::TimedOut(format!(
-            "the agent ran past the workload's timeout of {timeout:?} and was stopped"
+            "the agent ran past the workload's timeout of {timeout:?} and was stopped; the load average on this machine, over one, five and fifteen minutes, was {}",
+            heph::process::load_average().unwrap_or_else(|| "not readable".to_owned())
         )),
         Streamed::Stopped => End::Failed(
             stopped_because

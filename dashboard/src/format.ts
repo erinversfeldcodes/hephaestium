@@ -20,3 +20,15 @@ export function when(time: string | null): string {
   const date = new Date(time);
   return Number.isNaN(date.getTime()) ? time : date.toLocaleString();
 }
+
+/** How long before `now` a time was, in its largest whole unit: "5 h ago", "just now". */
+export function ago(time: string, now: number): string {
+  const ms = now - Date.parse(time);
+  if (Number.isNaN(ms)) return time;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}

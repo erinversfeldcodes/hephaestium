@@ -26,7 +26,7 @@ export const detail: TicketDetail = {
     {
       id: "w-1",
       kind: "implementation",
-      state: "succeeded",
+      state: "completed",
       approvedBy: "octocat",
       createdAt: "2026-11-19T09:00:00Z",
       startedAt: "2026-11-19T09:01:00Z",

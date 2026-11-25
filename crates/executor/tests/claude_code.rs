@@ -273,6 +273,12 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
         "the agent must be told nobody answers mid-run, how to stop with a question, and how to say the base already fixes the ticket: {prompt}"
     );
     assert!(
+        prompt.contains("background process")
+            && prompt.contains("artificial CPU load")
+            && prompt.contains("bounded command that exits"),
+        "the agent must be told not to leave processes running or load the machine: {prompt}"
+    );
+    assert!(
         prompt.to_lowercase().contains("do not commit"),
         "the agent must be told the runtime opens the pull request: {prompt}"
     );

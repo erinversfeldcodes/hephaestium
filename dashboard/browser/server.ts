@@ -69,9 +69,10 @@ export async function answerFromFixtures(page: Page, origin: string): Promise<An
     }
     if (head === "questions") return route.fulfill(json(wireQuestions(world.questions)));
     if (head === "spend" && a === "days") return route.fulfill(json(wireDays()));
+    // The ticket page asks for the gates of every one of its runs, so any run answers for them.
+    if (head === "workloads" && a && b === "gates") return route.fulfill(json(wireGates()));
     if (head === "workloads" && a === "w-2") {
       if (b === undefined) return route.fulfill(json(wireRun()));
-      if (b === "gates") return route.fulfill(json(wireGates()));
       if (b === "account") return route.fulfill(json({ account: "Guards now parse.", question: null }));
       if (b === "events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: eventStream() });
     }

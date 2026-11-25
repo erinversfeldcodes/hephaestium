@@ -289,6 +289,45 @@ pub fn run(
     Ok(())
 }
 
+/// The run directories being served now, so that a sweep for what finished runs left behind does
+/// not stop what a run in progress started.
+static SERVING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Report and stop the processes whose working directory is under a run directory that is not
+/// being served: a run that has finished, however it ended, started nothing that should still
+/// be running. The executor stops its own run's processes; this catches those that escaped it,
+/// or that an executor which was itself killed never got to stop.
+fn stop_what_finished_runs_left(options: &Options) {
+    let Ok(runs) = run::runs_dir(options.runs_dir.as_deref()) else {
+        return;
+    };
+    let Ok(root) = runs.canonicalize() else {
+        return;
+    };
+    let serving: Vec<PathBuf> = SERVING
+        .lock()
+        .map(|serving| serving.clone())
+        .unwrap_or_default();
+    for found in crate::process::processes_under(&root) {
+        // A run directory is `<runs>/<repository>/<ticket>-<id>`.
+        let run: PathBuf = found
+            .directory
+            .strip_prefix(&root)
+            .map(|inside| inside.components().take(2).collect())
+            .unwrap_or_default();
+        let run = root.join(run);
+        if serving.contains(&run) {
+            continue;
+        }
+        eprintln!(
+            "heph: worker: stopping process {}, left running in {} by a run that has finished",
+            found.pid,
+            found.directory.display()
+        );
+        crate::process::kill_found(&found);
+    }
+}
+
 /// One slot: claim a workload, run it, and ask again, until told to stop.
 fn slot(
     client: &Client,
@@ -298,6 +337,7 @@ fn slot(
 ) -> Result<(), String> {
     let mut failures: u32 = 0;
     while !stop() {
+        stop_what_finished_runs_left(options);
         let asked_at = Instant::now();
         let claim = match ask(client, slots, stop) {
             Asked::Stopped => break,
@@ -390,6 +430,28 @@ fn serve(
     stop: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let directory = make_run_directory(claim, options)?;
+    let serving = directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.clone());
+    if let Ok(mut all) = SERVING.lock() {
+        all.push(serving.clone());
+    }
+    let result = serve_in(client, claim, options, stop, &directory);
+    if let Ok(mut all) = SERVING.lock()
+        && let Some(at) = all.iter().position(|one| *one == serving)
+    {
+        all.swap_remove(at);
+    }
+    result
+}
+
+fn serve_in(
+    client: &Client,
+    claim: &Claim,
+    options: &Options,
+    stop: &dyn Fn() -> bool,
+    directory: &Path,
+) -> Result<(), String> {
     let workload_file = directory.join("workload.json");
     let offered = run::secret_files()?;
     let work = directory.join("work");
@@ -498,7 +560,7 @@ fn serve(
         .to_lowercase();
     println!("workload {}: {outcome}", claim.id);
     if outcome == "completed"
-        && let Err(warning) = workspaces::delete_checkout(&directory)
+        && let Err(warning) = workspaces::delete_checkout(directory)
     {
         eprintln!("heph: warning: {warning}");
     }
@@ -734,6 +796,53 @@ mod tests {
         std::fs::write(&path, text).expect("a file");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
         path
+    }
+
+    #[test]
+    fn a_process_left_in_a_finished_runs_directory_is_stopped_and_one_in_a_served_run_is_not() {
+        let runs = std::env::temp_dir().join(format!("heph-sweep-{}", std::process::id()));
+        let finished = runs.join("owner-repo").join("1-finished");
+        let served = runs.join("owner-repo").join("2-served");
+        std::fs::create_dir_all(finished.join("work")).expect("a directory");
+        std::fs::create_dir_all(&served).expect("a directory");
+        let start = |directory: &Path| {
+            std::process::Command::new("sleep")
+                .arg("100")
+                .current_dir(directory)
+                .spawn()
+                .expect("sleep")
+        };
+        let mut left = start(&finished.join("work"));
+        let mut kept = start(&served);
+        let options = Options {
+            control_plane: String::new(),
+            runs_dir: Some(runs.clone()),
+            executor: None,
+            workloads: 1,
+        };
+        SERVING
+            .lock()
+            .expect("lock")
+            .push(served.canonicalize().expect("a path"));
+
+        stop_what_finished_runs_left(&options);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut left_status = left.try_wait().expect("wait");
+        while left_status.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            left_status = left.try_wait().expect("wait");
+        }
+        let kept_status = kept.try_wait().expect("wait");
+        let _ = kept.kill();
+        let _ = left.kill();
+        SERVING.lock().expect("lock").clear();
+        let _ = std::fs::remove_dir_all(&runs);
+        assert!(left_status.is_some(), "the finished run's process was left");
+        assert!(
+            kept_status.is_none(),
+            "the served run's process was stopped"
+        );
     }
 
     #[test]

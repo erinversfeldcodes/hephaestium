@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -637,5 +637,200 @@ fn code_when_not_started(error: &std::io::Error) -> i32 {
         NOT_FOUND
     } else {
         NOT_EXECUTABLE
+    }
+}
+
+/// A process found running with its working directory under a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub pid: i32,
+    /// Its working directory, with symbolic links resolved.
+    pub directory: PathBuf,
+}
+
+/// The processes, other than this one, whose working directory is under `directory`.
+///
+/// A process that left its command's process group, as a shell with job control or `setsid`
+/// does, is not reached by stopping the group, but it still works in the directory it was
+/// started in. On Linux this reads `/proc`; elsewhere it asks `lsof`. When neither can be read
+/// nothing is found, which is the same as nothing being running, so a caller must not take
+/// an empty answer as proof.
+#[must_use]
+pub fn processes_under(directory: &Path) -> Vec<Found> {
+    let Ok(root) = directory.canonicalize() else {
+        return Vec::new();
+    };
+    let own = i32::try_from(std::process::id()).unwrap_or(0);
+    let mut found: Vec<Found> = working_directories()
+        .into_iter()
+        .filter(|found| found.pid != own && found.directory.starts_with(&root))
+        .collect();
+    found.sort_by_key(|found| found.pid);
+    found
+}
+
+fn working_directories() -> Vec<Found> {
+    if Path::new("/proc/self/cwd").exists() {
+        return proc_working_directories(Path::new("/proc"));
+    }
+    let Ok(output) = Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-F", "pn"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_lsof(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Read each numbered entry of a `/proc`-shaped directory for the link to its working directory.
+fn proc_working_directories(proc: &Path) -> Vec<Found> {
+    let Ok(entries) = std::fs::read_dir(proc) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
+            let directory = std::fs::read_link(entry.path().join("cwd")).ok()?;
+            Some(Found { pid, directory })
+        })
+        .collect()
+}
+
+/// Read the output of `lsof -F pn`: a `p` line names a process, and the `n` lines after it
+/// name its working directory.
+fn parse_lsof(text: &str) -> Vec<Found> {
+    let mut found = Vec::new();
+    let mut pid = None;
+    for line in text.lines() {
+        if let Some(number) = line.strip_prefix('p') {
+            pid = number.parse::<i32>().ok();
+        } else if let (Some(name), Some(pid)) = (line.strip_prefix('n'), pid) {
+            found.push(Found {
+                pid,
+                directory: PathBuf::from(name),
+            });
+        }
+    }
+    found
+}
+
+/// Kill one process. Failure means it is already gone, which is what was wanted.
+pub fn kill_found(found: &Found) {
+    if let Some(pid) = Pid::from_raw(found.pid) {
+        let _ = rustix::process::kill_process(pid, Signal::KILL);
+    }
+}
+
+/// Kill every process working under `directory`, and look again until none is left, since a
+/// loop that was killed may have started another a moment before. Returns every process killed.
+#[must_use]
+pub fn stop_processes_under(directory: &Path) -> Vec<Found> {
+    let mut stopped = Vec::new();
+    for _ in 0..10 {
+        let found = processes_under(directory);
+        if found.is_empty() {
+            break;
+        }
+        for process in &found {
+            kill_found(process);
+        }
+        stopped.extend(found);
+        std::thread::sleep(POLL * 5);
+    }
+    stopped
+}
+
+/// The machine's load average over one, five and fifteen minutes, as it prints them, so that a
+/// timeout can say whether the machine was busy.
+#[must_use]
+pub fn load_average() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/loadavg").ok().or_else(|| {
+        let output = Command::new("sysctl")
+            .args(["-n", "vm.loadavg"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout).ok()
+    })?;
+    parse_load_average(&text)
+}
+
+/// The first three numbers of `/proc/loadavg` (`0.52 0.58 0.59 1/467 12345`) or of macOS's
+/// `vm.loadavg` (`{ 1.52 1.40 1.37 }`).
+fn parse_load_average(text: &str) -> Option<String> {
+    let numbers: Vec<&str> = text
+        .split_whitespace()
+        .filter(|word| word.parse::<f64>().is_ok())
+        .take(3)
+        .collect();
+    (numbers.len() == 3).then(|| numbers.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_linux_load_average_is_read() {
+        assert_eq!(
+            parse_load_average("274.10 120.00 40.5 3/467 12345\n").as_deref(),
+            Some("274.10 120.00 40.5")
+        );
+    }
+
+    #[test]
+    fn a_macos_load_average_is_read() {
+        assert_eq!(
+            parse_load_average("{ 1.52 1.40 1.37 }\n").as_deref(),
+            Some("1.52 1.40 1.37")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_load_average_is_none() {
+        assert_eq!(parse_load_average("nonsense"), None);
+        assert_eq!(parse_load_average("1.0 2.0"), None);
+    }
+
+    #[test]
+    fn lsof_output_gives_each_process_its_directory() {
+        let found = parse_lsof("p12\nfcwd\nn/work/a\np34\nfcwd\nn/work/b c\n");
+        assert_eq!(
+            found,
+            vec![
+                Found {
+                    pid: 12,
+                    directory: PathBuf::from("/work/a")
+                },
+                Found {
+                    pid: 34,
+                    directory: PathBuf::from("/work/b c")
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_proc_directory_gives_each_numbered_entry_its_working_directory() {
+        let base = std::env::temp_dir().join(format!("heph-proc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("42")).unwrap();
+        std::fs::create_dir_all(base.join("self")).unwrap();
+        std::fs::create_dir_all(base.join("7")).unwrap();
+        std::os::unix::fs::symlink("/work/run", base.join("42/cwd")).unwrap();
+        let found = proc_working_directories(&base);
+        std::fs::remove_dir_all(&base).unwrap();
+        // "self" is not a number and "7" has no readable cwd link.
+        assert_eq!(
+            found,
+            vec![Found {
+                pid: 42,
+                directory: PathBuf::from("/work/run")
+            }]
+        );
     }
 }

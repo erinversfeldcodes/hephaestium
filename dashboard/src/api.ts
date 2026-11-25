@@ -90,6 +90,8 @@ export interface Run {
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
+  /** The lens of a review run, when the control plane says it. */
+  readonly lens?: string | null;
 }
 
 /** One run, as the run's page shows it. Its `reason` is not here: see the note at the top. */
@@ -517,6 +519,7 @@ function parseTicket(body: unknown): TicketDetail {
         createdAt: text(run["created_at"]),
         startedAt: maybeText(run["started_at"]),
         finishedAt: maybeText(run["finished_at"]),
+        ...(run["lens"] === undefined ? {} : { lens: maybeText(run["lens"]) }),
       };
     }),
     spend: {

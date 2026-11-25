@@ -38,7 +38,7 @@ defmodule ControlPlane.RevisionAccountTest do
   end
 
   # The workload is a revision, said what it said, and ended as the outcome says.
-  defp revision_ended(id, messages, outcome, reason \\ "") do
+  defp revision_ended(id, messages, outcome, reason \\ "", pull_request \\ %{}) do
     current = Workloads.get(id).workload
 
     ControlPlane.Repo.update_all(
@@ -69,7 +69,7 @@ defmodule ControlPlane.RevisionAccountTest do
 
     Workloads.keep_record(id, %{
       "outcome" => outcome,
-      "pullRequest" => %{"url" => @pr, "number" => "52"}
+      "pullRequest" => Map.merge(%{"url" => @pr, "number" => "52"}, pull_request)
     })
 
     Tickets.ended(Workloads.get(id))
@@ -114,6 +114,19 @@ defmodule ControlPlane.RevisionAccountTest do
     assert body =~ "revision"
     assert body =~ "The agent's account"
     assert body =~ "I raised the wait in the spec to 30s."
+  end
+
+  test "a revision that pushed nothing says the description was updated and nothing was pushed",
+       %{gh: gh, id: id} do
+    assert :ok =
+             revision_ended(id, ["I corrected the description."], "OUTCOME_COMPLETED", "", %{
+               "nothingPushed" => true
+             })
+
+    body = comment(gh)
+    assert body =~ "updated the pull request's description"
+    assert body =~ "nothing was pushed"
+    refute body =~ "completed and pushed"
   end
 
   test "a revision whose agent said nothing says there is no account", %{gh: gh, id: id} do
