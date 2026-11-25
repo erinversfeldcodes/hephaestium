@@ -174,7 +174,7 @@ async function focusControl(page: Page, index: number): Promise<"link" | "button
     if (el.tagName === "A") return "link";
     if (el.tagName === "BUTTON") return "button";
     // A scrolling region takes the arrow keys, which the browser provides; it has nothing to activate.
-    return el.tagName === "DIV" ? "region" : "field";
+    return el.tagName === "DIV" || el.tagName === "LI" ? "region" : "field";
   });
 }
 

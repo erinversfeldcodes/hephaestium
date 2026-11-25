@@ -62,11 +62,19 @@ function Row({ ticket, now }: { readonly ticket: TicketSummary; readonly now: Da
         {ticket.needs !== null && <span className="ask">{needsText(ticket.needs, runs)}</span>}
       </div>
       <div>
-        <div className="track" aria-hidden="true">
+        <ol className="track" aria-label="Steps">
           {track.steps.map((step) => (
-            <i key={step.id} data-step={step.id} data-state={step.state} />
+            <li
+              key={step.id}
+              tabIndex={0}
+              aria-label={step.say}
+              aria-current={step.state === "now" || step.state === "bad" ? "step" : undefined}
+              data-step={step.id}
+              data-state={step.state}
+              data-say={step.say}
+            />
           ))}
-        </div>
+        </ol>
         <div className="stage">
           <b>{track.stage}</b>
           {track.detail !== null && ` · ${track.detail}`}
