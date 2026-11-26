@@ -20,6 +20,25 @@ defmodule ControlPlane.RunnerTest do
     %{dir: dir, id: record.id}
   end
 
+  test "with no runs directory set, runs are kept under the state directory and not the temp folder" do
+    Application.delete_env(:control_plane, :runner)
+    state = System.get_env("XDG_STATE_HOME")
+    System.put_env("XDG_STATE_HOME", "/var/state-home")
+
+    on_exit(fn ->
+      if state,
+        do: System.put_env("XDG_STATE_HOME", state),
+        else: System.delete_env("XDG_STATE_HOME")
+    end)
+
+    assert Runner.runs_dir() == "/var/state-home/hephaestium/runs"
+
+    System.delete_env("XDG_STATE_HOME")
+    default = Runner.runs_dir()
+    assert default == Path.join([System.user_home!(), ".local/state/hephaestium/runs"])
+    refute String.starts_with?(default, Path.expand(System.tmp_dir!()))
+  end
+
   defp configure(dir, executor, extra \\ []) do
     Application.put_env(
       :control_plane,
