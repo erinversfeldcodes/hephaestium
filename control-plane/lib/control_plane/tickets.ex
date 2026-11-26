@@ -348,6 +348,21 @@ defmodule ControlPlane.Tickets do
   end
 
   @doc """
+  Say on the ticket that the log of a failed check could not be read, and why, and that the
+  next pass will look again: no revision is started on a failure nobody read.
+  """
+  @spec log_unread(%Workload{}, [{String.t(), String.t()}], pos_integer(), pos_integer()) ::
+          :ok | {:error, String.t()}
+  def log_unread(workload, lines, pass, max) do
+    list = Enum.map_join(lines, "\n", fn {name, why} -> "- #{name}: #{why}" end)
+
+    note(
+      workload,
+      "a check failed and what it printed could not be read (pass #{pass} of #{max}). No revision is started until it can be; it will be read again.\n#{list}"
+    )
+  end
+
+  @doc """
   The pull request conflicts with its base, so GitHub runs no checks on it: a revision has
   been started, and the ticket names the files both sides changed where the host gives them.
   """

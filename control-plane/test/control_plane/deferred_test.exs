@@ -231,6 +231,8 @@ defmodule ControlPlane.DeferredTest do
       run(2, "ci / test", "completed", "failure")
     ])
 
+    StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/2/logs", "FAILED\n")
+
     assert result(id) == {:revising, 1}
 
     revision = Enum.find(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))

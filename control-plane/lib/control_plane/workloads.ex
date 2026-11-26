@@ -560,21 +560,26 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc "Record that the check of this name on the workload's pull request was re-run."
-  def count_rerun(id, name) do
+  def count_rerun(id, name), do: bump(id, :reruns, name)
+
+  @doc "Record that a settle pass could not read the log of this check run."
+  def count_unread_log(id, check_run_id), do: bump(id, :unread_logs, to_string(check_run_id))
+
+  defp bump(id, field, key) do
     Repo.update_all(
       from(w in Workload,
         where: w.id == ^id,
         update: [
           set: [
-            reruns:
-              fragment(
-                "jsonb_set(coalesce(?, '{}'::jsonb), ARRAY[?::text], to_jsonb(coalesce((? ->> ?)::int, 0) + 1))",
-                w.reruns,
-                ^name,
-                w.reruns,
-                ^name
-              ),
-            updated_at: ^DateTime.utc_now()
+            {^field,
+             fragment(
+               "jsonb_set(coalesce(?, '{}'::jsonb), ARRAY[?::text], to_jsonb(coalesce((? ->> ?)::int, 0) + 1))",
+               field(w, ^field),
+               ^key,
+               field(w, ^field),
+               ^key
+             )},
+            {:updated_at, ^DateTime.utc_now()}
           ]
         ]
       ),
