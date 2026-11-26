@@ -182,7 +182,8 @@ defmodule ControlPlane.GitHub.CodeHost do
       state: if(run["status"] == "completed", do: :completed, else: :running),
       conclusion: run["conclusion"],
       title: output["title"],
-      summary: output["summary"]
+      summary: output["summary"],
+      suite: (run["check_suite"] || %{})["id"]
     }
   end
 
