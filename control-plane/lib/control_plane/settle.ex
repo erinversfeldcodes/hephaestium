@@ -627,6 +627,8 @@ defmodule ControlPlane.Settle do
   end
 
   defp why_unreadable(message) do
+    message = if is_binary(message), do: message, else: inspect(message)
+
     cause =
       cond do
         message =~ ~r/\b403\b|forbidden|not accessible/i ->
@@ -642,7 +644,7 @@ defmodule ControlPlane.Settle do
           "it could not be fetched"
       end
 
-    "#{cause}: #{message |> to_string() |> String.slice(0, 200)}"
+    "#{cause}: #{String.slice(message, 0, 200)}"
   end
 
   defp cut_start(text, bytes) when byte_size(text) <= bytes, do: text
