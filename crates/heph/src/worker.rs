@@ -23,6 +23,7 @@ use serde_json::Value;
 
 use crate::link::{Claim, Client, Failure, Token};
 use crate::run;
+use crate::run_lock;
 use crate::workspaces;
 
 /// The variable the device token is given in.
@@ -79,6 +80,76 @@ pub struct Options {
     pub executor: Option<PathBuf>,
     /// How many workloads may run at once, from 1 to [`MOST_WORKLOADS`].
     pub workloads: usize,
+    /// How long a run's workspace is kept after the run was last written.
+    pub keep_runs_for: Duration,
+}
+
+/// The variable that sets how many days a finished run keeps its workspace, when no flag does.
+pub const KEEP_RUNS_VARIABLE: &str = "HEPH_WORKER_KEEP_RUNS";
+
+/// How many days a finished run keeps its workspace when nothing says.
+pub const DEFAULT_KEEP_DAYS: u64 = 7;
+
+/// How often the worker looks for workspaces to clear.
+const CLEAR_EVERY: Duration = Duration::from_secs(3600);
+
+/// How long finished runs keep their workspaces: the flag's number of days, else the
+/// variable's, else seven.
+///
+/// # Errors
+///
+/// Returns why the setting is refused: it is not a whole number of days.
+pub fn keep_runs_for(flag: Option<&str>) -> Result<Duration, String> {
+    keep_runs_from(flag, run::environment(KEEP_RUNS_VARIABLE).as_deref())
+}
+
+fn keep_runs_from(flag: Option<&str>, variable: Option<&str>) -> Result<Duration, String> {
+    let (text, from) = match (flag, variable) {
+        (Some(text), _) => (text, "--keep-runs-for".to_owned()),
+        (None, Some(text)) => (text, KEEP_RUNS_VARIABLE.to_owned()),
+        (None, None) => return Ok(Duration::from_secs(DEFAULT_KEEP_DAYS * 86_400)),
+    };
+    let days: u64 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("{from}: {text:?} is not a whole number of days"))?;
+    Ok(Duration::from_secs(days.saturating_mul(86_400)))
+}
+
+/// Remove the workspaces of runs that were last written more than `keep` ago, except those
+/// the control plane says it still needs. When it cannot say, nothing is removed.
+fn clear_old_workspaces(client: &Client, runs: &Path, keep: Duration) {
+    let old = workspaces::old_checkouts(runs, keep, std::time::SystemTime::now());
+    if old.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = old.iter().map(|run| run.id.clone()).collect();
+    let held = match client.held(&ids) {
+        Ok(held) => held,
+        Err(failure) => {
+            eprintln!(
+                "heph: worker: could not ask which workspaces are still needed ({failure}); none was removed"
+            );
+            return;
+        }
+    };
+    let due: Vec<workspaces::Old> = old
+        .into_iter()
+        .filter(|run| !held.contains(&run.id))
+        .collect();
+    let cleared = workspaces::clear(&due);
+    for warning in &cleared.warnings {
+        eprintln!("heph: warning: {warning}");
+    }
+    if cleared.removed > 0 {
+        println!(
+            "heph: worker: removed {} workspace{} of runs finished more than {} days ago, and freed {}",
+            cleared.removed,
+            if cleared.removed == 1 { "" } else { "s" },
+            keep.as_secs() / 86_400,
+            workspaces::show_size(cleared.freed)
+        );
+    }
 }
 
 /// How many workloads to run at once: the flag's value, else the variable's, else one.
@@ -264,7 +335,18 @@ pub fn run(
     let halted = AtomicBool::new(false);
     let stopping = || halted.load(Ordering::Relaxed) || stop();
     let slots = options.workloads;
+    let runs = run::runs_dir(options.runs_dir.as_deref())?;
     let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        // Clearing never ends the worker: what it cannot do is said and tried again later.
+        let clearing = scope.spawn(|| {
+            loop {
+                clear_old_workspaces(&client, &runs, options.keep_runs_for);
+                if !pause(CLEAR_EVERY, &stopping) {
+                    break;
+                }
+            }
+            Ok(())
+        });
         let handles: Vec<_> = (0..slots)
             .map(|_| {
                 scope.spawn(|| {
@@ -276,6 +358,8 @@ pub fn run(
                 })
             })
             .collect();
+        let mut handles = handles;
+        handles.push(clearing);
         handles
             .into_iter()
             .map(|handle| {
@@ -289,25 +373,23 @@ pub fn run(
     Ok(())
 }
 
-/// The run directories being served now, so that a sweep for what finished runs left behind does
-/// not stop what a run in progress started.
-static SERVING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-
-/// Report and stop the processes whose working directory is under a run directory that is not
-/// being served: a run that has finished, however it ended, started nothing that should still
-/// be running. The executor stops its own run's processes; this catches those that escaped it,
-/// or that an executor which was itself killed never got to stop.
+/// Report and stop the processes whose working directory is under a run directory that nobody
+/// holds: a run that has finished, however it ended, or whose worker died, started nothing that
+/// should still be running. The executor stops its own run's processes; this catches those that
+/// escaped it, or that an executor which was itself killed never got to stop. A directory held by
+/// any process, this worker or another on the machine, is a live run and is left alone.
 fn stop_what_finished_runs_left(options: &Options) {
+    stop_what_finished_runs_left_logging(options, &mut std::io::stderr());
+}
+
+/// As `stop_what_finished_runs_left`, saying each stop to `log`.
+fn stop_what_finished_runs_left_logging(options: &Options, log: &mut dyn std::io::Write) {
     let Ok(runs) = run::runs_dir(options.runs_dir.as_deref()) else {
         return;
     };
     let Ok(root) = runs.canonicalize() else {
         return;
     };
-    let serving: Vec<PathBuf> = SERVING
-        .lock()
-        .map(|serving| serving.clone())
-        .unwrap_or_default();
     for found in crate::process::processes_under(&root) {
         // A run directory is `<runs>/<repository>/<ticket>-<id>`.
         let run: PathBuf = found
@@ -316,13 +398,17 @@ fn stop_what_finished_runs_left(options: &Options) {
             .map(|inside| inside.components().take(2).collect())
             .unwrap_or_default();
         let run = root.join(run);
-        if serving.contains(&run) {
+        if crate::run_lock::is_held(&run) {
             continue;
         }
-        eprintln!(
-            "heph: worker: stopping process {}, left running in {} by a run that has finished",
+        // A log that cannot be written (a closed stderr, a full pipe) must not
+        // stop the sweep from stopping the process, so the error is ignored.
+        let _ = writeln!(
+            log,
+            "heph: worker: stopping process {}, left running in {}: nobody holds the run {}, so it is taken for finished",
             found.pid,
-            found.directory.display()
+            found.directory.display(),
+            run.display()
         );
         crate::process::kill_found(&found);
     }
@@ -430,19 +516,9 @@ fn serve(
     stop: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let directory = make_run_directory(claim, options)?;
-    let serving = directory
-        .canonicalize()
-        .unwrap_or_else(|_| directory.clone());
-    if let Ok(mut all) = SERVING.lock() {
-        all.push(serving.clone());
-    }
-    let result = serve_in(client, claim, options, stop, &directory);
-    if let Ok(mut all) = SERVING.lock()
-        && let Some(at) = all.iter().position(|one| *one == serving)
-    {
-        all.swap_remove(at);
-    }
-    result
+    // Held until this run ends, so that no sweep takes its processes for a finished run's.
+    let _held = run_lock::hold(&directory)?;
+    serve_in(client, claim, options, stop, &directory)
 }
 
 fn serve_in(
@@ -798,51 +874,149 @@ mod tests {
         path
     }
 
-    #[test]
-    fn a_process_left_in_a_finished_runs_directory_is_stopped_and_one_in_a_served_run_is_not() {
-        let runs = std::env::temp_dir().join(format!("heph-sweep-{}", std::process::id()));
-        let finished = runs.join("owner-repo").join("1-finished");
-        let served = runs.join("owner-repo").join("2-served");
-        std::fs::create_dir_all(finished.join("work")).expect("a directory");
-        std::fs::create_dir_all(&served).expect("a directory");
-        let start = |directory: &Path| {
-            std::process::Command::new("sleep")
-                .arg("100")
-                .current_dir(directory)
-                .spawn()
-                .expect("sleep")
-        };
-        let mut left = start(&finished.join("work"));
-        let mut kept = start(&served);
-        let options = Options {
+    /// Start `sleep` with `directory` as its working directory.
+    fn sleeper(directory: &Path) -> Child {
+        std::process::Command::new("sleep")
+            .arg("100")
+            .current_dir(directory)
+            .spawn()
+            .expect("sleep")
+    }
+
+    fn ended_within_five_seconds(child: &mut Child) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait().expect("wait").is_some() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn options_for(runs: &Path) -> Options {
+        Options {
             control_plane: String::new(),
-            runs_dir: Some(runs.clone()),
+            runs_dir: Some(runs.to_path_buf()),
             executor: None,
             workloads: 1,
-        };
-        SERVING
-            .lock()
-            .expect("lock")
-            .push(served.canonicalize().expect("a path"));
-
-        stop_what_finished_runs_left(&options);
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut left_status = left.try_wait().expect("wait");
-        while left_status.is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-            left_status = left.try_wait().expect("wait");
+            keep_runs_for: Duration::from_hours(168),
         }
-        let kept_status = kept.try_wait().expect("wait");
+    }
+
+    #[test]
+    fn a_process_left_by_a_finished_run_is_stopped_and_one_in_a_run_another_worker_holds_is_not() {
+        let runs = std::env::temp_dir().join(format!("heph-sweep-{}", std::process::id()));
+        let finished = runs.join("owner-repo").join("1-finished");
+        let live = runs.join("owner-repo").join("2-live");
+        std::fs::create_dir_all(finished.join("work")).expect("a directory");
+        std::fs::create_dir_all(&live).expect("a directory");
+        // The finished run's holder let go; the live run's holder is another worker, which
+        // takes its own lock on the file just as a worker in another process does.
+        drop(run_lock::hold(&finished).expect("held"));
+        // A test beside this one may be between fork and exec, a child that holds the lock's
+        // open file for that moment, so the release is waited for.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while run_lock::is_held(&finished) {
+            assert!(Instant::now() < deadline, "the finished run stays held");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let other_workers_hold = run_lock::hold(&live).expect("held");
+        let mut left = sleeper(&finished.join("work"));
+        let left_id = left.id();
+        let mut kept = sleeper(&live);
+
+        let mut said = Vec::new();
+        stop_what_finished_runs_left_logging(&options_for(&runs), &mut said);
+        let said = String::from_utf8_lossy(&said).into_owned();
+
+        let left_stopped = ended_within_five_seconds(&mut left);
+        let kept_alive = kept.try_wait().expect("wait").is_none();
+        drop(other_workers_hold);
         let _ = kept.kill();
         let _ = left.kill();
-        SERVING.lock().expect("lock").clear();
         let _ = std::fs::remove_dir_all(&runs);
-        assert!(left_status.is_some(), "the finished run's process was left");
+        assert!(left_stopped, "the finished run's process was left");
         assert!(
-            kept_status.is_none(),
-            "the served run's process was stopped"
+            said.contains(&format!("stopping process {left_id}"))
+                && said.contains("nobody holds the run")
+                && said.contains("1-finished"),
+            "the stop was not logged with its run and reason: {said}"
         );
+        assert!(
+            !said.contains("2-live"),
+            "the live run was logged as stopped: {said}"
+        );
+        assert!(
+            kept_alive,
+            "the other worker's live run's process was stopped"
+        );
+    }
+
+    #[test]
+    fn a_process_left_by_a_killed_worker_is_stopped() {
+        use std::io::{BufRead as _, BufReader};
+        use std::process::Stdio;
+
+        let runs = std::env::temp_dir().join(format!("heph-killed-{}", std::process::id()));
+        let died = runs.join("owner-repo").join("3-died");
+        std::fs::create_dir_all(&died).expect("a directory");
+        // A real process, apart from this one, takes the lock: this test binary run again
+        // on the helper below, which holds the directory until it is killed.
+        let mut holder = std::process::Command::new(std::env::current_exe().expect("exe"))
+            .args([
+                "--exact",
+                "worker::tests::lock_holder_for_another_test",
+                "--nocapture",
+            ])
+            .env("HEPH_TEST_HOLD", &died)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("the holder");
+        let lines = BufReader::new(holder.stdout.take().expect("stdout")).lines();
+        let held = lines
+            .map_while(Result::ok)
+            .any(|line| line.contains("holding-the-run-directory"));
+        let mut left = sleeper(&died);
+        let left_id = left.id();
+
+        let spared = held && {
+            stop_what_finished_runs_left(&options_for(&runs));
+            std::thread::sleep(Duration::from_millis(500));
+            left.try_wait().expect("wait").is_none()
+        };
+        holder.kill().expect("SIGKILL the holder");
+        let _ = holder.wait();
+        let mut said = Vec::new();
+        stop_what_finished_runs_left_logging(&options_for(&runs), &mut said);
+        let said = String::from_utf8_lossy(&said).into_owned();
+
+        let left_stopped = ended_within_five_seconds(&mut left);
+        let _ = left.kill();
+        let _ = std::fs::remove_dir_all(&runs);
+        assert!(held, "the holder never took the lock");
+        assert!(spared, "the sweep stopped a process while its worker lived");
+        assert!(left_stopped, "the killed worker's process was left");
+        assert!(
+            said.contains(&format!("stopping process {left_id}"))
+                && said.contains("nobody holds the run")
+                && said.contains("3-died"),
+            "the stop was not logged with its run and reason: {said}"
+        );
+    }
+
+    /// Not a test of its own: the process the one above starts and kills. Run alone it does
+    /// nothing, as the variable is not set.
+    #[test]
+    fn lock_holder_for_another_test() {
+        let Some(directory) = std::env::var_os("HEPH_TEST_HOLD") else {
+            return;
+        };
+        let _held = run_lock::hold(Path::new(&directory)).expect("held");
+        println!("holding-the-run-directory");
+        std::thread::sleep(Duration::from_secs(120));
     }
 
     #[test]

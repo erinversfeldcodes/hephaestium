@@ -573,6 +573,7 @@ impl Rig {
         let executor = self.executor().to_string_lossy().into_owned();
         let runs = self.runs_dir().to_string_lossy().into_owned();
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_heph"));
+        common::without_heph_variables(&mut command);
         command
             .current_dir(&self.home.0)
             .arg("run")
@@ -636,6 +637,38 @@ fn a_signal_to_heph_run_is_passed_to_the_executor_and_the_run_ends_cancelled() {
         );
         assert!(shown.contains("outcome: cancelled"), "{signal}: {shown}");
     }
+}
+
+#[test]
+fn a_run_holds_its_directory_while_it_runs_and_lets_go_when_it_ends() {
+    let rig = rig("run-holds");
+    rig.token_file("github-token");
+    rig.write_executor_that_waits_to_be_stopped();
+    let mut heph = rig.start(&["12", "--repo", "acme/widgets"]);
+    let ready = rig.home.0.join("executor-dir/seen/ready");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !ready.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the executor never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let directory = rig.run_directory().expect("one run directory");
+    let held_while_running = heph::run_lock::is_held(&directory);
+
+    std::process::Command::new("kill")
+        .args(["-TERM", &heph.id().to_string()])
+        .status()
+        .expect("kill");
+    heph.wait().expect("heph to end");
+    let held_after = heph::run_lock::is_held(&directory);
+
+    assert!(
+        held_while_running,
+        "a sweep by a worker would take this live run for a finished one"
+    );
+    assert!(!held_after, "the run's directory stays held after it ended");
 }
 
 // What a run leaves behind, and what deleting it may touch.

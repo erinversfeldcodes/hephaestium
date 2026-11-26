@@ -395,3 +395,52 @@ fn running_with_no_agent_selected_is_refused() {
     assert!(ran.stderr().contains("agent"), "{}", ran.stderr());
     assert_eq!(ran.output.stdout, b"");
 }
+
+#[test]
+fn a_running_agent_can_reach_the_clock_and_is_told_how_long_is_left() {
+    let ran = ran(
+        "agent-clock",
+        |w| w["limits"]["timeout"] = json!("600s"),
+        "sh \"$PWD.time-left\" > told-start; echo done",
+        &[],
+    );
+    let start = std::fs::read_to_string(workspace_of(&ran).join("told-start"))
+        .expect("what the agent was told");
+    assert!(
+        start.contains("10 minute(s) left of 10 minute(s)"),
+        "{start}"
+    );
+    assert!(!start.contains("Half"), "{start}");
+}
+
+#[test]
+fn a_running_agent_is_told_at_half_and_at_three_quarters_and_to_stop_verifying() {
+    // The agent asks at instants set ahead of the real clock, so nothing waits: with 600 seconds,
+    // 300 ahead is half and 450 ahead is three quarters.
+    let ran = ran(
+        "agent-clock-notices",
+        |w| w["limits"]["timeout"] = json!("600s"),
+        "TIME_LEFT_NOW=$(( $(date +%s) + 300 )) sh \"$PWD.time-left\" > told-half; \
+         TIME_LEFT_NOW=$(( $(date +%s) + 450 )) sh \"$PWD.time-left\" > told-late; echo done",
+        &[],
+    );
+    let dir = workspace_of(&ran);
+    let half = std::fs::read_to_string(dir.join("told-half")).expect("half");
+    assert!(half.contains("Half of your time"), "{half}");
+    assert!(!half.contains("Stop verifying"), "{half}");
+    let late = std::fs::read_to_string(dir.join("told-late")).expect("late");
+    assert!(late.contains("Stop verifying"), "{late}");
+}
+
+#[test]
+fn a_run_stopped_at_its_time_keeps_what_the_agent_had_changed() {
+    let ran = ran(
+        "agent-timeout-keeps",
+        |w| w["limits"]["timeout"] = json!("1s"),
+        "echo changed > edited.txt; sleep 60",
+        &[],
+    );
+    assert_eq!(ran.record().outcome, Outcome::TimedOut as i32);
+    let kept = std::fs::read_to_string(workspace_of(&ran).join("edited.txt")).expect("kept");
+    assert_eq!(kept.trim(), "changed");
+}

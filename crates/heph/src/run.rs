@@ -183,6 +183,9 @@ pub fn run(options: &Options) -> Result<Ended, String> {
         .mode(0o700)
         .create(&directory)
         .map_err(|e| format!("could not make {}: {e}", directory.display()))?;
+    // Held until this run ends, so that a worker's sweep does not take its processes for a
+    // finished run's.
+    let _held = crate::run_lock::hold(&directory)?;
     let workload_file = directory.join("workload.json");
     let text = serde_json::to_string_pretty(&workload).map_err(|e| e.to_string())?;
     std::fs::write(&workload_file, text + "\n")
@@ -483,6 +486,17 @@ pub fn render(event: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_runs_directory_is_a_state_directory_and_not_the_temp_folder() {
+        let runs = runs_dir(None).expect("a home directory");
+        assert!(runs.ends_with("hephaestium/runs"), "{}", runs.display());
+        assert!(
+            !runs.starts_with(std::env::temp_dir()),
+            "{} is under the temp folder",
+            runs.display()
+        );
+    }
 
     #[test]
     fn the_executor_is_the_option_else_the_one_beside_this_program_else_the_one_on_the_path() {

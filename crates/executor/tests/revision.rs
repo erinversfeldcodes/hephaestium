@@ -134,7 +134,7 @@ fn a_revision_whose_branch_has_moved_is_not_forced() {
     // Someone pushed to the branch after the revision's base was chosen.
     git(&rig.source, &["switch", "-q", PR_BRANCH]);
     rig.scratch
-        .write("source/web/second.txt", "a person's commit\n");
+        .write("source/web/changed.txt", "a person's commit\n");
     git(&rig.source, &["add", "."]);
     git(
         &rig.source,
@@ -239,12 +239,7 @@ fn a_revision_that_is_not_safe_is_refused_before_anything_is_created() {
 fn prompt_of(value: &Value) -> String {
     let workload: Workload = serde_json::from_value(value.clone()).expect("a workload");
     let plan = ClaudeCode.plan(&workload, std::path::Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 #[test]
@@ -359,7 +354,7 @@ fn all_the_output_together_is_capped_not_only_each_part() {
     }));
 
     assert!(
-        prompt.len() < 30_000,
+        prompt.len() < 32_000,
         "the prompt is {} bytes",
         prompt.len()
     );

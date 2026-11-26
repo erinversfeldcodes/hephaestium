@@ -3,17 +3,17 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::Write;
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::{Heartbeat, Workload};
-use heph::process::{Go, Streamed, stream};
+use heph::process::{Go, Streamed, stream_with_input};
 
 use crate::adapter::Adapter;
 use crate::run::{Refused, say};
 use crate::secrets::Secrets;
-use crate::stream::Stream;
+use crate::stream::{Phase, Stream};
 
 /// How the agent's part of the run ended.
 pub enum End {
@@ -26,6 +26,67 @@ pub enum End {
     /// The executor was told to stop, and the agent was stopped with everything it
     /// started.
     Cancelled,
+}
+
+/// Where the agent asks how long is left: a script beside the workspace, so that it is not part
+/// of the repository. It is written for every agent, so that no adapter has to tell time.
+#[must_use]
+pub fn clock_path(workspace: &Path) -> PathBuf {
+    let name = workspace
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    workspace.with_file_name(format!("{name}.time-left"))
+}
+
+/// The script that says how long is left, and, once half and then three quarters of the time
+/// have gone, says so. `TIME_LEFT_NOW` replaces the instant it is asked, so that a test can ask at
+/// fixed instants without waiting. It works the answer out when it is run, from the instants the run
+/// starts and must end, so it is right whenever it is asked and needs no process of its own.
+fn clock_script(started: u64, ends: u64) -> String {
+    format!(
+        r#"#!/bin/sh
+started={started}
+ends={ends}
+now=${{TIME_LEFT_NOW:-$(date +%s)}}
+total=$((ends - started))
+elapsed=$((now - started))
+left=$((ends - now))
+if [ "$left" -le 0 ]; then
+  echo "Your time is up."
+  exit 0
+fi
+echo "$(( (left + 59) / 60 )) minute(s) left of $(( (total + 59) / 60 )) minute(s), and the run ends at $(date -u -r "$ends" '+%H:%M UTC' 2>/dev/null || date -u -d "@$ends" '+%H:%M UTC')."
+if [ $((elapsed * 4)) -ge $((total * 3)) ]; then
+  echo "Three quarters of your time have gone. Stop verifying now: do not start another suite or wait on anything. Deliver what you have, write the commit message, description and resolution, and say in the description what you did not run."
+elif [ $((elapsed * 2)) -ge "$total" ]; then
+  echo "Half of your time has gone."
+fi
+"#
+    )
+}
+
+/// The instant, in seconds since the epoch, at which the clock the agent asks says the run ends.
+/// The prompt reads it from the script, so the end it states and the end the script gives are one
+/// instant and not two read a moment apart.
+#[must_use]
+pub fn clock_end(workspace: &Path) -> Option<u64> {
+    let script = std::fs::read_to_string(clock_path(workspace)).ok()?;
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix("ends="))
+        .and_then(|value| value.parse().ok())
+}
+
+/// Write the clock the agent asks, for a run that has `timeout` from now.
+fn write_clock(workspace: &Path, timeout: Duration) -> std::io::Result<()> {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    std::fs::write(
+        clock_path(workspace),
+        clock_script(started, started + timeout.as_secs()),
+    )
 }
 
 /// The environment the agent has: the secrets its adapter names, and for an evaluation
@@ -84,7 +145,40 @@ pub fn run<W: Write>(
     spent: &Cell<f64>,
     stream_out: &mut Stream<'_, W>,
 ) -> Result<End, Refused> {
-    if let Err(error) = adapter.prepare(workload, workspace) {
+    // Every agent passes through here, so this is the one place its time is counted: a reader
+    // is told from the agent that makes the change by the workload it was given.
+    let phase = if workload.review.is_some() {
+        Phase::Review
+    } else {
+        Phase::Agent
+    };
+    let began = Instant::now();
+    let ended = run_untimed(
+        adapter, workload, workspace, heartbeat, secrets, spent, stream_out,
+    );
+    stream_out.add_time(phase, began);
+    ended
+}
+
+fn run_untimed<W: Write>(
+    adapter: &dyn Adapter,
+    workload: &Workload,
+    workspace: &Path,
+    heartbeat: Duration,
+    secrets: &Secrets,
+    spent: &Cell<f64>,
+    stream_out: &mut Stream<'_, W>,
+) -> Result<End, Refused> {
+    let limits = workload.limits.as_ref().expect("checked when read");
+    let timeout_seconds = limits.timeout.as_ref().expect("checked when read");
+    let timeout = Duration::new(
+        u64::try_from(timeout_seconds.seconds).unwrap_or(0),
+        u32::try_from(timeout_seconds.nanos).unwrap_or(0),
+    );
+    if let Err(error) = adapter
+        .prepare(workload, workspace)
+        .and_then(|()| write_clock(workspace, timeout))
+    {
         return Ok(End::Failed(format!(
             "the agent could not be prepared: {error}"
         )));
@@ -96,12 +190,6 @@ pub fn run<W: Write>(
         std::env::var(name).ok()
     }));
 
-    let limits = workload.limits.as_ref().expect("checked when read");
-    let timeout_seconds = limits.timeout.as_ref().expect("checked when read");
-    let timeout = Duration::new(
-        u64::try_from(timeout_seconds.seconds).unwrap_or(0),
-        u32::try_from(timeout_seconds.nanos).unwrap_or(0),
-    );
     let budget = limits.budget.as_ref().expect("checked when read");
 
     let out = RefCell::new(stream_out);
@@ -119,10 +207,11 @@ pub fn run<W: Write>(
         }
     };
 
-    let ended = stream(
+    let ended = stream_with_input(
         &plan.command,
         Path::new(&plan.working_directory),
         &environment,
+        &plan.stdin,
         timeout,
         heartbeat,
         |line| {
@@ -175,22 +264,78 @@ pub fn run<W: Write>(
     if let Some(error) = write_failed.into_inner() {
         return Err(error.into());
     }
-    Ok(match ended {
+    Ok(end_of(
+        ended,
+        stopped_because.into_inner(),
+        timeout,
+        plan.command.first().map_or("", String::as_str),
+    ))
+}
+
+/// How the agent's part of the run ended, from how its process did.
+fn end_of(
+    ended: Streamed,
+    stopped_because: Option<String>,
+    timeout: Duration,
+    program: &str,
+) -> End {
+    match ended {
         Streamed::Exited(0) => End::Done,
         Streamed::Exited(code) => End::Failed(format!("the agent exited with code {code}")),
         Streamed::TimedOut => End::TimedOut(format!(
             "the agent ran past the workload's timeout of {timeout:?} and was stopped; the load average on this machine, over one, five and fifteen minutes, was {}",
             heph::process::load_average().unwrap_or_else(|| "not readable".to_owned())
         )),
-        Streamed::Stopped => End::Failed(
-            stopped_because
-                .into_inner()
-                .unwrap_or_else(|| "the agent was stopped".to_owned()),
-        ),
+        Streamed::Stopped => {
+            End::Failed(stopped_because.unwrap_or_else(|| "the agent was stopped".to_owned()))
+        }
         Streamed::Cancelled => End::Cancelled,
-        Streamed::NotRun(_) => End::Failed(format!(
-            "the agent could not be started: {}",
-            plan.command.first().map_or("", String::as_str)
+        Streamed::InputFailed(reason) => End::Failed(format!(
+            "the agent could not be given its instructions on standard input: {reason}"
         )),
-    })
+        Streamed::NotRun(_) => End::Failed(format!("the agent could not be started: {program}")),
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::clock_script;
+
+    /// What the script says when asked at `now`, for a run of 800 seconds starting at 1000.
+    fn told_at(now: u64) -> String {
+        let dir = std::env::temp_dir().join(format!("clock-{}-{now}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("time-left");
+        std::fs::write(&script, clock_script(1000, 1800)).expect("write");
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .env("TIME_LEFT_NOW", now.to_string())
+            .output()
+            .expect("run");
+        std::fs::remove_dir_all(&dir).ok();
+        String::from_utf8(out.stdout).expect("utf8")
+    }
+
+    #[test]
+    fn the_notices_come_at_half_and_three_quarters() {
+        let start = told_at(1000);
+        assert!(
+            !start.contains("Half") && !start.contains("Three quarters"),
+            "{start}"
+        );
+        let before_half = told_at(1399);
+        assert!(!before_half.contains("Half"), "{before_half}");
+        let half = told_at(1400);
+        assert!(
+            half.contains("Half") && !half.contains("Three quarters"),
+            "{half}"
+        );
+        let before = told_at(1599);
+        assert!(!before.contains("Three quarters"), "{before}");
+        let late = told_at(1600);
+        assert!(late.contains("Three quarters"), "{late}");
+        assert!(late.contains("Stop verifying"), "{late}");
+        assert!(late.contains("what you did not run"), "{late}");
+        assert!(told_at(1800).contains("time is up"));
+    }
 }

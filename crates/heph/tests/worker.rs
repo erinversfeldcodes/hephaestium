@@ -60,6 +60,9 @@ enum Executor {
     Completes,
     /// One event, then nothing until it is stopped.
     Hangs,
+    /// As `Hangs`, with the process that waits working in its run's directory, where a sweep
+    /// for leftovers looks.
+    HangsInItsRunDirectory,
     /// The first workload hangs as `Hangs` does; any other completes as `Completes` does.
     HangsFirstCompletesOthers,
     /// One event, then nothing until it is told to stop, and then it says it was cancelled.
@@ -69,13 +72,24 @@ enum Executor {
 /// One test's own home, where the worker is run from and where its run directories are made.
 struct Rig {
     home: Scratch,
+    /// Where run directories are made: the home's own, unless another worker's is shared.
+    runs: PathBuf,
 }
 
 impl Rig {
     fn new(name: &str) -> Self {
         let home = Scratch::new(&format!("worker-{name}"));
-        let rig = Self { home };
+        let runs = home.0.join("runs");
+        let rig = Self { home, runs };
         std::fs::create_dir_all(rig.seen()).expect("a directory");
+        rig
+    }
+
+    /// A rig with a home of its own that makes its run directories where `other` does, as a
+    /// second worker on the same machine does.
+    fn sharing_runs_with(name: &str, other: &Self) -> Self {
+        let mut rig = Self::new(name);
+        rig.runs.clone_from(&other.runs);
         rig
     }
 
@@ -119,6 +133,11 @@ record OUTCOME_COMPLETED 3"#
             }
             Executor::Hangs => {
                 r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
+exec sleep 300"#
+            }
+            Executor::HangsInItsRunDirectory => {
+                r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
+cd "$(dirname "$wl")"
 exec sleep 300"#
             }
             Executor::HangsFirstCompletesOthers => {
@@ -182,26 +201,30 @@ echo "$$" > "$d/pid-$id"
         let claude = self.secret_file();
         let out = self.home.0.join("worker.out");
         let err = self.home.0.join("worker.err");
-        let child = Command::new(env!("CARGO_BIN_EXE_heph"))
-            .current_dir(&self.home.0)
-            .args(["worker", "--control-plane", address, "--executor"])
-            .arg(executor)
-            .arg("--runs-dir")
-            .arg(self.home.0.join("runs"))
-            .args(extra_args)
-            .env("HOME", &self.home.0)
-            .env("XDG_CONFIG_HOME", self.home.0.join("config"))
-            .env("HEPH_WORKER_TOKEN", TOKEN)
-            .env_remove("HEPH_WORKER_TOKEN_FILE")
-            .env("HEPH_GITHUB_TOKEN", GITHUB_SECRET)
-            .env_remove("HEPH_GITHUB_TOKEN_FILE")
-            .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
-            .env("CLAUDE_CODE_OAUTH_TOKEN_FILE", claude)
-            .stdin(Stdio::null())
-            .stdout(std::fs::File::create(&out).expect("a file"))
-            .stderr(std::fs::File::create(&err).expect("a file"))
-            .spawn()
-            .expect("the heph binary to run");
+        let child = {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_heph"));
+            common::without_heph_variables(&mut command);
+            command
+        }
+        .current_dir(&self.home.0)
+        .args(["worker", "--control-plane", address, "--executor"])
+        .arg(executor)
+        .arg("--runs-dir")
+        .arg(&self.runs)
+        .args(extra_args)
+        .env("HOME", &self.home.0)
+        .env("XDG_CONFIG_HOME", self.home.0.join("config"))
+        .env("HEPH_WORKER_TOKEN", TOKEN)
+        .env_remove("HEPH_WORKER_TOKEN_FILE")
+        .env("HEPH_GITHUB_TOKEN", GITHUB_SECRET)
+        .env_remove("HEPH_GITHUB_TOKEN_FILE")
+        .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+        .env("CLAUDE_CODE_OAUTH_TOKEN_FILE", claude)
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&out).expect("a file"))
+        .stderr(std::fs::File::create(&err).expect("a file"))
+        .spawn()
+        .expect("the heph binary to run");
         Worker { child, out, err }
     }
 }
@@ -692,6 +715,7 @@ fn what_cannot_be_used_is_refused_before_anything_is_claimed() {
     let rig = Rig::new("usage");
     let run = |args: &[&str], token: Option<&str>| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_heph"));
+        common::without_heph_variables(&mut command);
         command
             .current_dir(&rig.home.0)
             .arg("worker")
@@ -893,4 +917,186 @@ fn a_number_of_workloads_that_is_zero_or_above_the_ceiling_is_refused_before_any
         );
     }
     assert!(server.requests().is_empty(), "something was claimed");
+}
+
+#[test]
+fn a_second_worker_on_the_same_runs_directory_does_not_stop_the_first_ones_live_run() {
+    let first_rig = Rig::new("sweep-first");
+    let first_server = gives_once(FIRST, 1);
+    let mut first = first_rig.start(&first_server.address, &Executor::HangsInItsRunDirectory);
+    let pid = waits_for_pid(&first_rig, FIRST);
+
+    // A second worker, a process of its own, sweeps the same runs directory before each claim.
+    let second_rig = Rig::sharing_runs_with("sweep-second", &first_rig);
+    let second_server = Server::start(|request| {
+        if is_claim(request) {
+            Answer::NoContent
+        } else {
+            ok()
+        }
+    });
+    let mut second = second_rig.start(&second_server.address, &Executor::Completes);
+    second_server.wait_for("the second worker's claim, which follows its sweep", |s| {
+        !s.to("/worker/claim").is_empty()
+    });
+    let live = alive(&pid);
+    let said = second.output();
+    second.stops();
+    first.stops();
+
+    assert!(
+        live,
+        "the second worker stopped the first one's live run: {said}"
+    );
+    assert!(
+        !said.contains("stopping process"),
+        "the second worker took the live run for a finished one: {said}"
+    );
+}
+
+/// A run directory a worker left behind: its small files and a checkout, last written `days`
+/// ago.
+fn left_behind(rig: &Rig, ticket: u32, id: &str, days: u64) -> PathBuf {
+    let run = rig.home.0.join(format!("runs/acme-widgets/{ticket}-{id}"));
+    std::fs::create_dir_all(run.join("work/target")).expect("a checkout");
+    std::fs::write(run.join("work/target/big"), vec![0_u8; 20_000]).expect("build output");
+    let then = std::time::SystemTime::now() - Duration::from_secs(days * 86_400);
+    for name in ["record.json", "executor.log", "workload.json"] {
+        let file = std::fs::File::create(run.join(name)).expect("a file");
+        file.set_modified(then).expect("an old time");
+    }
+    run
+}
+
+const OLD: &str = "aaaaaaaa-1111-4222-8333-444455556666";
+const RECENT: &str = "bbbbbbbb-1111-4222-8333-444455556666";
+const LEASED: &str = "cccccccc-1111-4222-8333-444455556666";
+const OPEN_PULL_REQUEST: &str = "dddddddd-1111-4222-8333-444455556666";
+
+/// A control plane that has nothing to give, and says that the given workloads are still
+/// needed.
+fn holds(held: &'static [&'static str]) -> Server {
+    Server::start(move |request| {
+        if is_claim(request) {
+            return Answer::NoContent;
+        }
+        if request.path == "/worker/workloads/held" {
+            return Answer::Json(200, json!({ "held": held }).to_string());
+        }
+        ok()
+    })
+}
+
+#[test]
+fn a_finished_run_older_than_the_retention_period_loses_its_workspace_and_keeps_its_record() {
+    let rig = Rig::new("retention-old");
+    let old = left_behind(&rig, 12, OLD, 10);
+    let server = holds(&[]);
+    let mut worker = rig.start(&server.address, &Executor::Completes);
+    let until = Instant::now() + Duration::from_secs(20);
+    while old.join("work").exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!old.join("work").exists(), "{}", worker.output());
+    for kept in ["record.json", "executor.log", "workload.json"] {
+        assert!(old.join(kept).is_file(), "{kept} was removed");
+    }
+    worker.stops();
+    let output = worker.output();
+    assert!(output.contains("removed 1 workspace"), "{output}");
+    assert!(output.contains("freed"), "{output}");
+}
+
+#[test]
+fn a_run_inside_the_period_a_leased_run_and_a_run_with_an_open_pull_request_keep_their_workspaces()
+{
+    let rig = Rig::new("retention-kept");
+    let recent = left_behind(&rig, 12, RECENT, 2);
+    let leased = left_behind(&rig, 13, LEASED, 30);
+    let open = left_behind(&rig, 14, OPEN_PULL_REQUEST, 30);
+    let old = left_behind(&rig, 15, OLD, 30);
+    let server = holds(&[LEASED, OPEN_PULL_REQUEST]);
+    let mut worker = rig.start(&server.address, &Executor::Completes);
+    let until = Instant::now() + Duration::from_secs(20);
+    while old.join("work").exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The control plane was asked, and the sweep has run to its end, as the old run's is gone.
+    assert!(!old.join("work").exists(), "{}", worker.output());
+    for kept in [&recent, &leased, &open] {
+        assert!(kept.join("work/target/big").is_file(), "{}", kept.display());
+    }
+    worker.stops();
+}
+
+#[test]
+fn nothing_is_removed_when_the_control_plane_cannot_say_what_it_holds() {
+    let rig = Rig::new("retention-unknown");
+    let old = left_behind(&rig, 12, OLD, 30);
+    let server = Server::start(|request| {
+        if is_claim(request) {
+            return Answer::NoContent;
+        }
+        Answer::Json(500, "{}".to_owned())
+    });
+    let mut worker = rig.start(&server.address, &Executor::Completes);
+    server.wait_for("the question", |s| {
+        !s.to("/worker/workloads/held").is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(old.join("work/target/big").is_file());
+    worker.stops();
+}
+
+#[test]
+fn nothing_is_removed_when_the_held_answer_has_an_entry_that_is_not_an_id() {
+    let rig = Rig::new("retention-malformed");
+    let old = left_behind(&rig, 12, OLD, 30);
+    let server = Server::start(|request| {
+        if is_claim(request) {
+            return Answer::NoContent;
+        }
+        if request.path == "/worker/workloads/held" {
+            return Answer::Json(200, json!({ "held": [LEASED, 7] }).to_string());
+        }
+        ok()
+    });
+    let mut worker = rig.start(&server.address, &Executor::Completes);
+    server.wait_for("the question", |s| {
+        !s.to("/worker/workloads/held").is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(old.join("work/target/big").is_file());
+    worker.stops();
+}
+
+#[test]
+fn the_period_is_set_by_a_flag_and_a_bad_one_is_refused_before_anything_is_claimed() {
+    let rig = Rig::new("retention-flag");
+    let run = left_behind(&rig, 12, OLD, 2);
+    let server = holds(&[]);
+    let mut worker = rig.start_with(
+        &server.address,
+        &Executor::Completes,
+        &["--keep-runs-for", "1"],
+    );
+    let until = Instant::now() + Duration::from_secs(20);
+    while run.join("work").exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!run.join("work").exists(), "{}", worker.output());
+    worker.stops();
+
+    let mut refused = rig.start_with(
+        &server.address,
+        &Executor::Completes,
+        &["--keep-runs-for", "soon"],
+    );
+    let status = refused.ends();
+    assert_eq!(status.code(), Some(3), "{}", refused.output());
+    assert!(
+        refused.output().contains("--keep-runs-for"),
+        "{}",
+        refused.output()
+    );
 }

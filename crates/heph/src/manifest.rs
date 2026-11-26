@@ -62,6 +62,9 @@ pub struct Component {
     /// fails on a finding.
     #[serde(default)]
     pub lint: Vec<Vec<String>>,
+    /// The command that runs the tests of only the changed files, which are
+    /// appended to it as arguments. Absent means the component has none.
+    pub test_changed: Option<Vec<String>>,
 }
 
 /// How to enter the repository's pinned toolchain.

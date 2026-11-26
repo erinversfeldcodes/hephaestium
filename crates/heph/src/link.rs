@@ -226,6 +226,33 @@ impl Client {
             .map(|_| ())
     }
 
+    /// Which of these workloads the control plane still needs a workspace for: it holds a
+    /// lease on them, or has a pull request open for one that a revision may resume.
+    ///
+    /// # Errors
+    ///
+    /// As for any request, and when the answer does not say.
+    pub fn held(&self, ids: &[String]) -> Result<Vec<String>, Failure> {
+        let body = serde_json::json!({ "ids": ids }).to_string();
+        let (_, text) = self.post("/worker/workloads/held", Some(&body))?;
+        let answer: Value = serde_json::from_str(&text).map_err(|_| {
+            Failure::Trouble("the answer about held workloads is not JSON".to_owned())
+        })?;
+        let held = answer["held"]
+            .as_array()
+            .ok_or_else(|| Failure::Trouble("the answer does not say which are held".to_owned()))?;
+        // An entry that is not an id is not skipped: the answer cannot then be trusted, and a
+        // workspace is removed only on an answer that is.
+        held.iter()
+            .map(|id| id.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                Failure::Trouble(
+                    "the answer about held workloads has an entry that is not an id".to_owned(),
+                )
+            })
+    }
+
     fn post(&self, path: &str, body: Option<&str>) -> Result<(u16, String), Failure> {
         let request = self
             .agent

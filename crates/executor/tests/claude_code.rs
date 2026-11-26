@@ -246,7 +246,12 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
     );
     assert_eq!(command[2], "claude");
     assert_eq!(command[3], "-p");
-    let prompt = &command[4];
+    assert!(
+        command[4].starts_with("--"),
+        "-p is followed by a flag and not a prompt: the prompt is on standard input: {:?}",
+        command[4]
+    );
+    let prompt = &plan.stdin;
     assert!(
         prompt.contains("Make the reset spec wait for hydration"),
         "{prompt}"
@@ -301,6 +306,67 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
         "/work/run-1.claude-config/settings.json"
     );
     assert_eq!(plan.working_directory, "/work/run-1");
+}
+
+#[test]
+fn the_started_command_line_holds_no_word_of_the_prompt() {
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/work/run-1"));
+    let line = plan.command.join(" ");
+
+    assert!(
+        plan.stdin
+            .contains("Make the reset spec wait for hydration"),
+        "the prompt is the plan's standard input"
+    );
+    for phrase in [
+        "Make the reset spec wait for hydration",
+        "mix ecto.gen.migration",
+        "No person will answer",
+        "pkill",
+    ] {
+        assert!(
+            !line.contains(phrase),
+            "{phrase:?} is on the command line: {line}"
+        );
+    }
+}
+
+#[test]
+fn pkill_and_killall_are_refused_and_the_agent_is_told_why() {
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/work/run-1"));
+    let directory = std::env::temp_dir().join(format!("executor-cc-refuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("a directory");
+    let workspace = directory.join("run-1");
+    ClaudeCode
+        .prepare(&a_workload(|_| {}), &workspace)
+        .expect("to prepare");
+    let settings: Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.join("run-1.claude-config/settings.json"))
+            .expect("settings"),
+    )
+    .expect("JSON");
+    assert_eq!(
+        settings["permissions"]["deny"],
+        json!(["Bash(pkill:*)", "Bash(killall:*)"])
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        !plan
+            .command
+            .iter()
+            .any(|a| a.contains("pkill") || a.contains("killall")),
+        "the refused names are on the command line: {:?}",
+        plan.command
+    );
+
+    let prompt = &plan.stdin;
+    assert!(
+        prompt.contains("Never run `pkill`, `killall` or `kill` by name or pattern")
+            && prompt.contains("stop only a process id you started")
+            && prompt.contains("stops their work"),
+        "the agent must be told never to stop a process by name, and why: {prompt}"
+    );
 }
 
 #[test]
@@ -387,7 +453,7 @@ fn an_answer_a_person_gave_to_an_earlier_workload_is_in_the_prompt_as_settled_an
         }),
         Path::new("/work/run-1"),
     );
-    let prompt = &plan.command[4];
+    let prompt = &plan.stdin;
 
     assert!(prompt.contains("Which database?"), "{prompt}");
     assert!(prompt.contains("Use Postgres."), "{prompt}");
@@ -401,9 +467,131 @@ fn an_answer_a_person_gave_to_an_earlier_workload_is_in_the_prompt_as_settled_an
     );
 }
 
+const MANIFEST_WITH_AFFECTED_TESTS: &str = r#"schema_version = 0
+
+[components.rust]
+pack = "rust"
+root = "."
+paths = ["crates/**"]
+test_changed = ["cargo", "test-changed", "--quiet"]
+
+[components.control-plane]
+pack = "elixir"
+root = "control-plane"
+paths = ["control-plane/**"]
+test_changed = ["mix", "test", "--stale"]
+
+[components.docs]
+root = "."
+paths = ["docs/**"]
+"#;
+
+#[test]
+fn the_prompt_tells_the_agent_to_run_the_tests_its_change_affects_with_the_manifests_command() {
+    let scratch = common::Scratch::new("affected-tests-prompt");
+    scratch.write(".athenaeum/manifest.toml", MANIFEST_WITH_AFFECTED_TESTS);
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), &scratch.0);
+    let prompt = &plan.stdin;
+
+    assert!(
+        prompt.contains("Run the tests that cover your change, once")
+            && prompt.contains("Do not run whole-workspace test suites")
+            && prompt.contains("do not wait in loops")
+            && prompt.contains("gates")
+            && prompt.contains("CI"),
+        "the agent must be told to run the covering tests once and leave the full suites to the gates and CI: {prompt}"
+    );
+    assert!(
+        prompt.contains("`cargo test-changed --quiet`") && prompt.contains("`mix test --stale`"),
+        "the prompt must hold each component's own command from the manifest: {prompt}"
+    );
+    assert!(
+        prompt.contains("control-plane"),
+        "the command is run from the component's root, so the prompt says which: {prompt}"
+    );
+    assert!(
+        !prompt.contains("- docs:"),
+        "a component with no command is not listed: {prompt}"
+    );
+}
+
 #[test]
 fn a_ticket_with_no_answer_has_no_section_for_one() {
     let plan = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/work/run-1"));
 
-    assert!(!plan.command[4].contains("already answered"));
+    assert!(!plan.stdin.contains("already answered"));
+}
+
+#[test]
+fn a_workspace_with_no_manifest_still_gets_the_rule_and_no_invented_command() {
+    let scratch = common::Scratch::new("affected-tests-no-manifest");
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), &scratch.0);
+    let prompt = &plan.stdin;
+
+    assert!(
+        prompt.contains("Run the tests that cover your change, once"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("test-changed"), "{prompt}");
+}
+
+#[test]
+fn this_repositorys_own_manifest_names_a_command_for_each_stack_and_the_prompt_holds_it() {
+    let own = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.athenaeum/manifest.toml"),
+    )
+    .expect("the repository's manifest");
+    let manifest = heph::manifest::parse(&own).expect("a valid manifest");
+    let commands: Vec<String> = manifest
+        .components
+        .values()
+        .filter_map(|component| component.test_changed.as_ref())
+        .map(|command| format!("`{}`", command.join(" ")))
+        .collect();
+    assert_eq!(
+        commands.len(),
+        2,
+        "the Rust crates and the control plane each say how to test what changed: {commands:?}"
+    );
+
+    let scratch = common::Scratch::new("affected-tests-own");
+    scratch.write(".athenaeum/manifest.toml", &own);
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), &scratch.0);
+    let prompt = &plan.stdin;
+
+    for command in &commands {
+        assert!(prompt.contains(command), "{command} is not in: {prompt}");
+    }
+}
+
+#[test]
+fn the_prompt_names_the_limit_the_executor_enforces_and_a_changed_limit_changes_it() {
+    let prompt_for = |timeout: &str| {
+        let timeout = timeout.to_owned();
+        ClaudeCode
+            .plan(
+                &a_workload(|w| w["limits"]["timeout"] = json!(timeout)),
+                Path::new("/work/run-1"),
+            )
+            .stdin
+    };
+
+    let long = prompt_for("1800s");
+    assert!(long.contains("30 minutes"), "{long}");
+    assert!(
+        long.contains("/work/run-1.time-left"),
+        "it says where to ask how long is left: {long}"
+    );
+    let short = prompt_for("600s");
+    assert!(short.contains("10 minutes"), "{short}");
+    assert!(!short.contains("30 minutes"), "{short}");
+}
+
+#[test]
+fn the_prompt_says_when_the_time_ends_and_not_to_wait_on_processes_by_name() {
+    let prompt = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/w")).stdin;
+    assert!(prompt.contains(" UTC"), "{prompt}");
+    assert!(prompt.contains("pgrep -f"), "{prompt}");
+    assert!(prompt.contains("second copy"), "{prompt}");
+    assert!(prompt.contains("what was not run"), "{prompt}");
 }

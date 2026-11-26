@@ -509,6 +509,7 @@ defmodule ControlPlane.ResumeTest do
         revision_of(original, 2, "OUTCOME_COMPLETED", %{"pullRequest" => %{"url" => @pr_url}})
 
       checks(gh, [run(1, "ci", "failure")])
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/1/logs", "FAILED\n")
       assert [%{result: :resumed}] = Run.run(@repo)
 
       # Without the resume this would fail the ticket for want of revisions.
@@ -532,6 +533,7 @@ defmodule ControlPlane.ResumeTest do
         revision_of(original, 2, "OUTCOME_COMPLETED", %{"pullRequest" => %{"url" => @pr_url}})
 
       checks(gh, [run(1, "ci", "failure")])
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/1/logs", "FAILED\n")
       assert [%{result: :resumed}] = Run.run(@repo)
       assert result(revision.id) == {:revising, 3}
 
