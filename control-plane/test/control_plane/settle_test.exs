@@ -1509,4 +1509,68 @@ defmodule ControlPlane.SettleTest do
       assert length(merges(gh)) == 1
     end
   end
+
+  describe "one announcement for a head commit and a state" do
+    # A ticket keeps a workload for every attempt, and each stays awaiting settlement while it
+    # names the same pull request.
+    defp more_workloads(count) do
+      for _attempt <- 1..count do
+        {:ok, record} = Workloads.create(workload())
+        wid = record.id
+        {:ok, _} = Events.append(wid, event(wid, 1, started()))
+        {:ok, _} = Events.append(wid, event(wid, 2, finished("OUTCOME_COMPLETED", "")))
+
+        Workloads.keep_record(wid, %{
+          "outcome" => "OUTCOME_COMPLETED",
+          "pullRequest" => %{"url" => @pr_url}
+        })
+
+        wid
+      end
+    end
+
+    test "three workloads for one pull request give one comment in a pass, and none in the next",
+         %{gh: gh} do
+      more_workloads(2)
+
+      Settle.run()
+      assert [_one] = comments(gh)
+
+      Settle.run()
+      assert [_still_one] = comments(gh)
+    end
+
+    test "several check deliveries for a pull request with three unsettled workloads give one comment",
+         %{gh: gh, id: id} do
+      more_workloads(2)
+
+      # What a delivery that names no change does for each workload awaiting settlement, and
+      # what one that names the change does for the latest of the ticket.
+      for _delivery <- 1..5 do
+        for workload <- Workloads.awaiting_settlement(@repo), do: Settle.one(workload)
+        for workload <- Workloads.for_change(@repo, 52), do: Settle.one(workload)
+      end
+
+      assert Workloads.get(id).settled_at
+      assert [_one] = comments(gh)
+    end
+
+    test "a new head commit is announced again", %{gh: gh} do
+      Settle.run()
+      assert [_one] = comments(gh)
+
+      other = String.duplicate("b", 40)
+      StandInGitHub.respond(gh, @pull, pull(%{"head" => %{"sha" => other}}))
+
+      StandInGitHub.respond(
+        gh,
+        "repos/#{@repo}/commits/#{other}/check-runs?per_page=100",
+        runs([run(2, "ci", "completed", "success")])
+      )
+
+      [later] = more_workloads(1)
+      assert result(later) == :done
+      assert length(comments(gh)) == 2
+    end
+  end
 end
