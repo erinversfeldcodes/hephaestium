@@ -117,6 +117,17 @@ defmodule ControlPlane.ApiReplyTest do
       |> put_in(["ticket", "number"], Integer.to_string(number))
       |> Workloads.create()
 
+    # Workloads are stamped to the second, so one made in the same second as the one before it
+    # would not count as later: put it a minute on.
+    import Ecto.Query
+
+    later = NaiveDateTime.add(NaiveDateTime.utc_now(:second), 60)
+
+    ControlPlane.Repo.update_all(
+      from(w in ControlPlane.Workload, where: w.id == ^id),
+      set: [inserted_at: later]
+    )
+
     :ok = Workloads.keep_record(id, %{"outcome" => "OUTCOME_BLOCKED", "question" => question})
     {:ok, _} = ControlPlane.Events.append(id, Fixtures.event(id, 1, Fixtures.started()))
 
