@@ -107,12 +107,12 @@ defmodule ControlPlane.PullRequests do
             fragment("?->'review' IS NULL", w.workload) and
             fragment("?->'completeness' IS NULL", w.workload) and
             fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
-        select: %Workload{repository: w.repository, record: w.record}
+        select: %{repository: w.repository, url: fragment("?->'pullRequest'->>'url'", w.record)}
 
     query = if repository, do: where(query, [w], w.repository == ^repository), else: query
 
     for workload <- Repo.all(query),
-        {:ok, number} <- [Workloads.pull_request_number(workload)],
+        {:ok, number} <- [Workloads.pull_request_number(workload.repository, workload.url)],
         uniq: true,
         do: {workload.repository, String.to_integer(number)}
   end
@@ -207,18 +207,18 @@ defmodule ControlPlane.PullRequests do
             w.repository in ^repositories and w.ticket_number in ^numbers and
               fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
           order_by: [asc: w.inserted_at, asc: w.id],
-          select: %Workload{
+          select: %{
             repository: w.repository,
             ticket_number: w.ticket_number,
-            record: w.record
+            url: fragment("?->'pullRequest'->>'url'", w.record)
           }
       )
 
     # The newest workload that opened one wins, so a later pull request replaces an earlier.
     numbered =
-      for %Workload{} = w <- opened,
+      for w <- opened,
           MapSet.member?(wanted, {w.repository, w.ticket_number}),
-          {:ok, number} <- [Workloads.pull_request_number(w)],
+          {:ok, number} <- [Workloads.pull_request_number(w.repository, w.url)],
           reduce: %{} do
         acc -> Map.put(acc, {w.repository, w.ticket_number}, String.to_integer(number))
       end

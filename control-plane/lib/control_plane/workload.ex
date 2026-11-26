@@ -20,6 +20,7 @@ defmodule ControlPlane.Workload do
     field :resumed_for, :utc_datetime_usec
     field :budget_base, :integer, default: 0
     field :reruns, :map, default: %{}
+    field :unread_logs, :map, default: %{}
     field :parent_id, :binary_id
 
     timestamps()

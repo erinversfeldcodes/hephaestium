@@ -137,3 +137,110 @@ fn is_run_name(name: &str) -> bool {
             }
         })
 }
+
+/// A run's checkout that has gone unwritten for longer than a worker keeps one, and
+/// that a control plane may still need.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Old {
+    /// The workload's id, from the run's directory name.
+    pub id: String,
+    /// The run's directory.
+    pub run: std::path::PathBuf,
+}
+
+/// What a worker's clearing of old checkouts did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Cleared {
+    /// How many checkouts were removed.
+    pub removed: usize,
+    /// The disk space they held, in bytes.
+    pub freed: u64,
+    /// What could not be done, one line each.
+    pub warnings: Vec<String>,
+}
+
+/// The runs under `runs` that have a checkout and whose newest file is older than `keep`.
+/// Whether the run has ended is not said here: a worker's directory has no database, and
+/// the control plane is the one that knows which workloads it still holds a lease on or
+/// has a pull request open for. Only a real directory named `<ticket>-<workload id>`
+/// under a real directory is looked at.
+#[must_use]
+pub fn old_checkouts(runs: &Path, keep: Duration, now: SystemTime) -> Vec<Old> {
+    let mut found = Vec::new();
+    for repository in directories(runs) {
+        for run in directories(&repository) {
+            let Some(name) = run.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !is_run_name(name) || fs::symlink_metadata(run.join("work")).is_err() {
+                continue;
+            }
+            let last_written = ["record.json", "executor.log", "workload.json"]
+                .iter()
+                .filter_map(|file| fs::symlink_metadata(run.join(file)).ok()?.modified().ok())
+                .max();
+            let idle = last_written.and_then(|written| now.duration_since(written).ok());
+            if idle.is_some_and(|idle| idle >= keep) {
+                let id = name.split_once('-').map_or("", |(_, id)| id).to_owned();
+                found.push(Old { id, run });
+            }
+        }
+    }
+    found
+}
+
+/// Remove the checkout of each of these runs, and say how many and how much space that
+/// freed. What a run said (its record, events and logs) is left.
+#[must_use]
+pub fn clear(old: &[Old]) -> Cleared {
+    let mut cleared = Cleared::default();
+    for run in old {
+        let size = disk_use(&run.run.join("work"));
+        match delete_checkout(&run.run) {
+            Ok(true) => {
+                cleared.removed += 1;
+                cleared.freed += size;
+            }
+            Ok(false) => {}
+            Err(warning) => cleared.warnings.push(warning),
+        }
+    }
+    cleared
+}
+
+/// The disk space a tree uses, counting a link and not what it points to.
+fn disk_use(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let own = metadata.blocks() * 512;
+    if !metadata.is_dir() {
+        return own;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return own;
+    };
+    own + entries
+        .flatten()
+        .map(|entry| disk_use(&entry.path()))
+        .sum::<u64>()
+}
+
+/// A size for a person: bytes up to gigabytes, one decimal.
+#[must_use]
+pub fn show_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal")]
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}

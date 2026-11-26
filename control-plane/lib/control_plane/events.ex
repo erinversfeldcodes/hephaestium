@@ -57,9 +57,9 @@ defmodule ControlPlane.Events do
   defp keep(workload_id, event, parsed) do
     # The workload's row is locked for the length of the append, so that two
     # writers cannot both read the same last event.
-    workload =
-      Repo.one(from w in Workload, where: w.id == ^workload_id, lock: "FOR UPDATE") ||
-        Repo.rollback(:unknown_workload)
+    # Only the id is selected: the workload's documents are large and are not read here.
+    Repo.one(from w in Workload, where: w.id == ^workload_id, select: w.id, lock: "FOR UPDATE") ||
+      Repo.rollback(:unknown_workload)
 
     last =
       Repo.one(
@@ -80,7 +80,18 @@ defmodule ControlPlane.Events do
         event: event
       })
 
-    workload |> advance(parsed) |> Repo.update!()
+    case advance(parsed) do
+      [] ->
+        :ok
+
+      set ->
+        # update_all does not stamp updated_at as a changeset update does, and the
+        # settled-run windows read it.
+        Repo.update_all(from(w in Workload, where: w.id == ^workload_id),
+          set: [updated_at: DateTime.utc_now()] ++ set
+        )
+    end
+
     kept
   end
 
@@ -97,24 +108,19 @@ defmodule ControlPlane.Events do
   end
 
   # What an event means for the state of its workload.
-  defp advance(workload, %{kind: "started"} = parsed),
-    do: Ecto.Changeset.change(workload, state: "preparing", started_at: parsed.time)
+  defp advance(%{kind: "started"} = parsed), do: [state: "preparing", started_at: parsed.time]
+  defp advance(%{kind: "workspaceReady"}), do: [state: "running"]
+  defp advance(%{kind: "gateStarted"}), do: [state: "gating"]
 
-  defp advance(workload, %{kind: "workspaceReady"}),
-    do: Ecto.Changeset.change(workload, state: "running")
-
-  defp advance(workload, %{kind: "gateStarted"}),
-    do: Ecto.Changeset.change(workload, state: "gating")
-
-  defp advance(workload, %{kind: "finished", body: body} = parsed) do
-    Ecto.Changeset.change(workload,
+  defp advance(%{kind: "finished", body: body} = parsed) do
+    [
       state: Map.fetch!(@outcomes, body["outcome"]),
       reason: body["reason"] || "",
       finished_at: parsed.time
-    )
+    ]
   end
 
-  defp advance(workload, _), do: Ecto.Changeset.change(workload)
+  defp advance(_), do: []
 
   defp parse(event) when is_map(event) do
     with [kind] <- Map.keys(event) -- @envelope,

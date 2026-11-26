@@ -485,6 +485,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_runs_directory_is_a_state_directory_and_not_the_temp_folder() {
+        let runs = runs_dir(None).expect("a home directory");
+        assert!(runs.ends_with("hephaestium/runs"), "{}", runs.display());
+        assert!(
+            !runs.starts_with(std::env::temp_dir()),
+            "{} is under the temp folder",
+            runs.display()
+        );
+    }
+
+    #[test]
     fn the_executor_is_the_option_else_the_one_beside_this_program_else_the_one_on_the_path() {
         let directory =
             std::env::temp_dir().join(format!("heph-run-beside-{}", std::process::id()));

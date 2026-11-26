@@ -87,6 +87,18 @@ defmodule ControlPlane.ExecutorLinkTest do
     created.id
   end
 
+  # A queued workload for a ticket of its own: one ticket's branch is held by one workload at a
+  # time, so workloads meant to run side by side are for different tickets.
+  defp queued_for_another_ticket do
+    {:ok, created} =
+      workload()
+      |> put_in(["approval", "approvedBy"], @person)
+      |> put_in(["ticket", "number"], System.unique_integer([:positive]))
+      |> Workloads.create()
+
+    created.id
+  end
+
   # A queued review of a pull request, approved by `approver`, put on the queue after what is
   # queued before it.
   defp queued_review(approver \\ @person) do
@@ -126,6 +138,55 @@ defmodule ControlPlane.ExecutorLinkTest do
     )
   end
 
+  describe "which workspaces a worker may clear" do
+    defp set(id, changes),
+      do: Repo.update_all(from(w in Workload, where: w.id == ^id), set: changes)
+
+    test "a workload that is leased or still going is held", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      queued_only = queued()
+
+      assert %{status: 200, body: %{"held" => held}} =
+               StandInWorker.held(ctx.port, ctx.mine, [id, queued_only])
+
+      assert Enum.sort(held) == Enum.sort([id, queued_only])
+    end
+
+    test "a completed workload with a pull request that is not settled is held, and is not once settled",
+         ctx do
+      id = queued()
+      pull = %{"pullRequest" => %{"url" => "https://github.com/acme/widgets/pull/9"}}
+      set(id, state: "completed", record: pull)
+
+      assert %{body: %{"held" => [^id]}} = StandInWorker.held(ctx.port, ctx.mine, [id])
+
+      set(id, settled_at: DateTime.utc_now())
+      assert %{body: %{"held" => []}} = StandInWorker.held(ctx.port, ctx.mine, [id])
+    end
+
+    test "a workload that failed, was cancelled or is not known is not held", ctx do
+      failed = queued()
+      cancelled = queued()
+      set(failed, state: "failed")
+      set(cancelled, state: "cancelled")
+      unknown = Ecto.UUID.generate()
+
+      assert %{status: 200, body: %{"held" => []}} =
+               StandInWorker.held(ctx.port, ctx.mine, [failed, cancelled, unknown])
+    end
+
+    test "is refused without a device token, and a body without ids is a mistake", ctx do
+      assert %{status: 401} = StandInWorker.held(ctx.port, nil, [])
+
+      assert %{status: 400} =
+               StandInWorker.request(ctx.port, :post, "/worker/workloads/held",
+                 token: ctx.mine,
+                 body: %{}
+               )
+    end
+  end
+
   describe "a worker with a valid token" do
     test "claims a workload and streams events that are kept in order", ctx do
       id = queued()
@@ -154,7 +215,7 @@ defmodule ControlPlane.ExecutorLinkTest do
       refute lease(id).active, "the lease is let go when the record is kept"
     end
 
-    test "locks a workload for an event without reading its documents", ctx do
+    test "ingests an event without selecting a workload's documents", ctx do
       id = queued()
       assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine)
 
@@ -176,12 +237,16 @@ defmodule ControlPlane.ExecutorLinkTest do
       :telemetry.detach(handler)
 
       queries = drain_queries([])
-      # The first lock is the lease's; the append takes its own, which reads the row it advances.
-      [lock | _] = Enum.filter(queries, &(&1 =~ ~r/FOR UPDATE/))
+      assert Enum.any?(queries, &(&1 =~ ~r/FOR UPDATE/))
 
-      assert lock =~ ~r/^SELECT w0\."id" FROM "workloads"/
-      refute lock =~ "workload\""
-      refute lock =~ "record"
+      # Ingesting an event never reads a workload's documents, whichever query it runs.
+      for query <- queries do
+        refute query =~ ~r/\."workload"/, "selects the workload document: #{query}"
+        refute query =~ ~r/\."record"/, "selects the record document: #{query}"
+      end
+
+      for lock <- Enum.filter(queries, &(&1 =~ ~r/FOR UPDATE/)),
+          do: assert(lock =~ ~r/^SELECT w0\."id"/)
     end
 
     test "is given a queued review before an implementation that was queued earlier", ctx do
@@ -197,8 +262,8 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "holds several workloads at once, each with a lease of its own", ctx do
-      first = queued()
-      second = queued()
+      first = queued_for_another_ticket()
+      second = queued_for_another_ticket()
 
       assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 2})
       assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine, %{slots: 2})
@@ -602,8 +667,8 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "is the oldest first, and the one claimed is not offered again", ctx do
-      first = queued()
-      second = queued()
+      first = queued_for_another_ticket()
+      second = queued_for_another_ticket()
 
       Repo.update_all(from(w in Workload, where: w.id == ^first),
         set: [inserted_at: ~U[2026-11-01 00:00:00.000000Z]]
@@ -618,7 +683,7 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "is never run by two workers: a workload held is not claimed again", ctx do
-      id = queued()
+      id = queued_for_another_ticket()
       {:ok, %{token: second}} = DeviceTokens.issue(@person, "desktop")
 
       assert %{status: 200, body: %{"workload" => %{"id" => ^id}}} =
@@ -630,7 +695,7 @@ defmodule ControlPlane.ExecutorLinkTest do
     end
 
     test "is never run by two workers that claim at the same moment", ctx do
-      ids = for _ <- 1..3, do: queued()
+      ids = for _ <- 1..3, do: queued_for_another_ticket()
 
       tokens =
         for n <- 1..8 do

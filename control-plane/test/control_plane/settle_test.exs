@@ -65,8 +65,10 @@ defmodule ControlPlane.SettleTest do
       "parameters" => %{"required_status_checks" => Enum.map(contexts, &%{"context" => &1})}
     }
 
-  defp run(id, name, status, conclusion),
-    do: %{"id" => id, "name" => name, "status" => status, "conclusion" => conclusion}
+  defp run(id, name, status, conclusion, suite \\ nil) do
+    run = %{"id" => id, "name" => name, "status" => status, "conclusion" => conclusion}
+    if suite, do: Map.put(run, "check_suite", %{"id" => suite}), else: run
+  end
 
   defp runs(list), do: %{"total_count" => length(list), "check_runs" => list}
 
@@ -726,30 +728,152 @@ defmodule ControlPlane.SettleTest do
       assert revision_of(id) == nil
     end
 
-    test "a failure that cannot be read still starts a revision, with what there is", %{
+    test "a failed matrix job's test name reaches the revision request", %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(31, "ci", "completed", "failure"), run(32, "test (3)", "completed", "failure")])
+      )
+
+      StandInGitHub.respond_text(gh, @logs, "Process completed with exit code 1.\n")
+
+      StandInGitHub.respond_text(
+        gh,
+        "repos/#{@repo}/actions/jobs/32/logs",
+        Enum.map_join(1..300, "", &"setup line #{&1}\n") <>
+          "  1) test replies (ControlPlane.ApiReplyTest)\n" <>
+          "     test/control_plane/api_reply_test.exs:261\n" <>
+          "     Assertion with == failed\n" <>
+          "945 tests, 1 failure\n" <>
+          Enum.map_join(1..1000, "", &"post job cleanup line #{&1}\n")
+      )
+
+      assert result(id) == {:revising, 1}
+      failures = revision_of(id).workload["revision"]["failures"]
+      assert %{"excerpt" => excerpt} = Enum.find(failures, &(&1["name"] == "test (3)"))
+      assert excerpt =~ "test/control_plane/api_reply_test.exs:261"
+      assert byte_size(excerpt) <= 8_000
+    end
+
+    test "a log that cannot be read is reported with its reason and spends no revision", %{
       gh: gh,
       id: id
     } do
       StandInGitHub.fail(gh, @logs, "gh: HTTP 410 Gone")
 
-      assert result(id) == {:revising, 1}
-      assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
-      assert excerpt =~ "reset_spec failed"
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+      assert [comment] = comments(gh)
+      assert comment =~ "ci"
+      assert comment =~ "expired"
+      assert comment =~ "410"
+
+      assert {:failed, ["ci"], reason} = result(id)
+      assert reason =~ "could not be read"
+      assert revision_of(id) == nil
+      assert Enum.any?(comments(gh), &(&1 =~ "not revised"))
     end
 
-    test "with no output at all the revision says there was none", %{gh: gh, id: id} do
-      StandInGitHub.fail(gh, @logs, "gh: HTTP 410 Gone")
-      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "failure")]))
+    test "a log that cannot be read at first is read on the next pass", %{gh: gh, id: id} do
+      StandInGitHub.fail(gh, @logs, "gh: HTTP 404 Not Found")
+      assert {:waiting, _} = result(id)
+
+      StandInGitHub.clear_failure(gh, @logs)
 
       assert result(id) == {:revising, 1}
       assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
-      assert excerpt =~ "no output"
+      assert excerpt =~ "FAILED: reset spec at reset.rs:40"
+    end
+
+    test "an empty log is unreadable", %{gh: gh, id: id} do
+      StandInGitHub.respond_text(gh, @logs, "\n")
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
     end
 
     test "cancelled checks are never revised", %{gh: gh, id: id} do
       StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "cancelled")]))
 
       assert result(id) == {:failed, ["ci"]}
+      assert revision_of(id) == nil
+    end
+
+    test "a failed aggregate check of a cancelled duplicate run starts no revision while the other run is live",
+         %{gh: gh, id: id} do
+      # One push started two runs. GitHub cancelled the first at once: its jobs ended
+      # cancelled, and its aggregate job, which fails when a job it needs did not succeed,
+      # ended as a failure. The second run is still going.
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(31, "ci", "completed", "failure", 1),
+          run(40, "rust", "in_progress", nil, 2)
+        ])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+      assert StandInGitHub.writes(gh) == []
+    end
+
+    test "a failed aggregate of a run that was not cancelled is revised at once beside a live run",
+         %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(50, "rust", "completed", "success", 2),
+          run(51, "ci", "completed", "failure", 2),
+          run(60, "e2e", "in_progress", nil, 2)
+        ])
+      )
+
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/51/logs", "FAILED\n")
+
+      assert result(id) == {:revising, 1}
+    end
+
+    test "a real failure beside a cancelled duplicate and a live run is revised at once", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(31, "ci", "completed", "failure", 1),
+          run(32, "e2e", "completed", "failure"),
+          run(40, "rust", "in_progress", nil)
+        ])
+      )
+
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/32/logs", "FAILED\n")
+
+      assert result(id) == {:revising, 1}
+      assert [%{"name" => "e2e"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
+    test "the stale failed aggregate does not block once the live run succeeded", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled"),
+          run(31, "ci", "completed", "failure"),
+          run(40, "rust", "completed", "success"),
+          run(41, "ci", "completed", "success")
+        ])
+      )
+
+      assert result(id) == :done
       assert revision_of(id) == nil
     end
 
