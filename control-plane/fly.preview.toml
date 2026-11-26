@@ -1,0 +1,49 @@
+# A pull request's preview on Fly. It is `fly.toml` with the settings that keep a deployment
+# awake taken out, because a preview is used rarely and Neon's free allowance of compute hours is
+# shared with production. Deploy from the repository's root:
+#   fly deploy --config control-plane/fly.preview.toml --app <preview app> --ha=false
+#
+# What differs from fly.toml, and why:
+#   - HEPH_RECURRING_JOBS = "off": no scheduled pass, and no poll of the database for due jobs,
+#     so nothing touches the database unless a request does.
+#   - The machine stops when it has no traffic and starts again on the next request.
+#   - There is no [checks.health]: it asks the database every 15 seconds, which would keep the
+#     compute awake. The API's own check below needs no database.
+# A change to the settings the two share (the port, the region, the image) belongs in both.
+app = "hephaestium-control-plane-preview"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"  # relative to this file; the build context is the root
+
+[env]
+  HEPH_HEALTH_PORT = "8080"
+  HEPH_API_PORT = "4000"
+  HEPH_API_BASE_URL = "https://hephaestium-control-plane-preview.fly.dev"
+  HEPH_EXECUTOR_LINK = "workers"
+  HEPH_DB_SSL = "true"
+  HEPH_OBAN_NOTIFIER = "pg"
+  HEPH_DB_POOL_SIZE = "10"
+  HEPH_RECURRING_JOBS = "off"
+
+[deploy]
+  release_command = "/app/bin/migrate"
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    method = "get"
+    path = "/"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

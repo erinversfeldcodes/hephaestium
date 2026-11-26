@@ -29,3 +29,24 @@ fn a_manifest_with_no_bootstrap_has_none() {
     let manifest = parse(BASE).expect("a valid manifest");
     assert_eq!(manifest.bootstrap, []);
 }
+
+/// The repository's own manifest fetches what its tests need, so a fresh workspace can run one
+/// control plane test and one dashboard test.
+#[test]
+fn this_repositorys_manifest_fetches_the_control_planes_and_the_dashboards_dependencies() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.athenaeum/manifest.toml"
+    ))
+    .expect("the repository's manifest");
+    let manifest = parse(&text).expect("a valid manifest");
+
+    let runs = |root: &str, words: &[&str]| {
+        manifest
+            .bootstrap
+            .iter()
+            .any(|step| step.root.as_deref() == Some(root) && step.run == words)
+    };
+    assert!(runs("control-plane", &["mix", "deps.get"]));
+    assert!(runs("dashboard", &["npm", "ci", "--no-audit", "--no-fund"]));
+}

@@ -104,6 +104,28 @@ fn a_conflict_with_what_the_base_gained_is_resolved_by_the_agent_and_the_run_goe
 }
 
 #[test]
+fn resolving_a_conflict_by_deleting_the_file_is_a_resolution() {
+    let rig = rig("conflict-deleted", &manifest(&[]));
+    let base = rig.commit.clone();
+    let calls = rig.scratch.path("agent-calls");
+    let moves = main_moves(&rig, "web/changed.txt", "something else\\n");
+    let script = script(&calls, &moves, "rm web/changed.txt;");
+
+    let done = run_first(rig, calls, &workload(&base), &script);
+
+    let (outcome, reason) = finished(&done.ran.events());
+    assert_eq!(outcome, Outcome::Completed, "{reason}");
+    assert_eq!(
+        git(
+            &done.source,
+            &["ls-tree", "--name-only", BRANCH, "web/changed.txt"]
+        ),
+        "",
+        "the file is gone from what was pushed"
+    );
+}
+
+#[test]
 fn the_gates_judge_the_resolved_tree_and_not_the_conflicted_one() {
     // A gate that passes only if the file says what the agent resolved it to.
     let text = manifest(&[])
@@ -241,12 +263,7 @@ fn first_run_prompt(conflicts: &[&str]) -> String {
     });
     let workload: Workload = serde_json::from_value(value).expect("a workload");
     let plan = ClaudeCode.plan(&workload, Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 #[test]
