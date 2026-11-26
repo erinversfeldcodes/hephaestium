@@ -443,6 +443,96 @@ fn preparing_makes_the_empty_configuration_directory_and_settings_that_turn_hook
     let _ = std::fs::remove_dir_all(&directory);
 }
 
+const MANIFEST_WITH_AFFECTED_TESTS: &str = r#"schema_version = 0
+
+[components.rust]
+pack = "rust"
+root = "."
+paths = ["crates/**"]
+test_changed = ["cargo", "test-changed", "--quiet"]
+
+[components.control-plane]
+pack = "elixir"
+root = "control-plane"
+paths = ["control-plane/**"]
+test_changed = ["mix", "test", "--stale"]
+
+[components.docs]
+root = "."
+paths = ["docs/**"]
+"#;
+
+#[test]
+fn the_prompt_tells_the_agent_to_run_the_tests_its_change_affects_with_the_manifests_command() {
+    let scratch = common::Scratch::new("affected-tests-prompt");
+    scratch.write(".athenaeum/manifest.toml", MANIFEST_WITH_AFFECTED_TESTS);
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), &scratch.0);
+    let prompt = &plan.stdin;
+
+    assert!(
+        prompt.contains("Run the tests that cover your change, once")
+            && prompt.contains("Do not run whole-workspace test suites")
+            && prompt.contains("do not wait in loops")
+            && prompt.contains("gates")
+            && prompt.contains("CI"),
+        "the agent must be told to run the covering tests once and leave the full suites to the gates and CI: {prompt}"
+    );
+    assert!(
+        prompt.contains("`cargo test-changed --quiet`") && prompt.contains("`mix test --stale`"),
+        "the prompt must hold each component's own command from the manifest: {prompt}"
+    );
+    assert!(
+        prompt.contains("control-plane"),
+        "the command is run from the component's root, so the prompt says which: {prompt}"
+    );
+    assert!(
+        !prompt.contains("- docs:"),
+        "a component with no command is not listed: {prompt}"
+    );
+}
+
+#[test]
+fn a_workspace_with_no_manifest_still_gets_the_rule_and_no_invented_command() {
+    let scratch = common::Scratch::new("affected-tests-no-manifest");
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), &scratch.0);
+    let prompt = &plan.stdin;
+
+    assert!(
+        prompt.contains("Run the tests that cover your change, once"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("test-changed"), "{prompt}");
+}
+
+#[test]
+fn this_repositorys_own_manifest_names_a_command_for_each_stack_and_the_prompt_holds_it() {
+    let own = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.athenaeum/manifest.toml"),
+    )
+    .expect("the repository's manifest");
+    let manifest = heph::manifest::parse(&own).expect("a valid manifest");
+    let commands: Vec<String> = manifest
+        .components
+        .values()
+        .filter_map(|component| component.test_changed.as_ref())
+        .map(|command| format!("`{}`", command.join(" ")))
+        .collect();
+    assert_eq!(
+        commands.len(),
+        2,
+        "the Rust crates and the control plane each say how to test what changed: {commands:?}"
+    );
+
+    let scratch = common::Scratch::new("affected-tests-own");
+    scratch.write(".athenaeum/manifest.toml", &own);
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), &scratch.0);
+    let prompt = &plan.stdin;
+
+    for command in &commands {
+        assert!(prompt.contains(command), "{command} is not in: {prompt}");
+    }
+}
+
 #[test]
 fn the_prompt_names_the_limit_the_executor_enforces_and_a_changed_limit_changes_it() {
     let prompt_for = |timeout: &str| {

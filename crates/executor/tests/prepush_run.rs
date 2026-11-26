@@ -176,13 +176,22 @@ fn pushed(went: &Went) -> Vec<String> {
 fn a_change_every_lens_approves_is_pushed_once_with_a_step_for_each_agent() {
     let went = go(
         setup("prepush-approved"),
-        &[implements("v1"), reads("rust", "approved", None)],
+        &[
+            implements("v1"),
+            format!("sleep 1; {}", reads("rust", "approved", None)),
+        ],
         |_| {},
         true,
     );
 
     assert_eq!(went.ran.code(), 0, "{}", went.ran.stderr());
     assert_eq!(finished(&went.ran.events()).0, Outcome::Completed);
+    let record = went.ran.record();
+    assert!(
+        (1_000..30_000).contains(&record.review_ms),
+        "the reader slept a second, and that time is review's and not the agent's: {}",
+        record.review_ms
+    );
     assert_eq!(went.starts, 2, "the implementing agent and one reader");
     assert_eq!(pushed(&went), [BRANCH]);
     let names = kinds(&went.ran.events());
