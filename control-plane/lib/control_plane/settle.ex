@@ -34,6 +34,7 @@ defmodule ControlPlane.Settle do
     Finding,
     PullRequests,
     ReviewApproval,
+    SettleAnnouncement,
     Reviews,
     Tickets,
     Tracker,
@@ -177,7 +178,7 @@ defmodule ControlPlane.Settle do
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
          notes = with_left_to_ci(workload, pull, verdict, notes),
-         :ok <- act(workload, verdict, notes),
+         :ok <- announce(workload, pull, number, verdict, notes),
          :ok <- evaluate(workload, pull, verdict) do
       outcome(workload, verdict)
     else
@@ -215,6 +216,43 @@ defmodule ControlPlane.Settle do
   defp merged?(%{merged: true}, _verdict), do: true
   defp merged?(_pull, {:done, :merged}), do: true
   defp merged?(_pull, _verdict), do: false
+
+  # What is written to the ticket is written once for a head commit and a state, whichever
+  # workload or delivery got here: a ticket keeps a workload for every attempt, and a CI run's
+  # jobs finish one after another, each delivery looking at the same pull request. The claim is
+  # made before the write, so two at once cannot both write, and given up if the write fails, so
+  # it is tried again. A revision or a re-run writes nothing of this kind and is not claimed.
+  defp announce(workload, pull, number, verdict, notes) do
+    case claim_state(verdict) do
+      nil ->
+        act(workload, verdict, notes)
+
+      state ->
+        repository = workload.repository
+        n = String.to_integer(to_string(number))
+        sha = pull.head_sha || ""
+
+        if SettleAnnouncement.claim(repository, n, sha, state) do
+          with {:error, _} = error <- act(workload, verdict, notes) do
+            SettleAnnouncement.release(repository, n, sha, state)
+            error
+          end
+        else
+          :ok
+        end
+    end
+  end
+
+  defp claim_state({:rerun, _}), do: nil
+  defp claim_state({:revise, _, _, _}), do: nil
+  defp claim_state({:revise_review, _, _, _}), do: nil
+  defp claim_state({:revise_base, _, _, _}), do: nil
+  defp claim_state(:done), do: "done"
+  defp claim_state({:done, _}), do: "done"
+  defp claim_state(:abandoned), do: "abandoned"
+  defp claim_state({:failed, _names, _extra, :review}), do: "review_failed"
+  defp claim_state({:failed, _names}), do: "failed"
+  defp claim_state({:failed, _names, _extra}), do: "failed"
 
   defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
