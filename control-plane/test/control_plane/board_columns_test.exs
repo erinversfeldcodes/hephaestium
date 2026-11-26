@@ -106,10 +106,38 @@ defmodule ControlPlane.BoardColumnsTest do
   end
 
   test "the poll's lookup of pull requests workloads opened selects no whole document" do
-    bytes = returned_bytes(fn -> PullRequests.refresh_due(DateTime.utc_now()) end)
+    test = self()
+    id = "captured-queries-#{System.unique_integer([:positive])}"
 
-    # Only the small rows of the pull request table and the address may come back.
-    assert bytes < @document_bytes, "the poll returned #{bytes} bytes"
+    :telemetry.attach(
+      id,
+      [:control_plane, :repo, :query],
+      fn _event, _measure, meta, _ -> send(test, {:query, meta.query}) end,
+      nil
+    )
+
+    try do
+      PullRequests.refresh_due(DateTime.utc_now())
+    after
+      :telemetry.detach(id)
+    end
+
+    [query] =
+      Enum.filter(drain_queries([]), &(&1 =~ ~s(FROM "workloads") and &1 =~ "'pullRequest'"))
+
+    [select | _] = String.split(query, " FROM ", parts: 2)
+
+    # The pull request url is taken out of the document with `->`; a bare column is the document.
+    refute select =~ ~r/"record"(?!->)/, "the poll selects the whole record: #{select}"
+    refute select =~ ~r/"workload"(?!->)/, "the poll selects the whole workload: #{select}"
+  end
+
+  defp drain_queries(acc) do
+    receive do
+      {:query, query} -> drain_queries([query | acc])
+    after
+      0 -> acc
+    end
   end
 
   describe "kind, lens and failed gate computed in the database" do
