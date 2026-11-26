@@ -336,6 +336,21 @@ defmodule ControlPlane.Tickets do
     )
   end
 
+  @doc """
+  Say on the ticket that the log of a failed check could not be read, and why, and that the
+  next pass will look again: no revision is started on a failure nobody read.
+  """
+  @spec log_unread(%Workload{}, [{String.t(), String.t()}], pos_integer(), pos_integer()) ::
+          :ok | {:error, String.t()}
+  def log_unread(workload, lines, pass, max) do
+    list = Enum.map_join(lines, "\n", fn {name, why} -> "- #{name}: #{why}" end)
+
+    note(
+      workload,
+      "a check failed and what it printed could not be read (pass #{pass} of #{max}). No revision is started until it can be; it will be read again.\n#{list}"
+    )
+  end
+
   # What a green, approved pull request claims: that its checks are green and, if reviews
   # were asked for, that they approved it. Neither says the ticket's goal is met. Where the
   # ticket is judged after the merge, the comment says it will be; elsewhere it says the goal

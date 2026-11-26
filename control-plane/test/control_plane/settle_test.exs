@@ -726,24 +726,68 @@ defmodule ControlPlane.SettleTest do
       assert revision_of(id) == nil
     end
 
-    test "a failure that cannot be read still starts a revision, with what there is", %{
+    test "a failed matrix job's test name reaches the revision request", %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([run(31, "ci", "completed", "failure"), run(32, "test (3)", "completed", "failure")])
+      )
+
+      StandInGitHub.respond_text(gh, @logs, "Process completed with exit code 1.\n")
+
+      StandInGitHub.respond_text(
+        gh,
+        "repos/#{@repo}/actions/jobs/32/logs",
+        Enum.map_join(1..300, "", &"setup line #{&1}\n") <>
+          "  1) test replies (ControlPlane.ApiReplyTest)\n" <>
+          "     test/control_plane/api_reply_test.exs:261\n" <>
+          "     Assertion with == failed\n" <>
+          "945 tests, 1 failure\n" <>
+          Enum.map_join(1..1000, "", &"post job cleanup line #{&1}\n")
+      )
+
+      assert result(id) == {:revising, 1}
+      failures = revision_of(id).workload["revision"]["failures"]
+      assert %{"excerpt" => excerpt} = Enum.find(failures, &(&1["name"] == "test (3)"))
+      assert excerpt =~ "test/control_plane/api_reply_test.exs:261"
+      assert byte_size(excerpt) <= 8_000
+    end
+
+    test "a log that cannot be read is reported with its reason and spends no revision", %{
       gh: gh,
       id: id
     } do
       StandInGitHub.fail(gh, @logs, "gh: HTTP 410 Gone")
 
-      assert result(id) == {:revising, 1}
-      assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
-      assert excerpt =~ "reset_spec failed"
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+      assert [comment] = comments(gh)
+      assert comment =~ "ci"
+      assert comment =~ "expired"
+      assert comment =~ "410"
+
+      assert {:failed, ["ci"], reason} = result(id)
+      assert reason =~ "could not be read"
+      assert revision_of(id) == nil
+      assert Enum.any?(comments(gh), &(&1 =~ "not revised"))
     end
 
-    test "with no output at all the revision says there was none", %{gh: gh, id: id} do
-      StandInGitHub.fail(gh, @logs, "gh: HTTP 410 Gone")
-      StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "failure")]))
+    test "a log that cannot be read at first is read on the next pass", %{gh: gh, id: id} do
+      StandInGitHub.fail(gh, @logs, "gh: HTTP 404 Not Found")
+      assert {:waiting, _} = result(id)
+
+      StandInGitHub.clear_failure(gh, @logs)
 
       assert result(id) == {:revising, 1}
       assert [%{"excerpt" => excerpt}] = revision_of(id).workload["revision"]["failures"]
-      assert excerpt =~ "no output"
+      assert excerpt =~ "FAILED: reset spec at reset.rs:40"
+    end
+
+    test "an empty log is unreadable", %{gh: gh, id: id} do
+      StandInGitHub.respond_text(gh, @logs, "\n")
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
     end
 
     test "cancelled checks are never revised", %{gh: gh, id: id} do

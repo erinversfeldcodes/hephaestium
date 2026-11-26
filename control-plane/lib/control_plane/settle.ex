@@ -176,6 +176,7 @@ defmodule ControlPlane.Settle do
          {:ok, verdict} <- behind(workload, pull, number, verdict),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
+         {:ok, verdict} <- read_logs(workload, verdict),
          notes = with_left_to_ci(workload, pull, verdict, notes),
          :ok <- act(workload, verdict, notes),
          :ok <- evaluate(workload, pull, verdict) do
@@ -438,8 +439,8 @@ defmodule ControlPlane.Settle do
   # revision.
   defp act(workload, {:revise, runs, pull, number}, _notes) do
     failures =
-      for {name, run} <- runs do
-        %{"name" => name, "result" => run.conclusion, "excerpt" => excerpt(workload, run)}
+      for {name, run, excerpt} <- runs do
+        %{"name" => name, "result" => run.conclusion, "excerpt" => excerpt}
       end
 
     revise(workload, failures, pull, number, &Tickets.revising/4)
@@ -546,42 +547,129 @@ defmodule ControlPlane.Settle do
     |> Map.new(fn {name, rs} -> {name, Enum.max_by(rs, & &1.id)} end)
   end
 
+  # A revision is told what the failed checks printed, so a log that cannot be read is no
+  # basis for one: it is recorded on the ticket with its reason, and the workload is left for
+  # the next pass, which is the retry. After the second pass that could not read it the
+  # failure is reported, not revised. Nothing sleeps or retries inside a pass.
+  @read_passes 2
+
+  defp read_logs(workload, {:revise, real, pull, number}) do
+    read = for {name, run} <- real, do: {name, run, read_excerpt(workload, run)}
+    unreadable = for {name, run, {:unreadable, why}} <- read, do: {name, run, why}
+
+    if unreadable == [] do
+      {:ok, {:revise, for({name, run, {:ok, text}} <- read, do: {name, run, text}), pull, number}}
+    else
+      unread_logs = workload.unread_logs || %{}
+
+      passes =
+        1 +
+          Enum.max(for {_, run, _} <- unreadable, do: Map.get(unread_logs, to_string(run.id), 0))
+
+      for {_, run, _} <- unreadable, do: Workloads.count_unread_log(workload.id, run.id)
+      lines = for {name, _run, why} <- unreadable, do: {name, why}
+      names = real |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+
+      if passes < @read_passes do
+        note_unread(workload, lines, passes)
+        {:waiting, "could not read the log of #{Enum.map_join(lines, ", ", &elem(&1, 0))}"}
+      else
+        {:ok, {:failed, names, unread_text(lines, passes)}}
+      end
+    end
+  end
+
+  defp read_logs(_workload, verdict), do: {:ok, verdict}
+
+  defp note_unread(workload, lines, passes) do
+    case Tickets.log_unread(workload, lines, passes, @read_passes) do
+      :ok -> :ok
+      {:error, message} -> Logger.error("could not say a log was unreadable: #{message}")
+    end
+  end
+
+  defp unread_text(lines, passes) do
+    "It was not revised: what #{if length(lines) == 1, do: "the check", else: "the checks"} printed could not be read in #{passes} passes, and a revision without it would be a guess.\n" <>
+      Enum.map_join(lines, "\n", fn {name, why} -> "- #{name}: #{why}" end)
+  end
+
   # What a failing check said, for the agent: the check's own title and summary and the
-  # tail of its job's log, cut to what fits. A log that cannot be read is no reason
-  # not to revise, so the revision gets what there is, or says there was nothing.
+  # failing lines of its job's log, cut to what fits.
   @excerpt_bytes 8_000
   @separator "\n--- the end of the job's log ---\n"
+  @context_before 1
+  @context_after 3
+  @failing ~r/(^|\s)\d+\) |\*\* \(|\bFAIL(ED|URES?)?\b|\bfail(ed|ure|ures)\b|\berror\b|\bpanicked\b|exit code [1-9]|##\[error\]/i
 
-  defp excerpt(workload, run) do
+  defp read_excerpt(workload, run) do
     summary =
       [run.title, run.summary]
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
       |> Enum.join("\n")
       |> cut_start(1_500)
 
-    log =
-      case CodeHost.check_log(workload.repository, run.id) do
-        {:ok, text} ->
+    case CodeHost.check_log(workload.repository, run.id) do
+      {:ok, text} ->
+        log =
           text
           |> strip_colours()
-          |> tail(@excerpt_bytes - byte_size(summary) - byte_size(@separator))
+          |> failing_lines(@excerpt_bytes - byte_size(summary) - byte_size(@separator))
 
-        {:error, _} ->
-          ""
+        cond do
+          log == "" -> {:unreadable, "the log was empty"}
+          summary == "" -> {:ok, log}
+          true -> {:ok, summary <> @separator <> log}
+        end
+
+      {:error, message} ->
+        {:unreadable, why_unreadable(message)}
+    end
+  end
+
+  defp why_unreadable(message) do
+    cause =
+      cond do
+        message =~ ~r/\b403\b|forbidden|not accessible/i ->
+          "the token may not read job logs (permission)"
+
+        message =~ ~r/\b410\b|\bgone\b|expired/i ->
+          "the log has expired"
+
+        message =~ ~r/\b404\b|not found/i ->
+          "there is no log yet, or it is not for a finished job (not finished)"
+
+        true ->
+          "it could not be fetched"
       end
 
-    cond do
-      summary != "" and log != "" -> summary <> @separator <> log
-      summary != "" -> summary
-      log != "" -> log
-      true -> "(no output was available for this check)"
-    end
+    "#{cause}: #{message |> to_string() |> String.slice(0, 200)}"
   end
 
   defp cut_start(text, bytes) when byte_size(text) <= bytes, do: text
 
   defp cut_start(text, bytes),
     do: binary_part(text, 0, bytes) |> String.replace(~r/[^[:print:]\n]\z/u, "")
+
+  # A log that fits is quoted whole. A longer one is cut to the lines that say something
+  # failed and the few around each, because the end of a job's log is cleanup and the
+  # failure is above it; the last of those lines that fit are kept. A log with no such
+  # line is cut to its tail.
+  defp failing_lines(text, bytes) when byte_size(text) <= bytes, do: String.trim(text)
+
+  defp failing_lines(text, bytes) do
+    lines = text |> String.split("\n") |> Enum.with_index()
+    hits = for {line, index} <- lines, Regex.match?(@failing, line), do: index
+
+    keep =
+      hits
+      |> Enum.flat_map(&Range.to_list((&1 - @context_before)..(&1 + @context_after)))
+      |> MapSet.new()
+
+    selected =
+      for {line, index} <- lines, MapSet.member?(keep, index), do: line
+
+    if selected == [], do: tail(text, bytes), else: tail(Enum.join(selected, "\n"), bytes)
+  end
 
   # The last `bytes` of the text, from the start of a line.
   defp tail(text, bytes) when byte_size(text) <= bytes, do: String.trim(text)
