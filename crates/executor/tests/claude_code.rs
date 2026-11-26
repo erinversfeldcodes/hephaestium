@@ -442,3 +442,35 @@ fn preparing_makes_the_empty_configuration_directory_and_settings_that_turn_hook
     assert_eq!(settings["attribution"], json!({"commit": "", "pr": ""}));
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn the_prompt_names_the_limit_the_executor_enforces_and_a_changed_limit_changes_it() {
+    let prompt_for = |timeout: &str| {
+        let timeout = timeout.to_owned();
+        ClaudeCode
+            .plan(
+                &a_workload(|w| w["limits"]["timeout"] = json!(timeout)),
+                Path::new("/work/run-1"),
+            )
+            .stdin
+    };
+
+    let long = prompt_for("1800s");
+    assert!(long.contains("30 minutes"), "{long}");
+    assert!(
+        long.contains("/work/run-1.time-left"),
+        "it says where to ask how long is left: {long}"
+    );
+    let short = prompt_for("600s");
+    assert!(short.contains("10 minutes"), "{short}");
+    assert!(!short.contains("30 minutes"), "{short}");
+}
+
+#[test]
+fn the_prompt_says_when_the_time_ends_and_not_to_wait_on_processes_by_name() {
+    let prompt = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/w")).stdin;
+    assert!(prompt.contains(" UTC"), "{prompt}");
+    assert!(prompt.contains("pgrep -f"), "{prompt}");
+    assert!(prompt.contains("second copy"), "{prompt}");
+    assert!(prompt.contains("what was not run"), "{prompt}");
+}
