@@ -1195,6 +1195,74 @@ defmodule ControlPlane.SettleTest do
       assert comments(gh) == []
     end
 
+    # GitHub runs no checks on a pull request that conflicts with its base, so none is
+    # ever reported and waiting for one would be for ever.
+    test "a conflicted pull request with no checks is revised to bring the base in", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "dirty"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      assert result(id) == {:revising, 1}
+
+      revision = base_revision_of(id)
+      assert revision.state == "queued"
+
+      assert %{"failures" => [], "baseMoved" => moved} = revision.workload["revision"]
+      assert moved["overlappingFiles"] == ["e2e/tests/account.spec.ts"]
+
+      assert [comment] = comments(gh)
+      assert comment =~ "conflicts with its base"
+      assert comment =~ "revision 1 of 2"
+    end
+
+    test "a second pass does not start another revision while one is queued", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "dirty"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      assert result(id) == {:revising, 1}
+      assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
+
+      assert [_one] = Enum.filter(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
+    end
+
+    test "a conflicted pull request with no revision left ends with the conflict named", %{
+      gh: gh,
+      id: id
+    } do
+      Application.put_env(:control_plane, :settle, revisions: 1)
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "dirty"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      # The one revision there was has been made and has ended, pushing nothing that mends it.
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+
+      Workloads.keep_record(first.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      complete(first.id)
+      Workloads.settle(id)
+
+      assert {:conflicted, _} = result(first.id)
+      assert Workloads.get(first.id).settled_at
+      assert [comment] = comments(gh)
+      assert comment =~ "conflicts with its base"
+    end
+
+    test "a pull request whose mergeability GitHub has not worked out still waits", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "unknown"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      assert {:waiting, _} = result(id)
+      assert base_revision_of(id) == nil
+    end
+
     test "a red check is revised for the check, not for the base", %{gh: gh, id: id} do
       StandInGitHub.respond(gh, @runs, runs([run(1, "ci", "completed", "failure")]))
       StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/1/logs", "FAILED\n")
