@@ -17,8 +17,10 @@ defmodule ControlPlane.GitHub do
   @spec text(String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def text(endpoint) do
     if Programs.allowed?(command()) do
-      case System.cmd(command(), ["api", endpoint], stderr_to_stdout: true) do
-        {output, 0} -> {:ok, output}
+      case System.cmd(command(), ["api", "--allow-escape-sequences", endpoint],
+             stderr_to_stdout: true
+           ) do
+        {output, 0} -> {:ok, strip_escapes(output)}
         {output, _} -> {:error, String.trim(output)}
       end
     else
@@ -27,6 +29,10 @@ defmodule ControlPlane.GitHub do
   rescue
     error in ErlangError -> {:error, "gh could not be run: #{inspect(error.original)}"}
   end
+
+  # An Actions log holds colour and erase codes (`ESC[1m`, `ESC[0K`): CSI sequences, which are
+  # noise in the excerpt the agent reads.
+  defp strip_escapes(text), do: String.replace(text, ~r/\e\[[0-?]*[ -\/]*[@-~]/, "")
 
   @doc "Read a file's own text from the contents API, not the JSON that wraps it."
   @spec raw(String.t()) :: {:ok, String.t()} | {:error, String.t()}
