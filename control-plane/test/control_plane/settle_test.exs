@@ -65,8 +65,10 @@ defmodule ControlPlane.SettleTest do
       "parameters" => %{"required_status_checks" => Enum.map(contexts, &%{"context" => &1})}
     }
 
-  defp run(id, name, status, conclusion),
-    do: %{"id" => id, "name" => name, "status" => status, "conclusion" => conclusion}
+  defp run(id, name, status, conclusion, suite \\ nil) do
+    run = %{"id" => id, "name" => name, "status" => status, "conclusion" => conclusion}
+    if suite, do: Map.put(run, "check_suite", %{"id" => suite}), else: run
+  end
 
   defp runs(list), do: %{"total_count" => length(list), "check_runs" => list}
 
@@ -750,6 +752,80 @@ defmodule ControlPlane.SettleTest do
       StandInGitHub.respond(gh, @runs, runs([run(31, "ci", "completed", "cancelled")]))
 
       assert result(id) == {:failed, ["ci"]}
+      assert revision_of(id) == nil
+    end
+
+    test "a failed aggregate check of a cancelled duplicate run starts no revision while the other run is live",
+         %{gh: gh, id: id} do
+      # One push started two runs. GitHub cancelled the first at once: its jobs ended
+      # cancelled, and its aggregate job, which fails when a job it needs did not succeed,
+      # ended as a failure. The second run is still going.
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(31, "ci", "completed", "failure", 1),
+          run(40, "rust", "in_progress", nil, 2)
+        ])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+      assert StandInGitHub.writes(gh) == []
+    end
+
+    test "a failed aggregate of a run that was not cancelled is revised at once beside a live run",
+         %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(50, "rust", "completed", "success", 2),
+          run(51, "ci", "completed", "failure", 2),
+          run(60, "e2e", "in_progress", nil, 2)
+        ])
+      )
+
+      assert result(id) == {:revising, 1}
+    end
+
+    test "a real failure beside a cancelled duplicate and a live run is revised at once", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(31, "ci", "completed", "failure", 1),
+          run(32, "e2e", "completed", "failure"),
+          run(40, "rust", "in_progress", nil)
+        ])
+      )
+
+      assert result(id) == {:revising, 1}
+      assert [%{"name" => "e2e"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
+    test "the stale failed aggregate does not block once the live run succeeded", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled"),
+          run(31, "ci", "completed", "failure"),
+          run(40, "rust", "completed", "success"),
+          run(41, "ci", "completed", "success")
+        ])
+      )
+
+      assert result(id) == :done
       assert revision_of(id) == nil
     end
 
