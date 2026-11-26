@@ -773,6 +773,25 @@ defmodule ControlPlane.SettleTest do
       assert StandInGitHub.writes(gh) == []
     end
 
+    test "a real failure beside a cancelled duplicate and a live run is revised at once", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled"),
+          run(31, "ci", "completed", "failure"),
+          run(32, "e2e", "completed", "failure"),
+          run(40, "rust", "in_progress", nil)
+        ])
+      )
+
+      assert result(id) == {:revising, 1}
+      assert [%{"name" => "e2e"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
     test "the stale failed aggregate does not block once the live run succeeded", %{
       gh: gh,
       id: id

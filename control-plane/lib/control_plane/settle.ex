@@ -713,6 +713,9 @@ defmodule ControlPlane.Settle do
   # reached when a maintainer last resumed it, so a resume grants a fresh budget.
   defp used(workload), do: attempt(workload) - workload.budget_base
 
+  # The job that fails when any job it needs did not succeed.
+  @aggregate "ci"
+
   defp judge(workload, required, runs, duplicate_cancelled?, pull_and_number) do
     # Every check on the commit counts, not only the ones the ruleset requires: a
     # failing check is investigated whether or not it blocks a merge (ADR 0024). The
@@ -732,14 +735,16 @@ defmodule ControlPlane.Settle do
     # result: it is waited on, not failed, revised or re-run. The cancelled run's aggregate
     # job does not end cancelled but failed, because it fails when a job it needs did not
     # succeed, and it cannot be told from a real failure by its own record; so while a run
-    # is live and the commit has a cancelled run, a failure waits as well, and the live
-    # run's own result is read once it ends.
+    # is live and the commit has a cancelled run, a failed aggregate waits as well, and the
+    # live run's own result is read once it ends. Any other failure is judged at once.
     live? = Enum.any?(looked_at, fn {_name, run} -> run != nil and run.state != :completed end)
 
     {superseded, ended} =
       cond do
         live? and duplicate_cancelled? ->
-          Enum.split_with(ended, fn {_name, run} -> run.conclusion not in @good end)
+          Enum.split_with(ended, fn {name, run} ->
+            run.conclusion == "cancelled" or (name == @aggregate and run.conclusion not in @good)
+          end)
 
         live? ->
           Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end)
