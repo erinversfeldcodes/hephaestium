@@ -154,7 +154,7 @@ defmodule ControlPlane.ExecutorLinkTest do
       refute lease(id).active, "the lease is let go when the record is kept"
     end
 
-    test "locks a workload for an event without reading its documents", ctx do
+    test "ingests an event without selecting a workload's documents", ctx do
       id = queued()
       assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine)
 
@@ -176,12 +176,16 @@ defmodule ControlPlane.ExecutorLinkTest do
       :telemetry.detach(handler)
 
       queries = drain_queries([])
-      # The first lock is the lease's; the append takes its own, which reads the row it advances.
-      [lock | _] = Enum.filter(queries, &(&1 =~ ~r/FOR UPDATE/))
+      assert Enum.any?(queries, &(&1 =~ ~r/FOR UPDATE/))
 
-      assert lock =~ ~r/^SELECT w0\."id" FROM "workloads"/
-      refute lock =~ "workload\""
-      refute lock =~ "record"
+      # Ingesting an event never reads a workload's documents, whichever query it runs.
+      for query <- queries do
+        refute query =~ ~r/\."workload"/, "selects the workload document: #{query}"
+        refute query =~ ~r/\."record"/, "selects the record document: #{query}"
+      end
+
+      for lock <- Enum.filter(queries, &(&1 =~ ~r/FOR UPDATE/)),
+          do: assert(lock =~ ~r/^SELECT w0\."id"/)
     end
 
     test "is given a queued review before an implementation that was queued earlier", ctx do
