@@ -452,8 +452,12 @@ jobs:
       - name: Deploy the preview
         run: scripts/deploy-control-plane.sh preview --branch "$PR_HEAD_REF"
 
+  # Not `always()`: when a newer push cancels this run, the jobs it needs end cancelled, and an
+  # aggregate that still ran would fail on them and leave a failed `ci` check behind for a
+  # run nobody wants. `!cancelled()` leaves the aggregate cancelled with the run, while a job
+  # that failed or timed out on its own still runs it and fails it.
   ci:
-    if: always()
+    if: ${{ !cancelled() }}
     needs:
       [
         docs,

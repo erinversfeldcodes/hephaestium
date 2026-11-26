@@ -753,6 +753,45 @@ defmodule ControlPlane.SettleTest do
       assert revision_of(id) == nil
     end
 
+    test "a failed aggregate check of a cancelled duplicate run starts no revision while the other run is live",
+         %{gh: gh, id: id} do
+      # One push started two runs. GitHub cancelled the first at once: its jobs ended
+      # cancelled, and its aggregate job, which fails when a job it needs did not succeed,
+      # ended as a failure. The second run is still going.
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled"),
+          run(31, "ci", "completed", "failure"),
+          run(40, "rust", "in_progress", nil)
+        ])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+      assert StandInGitHub.writes(gh) == []
+    end
+
+    test "the stale failed aggregate does not block once the live run succeeded", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled"),
+          run(31, "ci", "completed", "failure"),
+          run(40, "rust", "completed", "success"),
+          run(41, "ci", "completed", "success")
+        ])
+      )
+
+      assert result(id) == :done
+      assert revision_of(id) == nil
+    end
+
     test "a real failure beside a cancelled check is revised, for the real one only", %{
       gh: gh,
       id: id

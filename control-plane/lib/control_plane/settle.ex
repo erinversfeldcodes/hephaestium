@@ -616,11 +616,15 @@ defmodule ControlPlane.Settle do
        when not is_nil(sha) and not is_nil(base) do
     with {:ok, required} <- CodeHost.required_checks(workload.repository, base),
          {:ok, runs} <- CodeHost.checks(workload.repository, sha) do
-      judge(workload, required, newest(runs), {pull, number})
+      judge(workload, required, newest(runs), cancelled_any?(runs), {pull, number})
     end
   end
 
   defp verdict(_workload, _pull, _number), do: {:error, "the pull request has no head and base"}
+
+  # Whether any run on the commit ended cancelled, under any name: the sign that GitHub
+  # cancelled a duplicate run.
+  defp cancelled_any?(runs), do: Enum.any?(runs, &(&1.conclusion == "cancelled"))
 
   # The newest run of each name.
   defp newest(runs) do
@@ -709,7 +713,7 @@ defmodule ControlPlane.Settle do
   # reached when a maintainer last resumed it, so a resume grants a fresh budget.
   defp used(workload), do: attempt(workload) - workload.budget_base
 
-  defp judge(workload, required, runs, pull_and_number) do
+  defp judge(workload, required, runs, duplicate_cancelled?, pull_and_number) do
     # Every check on the commit counts, not only the ones the ruleset requires: a
     # failing check is investigated whether or not it blocks a merge (ADR 0024). The
     # required ones must also have appeared.
@@ -725,13 +729,24 @@ defmodule ControlPlane.Settle do
 
     # A run that is still going on the commit may be the one that superseded a cancelled
     # run of the same concurrency group, so while any is live a cancelled check is not a
-    # result: it is waited on, not failed, revised or re-run.
+    # result: it is waited on, not failed, revised or re-run. The cancelled run's aggregate
+    # job does not end cancelled but failed, because it fails when a job it needs did not
+    # succeed, and it cannot be told from a real failure by its own record; so while a run
+    # is live and the commit has a cancelled run, a failure waits as well, and the live
+    # run's own result is read once it ends.
     live? = Enum.any?(looked_at, fn {_name, run} -> run != nil and run.state != :completed end)
 
     {superseded, ended} =
-      if live?,
-        do: Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end),
-        else: {[], ended}
+      cond do
+        live? and duplicate_cancelled? ->
+          Enum.split_with(ended, fn {_name, run} -> run.conclusion not in @good end)
+
+        live? ->
+          Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end)
+
+        true ->
+          {[], ended}
+      end
 
     bad = for {name, run} <- ended, run.conclusion not in @good, do: {name, run}
     cancelled = for {name, run} <- bad, run.conclusion == "cancelled", do: {name, run}
