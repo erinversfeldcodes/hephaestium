@@ -151,6 +151,7 @@ pub fn run(
                         spent: &spent,
                         steps: &steps,
                         started,
+                        asked: Cell::new(false),
                     };
                     finish_first_run(
                         &asking,
@@ -591,6 +592,9 @@ fn ask_for_message<W: Write>(
     let Some(problem) = deliver::message_problem(workspace) else {
         return Ok(());
     };
+    if asking.asked.get() {
+        return Ok(());
+    }
     if !deliver::tree_changed(workspace).unwrap_or(false) || heph::process::cancelled() {
         return Ok(());
     }
@@ -603,9 +607,14 @@ fn ask_for_message<W: Write>(
         )
     });
     let left = allowed.saturating_sub(asking.started.elapsed());
-    if left.is_zero() {
+    let budget_spent = limits
+        .budget
+        .as_ref()
+        .is_some_and(|budget| asking.spent.get() >= budget.amount);
+    if left.is_zero() || budget_spent {
         return Ok(());
     }
+    asking.asked.set(true);
     if let Some(timeout) = limits.timeout.as_mut() {
         timeout.seconds = i64::try_from(left.as_secs()).unwrap_or(i64::MAX);
         timeout.nanos = i32::try_from(left.subsec_nanos()).unwrap_or(0);
@@ -770,6 +779,9 @@ struct Asking<'a> {
     steps: &'a RefCell<Vec<Step>>,
     /// When the run began.
     started: Instant,
+    /// Whether the agent has already been asked for a commit message in this run: it is asked
+    /// once, however many times the message is read afterwards.
+    asked: Cell<bool>,
 }
 
 /// What a first run or a revision does once its agent is done: carry the work onto the base
