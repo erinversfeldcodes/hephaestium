@@ -237,6 +237,9 @@ fn run_ticking(
         Streamed::Stopped => Err(format!("{what}: was stopped")),
         Streamed::Cancelled => Err(format!("{what}: cancelled")),
         Streamed::NotRun(_) => Err(format!("{what}: could not be started")),
+        Streamed::InputFailed(reason) => {
+            Err(format!("{what}: its input could not be written: {reason}"))
+        }
     }
 }
 
