@@ -173,7 +173,7 @@ defmodule ControlPlane.Settle do
   defp settle(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload),
          {:ok, pull} <- CodeHost.change(workload.repository, number),
-         {:ok, verdict} <- verdict(workload, pull, number),
+         {:ok, verdict} <- conflicted(workload, pull, number),
          {:ok, verdict} <- behind(workload, pull, number, verdict),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
@@ -248,6 +248,8 @@ defmodule ControlPlane.Settle do
   defp claim_state({:revise, _, _, _}), do: nil
   defp claim_state({:revise_review, _, _, _}), do: nil
   defp claim_state({:revise_base, _, _, _}), do: nil
+  defp claim_state({:revise_conflict, _, _, _}), do: nil
+  defp claim_state({:conflicted, _}), do: "conflicted"
   defp claim_state(:done), do: "done"
   defp claim_state({:done, _}), do: "done"
   defp claim_state(:abandoned), do: "abandoned"
@@ -259,6 +261,7 @@ defmodule ControlPlane.Settle do
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, {:revise_review, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, {:revise_base, _, _, _}), do: {:revising, attempt(workload) + 1}
+  defp outcome(workload, {:revise_conflict, _, _, _}), do: {:revising, attempt(workload) + 1}
 
   defp outcome(workload, {:failed, names, extra, :review}),
     do: finish(workload, {:failed, names, extra})
@@ -269,8 +272,8 @@ defmodule ControlPlane.Settle do
   # brought up to date by a revision that is told what came in, before it is reviewed,
   # because the reviews would be of a head that is about to change (ADR 0031). Only a
   # branch the runtime made, in this repository, and only while revisions are left:
-  # anything else is settled as it always was. A conflict is not handled here: the
-  # executor ends such a run naming the files, and a revision would only spend a run.
+  # anything else is settled as it always was. A conflict is handled before this, in
+  # `conflicted/3`, because it has to be answered whether or not any check exists.
   defp behind(workload, %{state: :open, mergeability: :behind} = pull, number, :done) do
     case revisable(workload, {pull, number}) do
       :yes ->
@@ -286,6 +289,40 @@ defmodule ControlPlane.Settle do
   end
 
   defp behind(_workload, _pull, _number, verdict), do: {:ok, verdict}
+
+  # GitHub runs no checks on a pull request that conflicts with its base, so waiting for
+  # them would be for ever. An open pull request on a branch the runtime made is revised
+  # to bring the base in (the executor hands the agent the conflict), told which of the
+  # files it changed the base changed too where the host gives them. With no revision
+  # left the ticket is told it conflicts. With revisions off, or a pull request that is
+  # not the runtime's to revise, is judged by its checks as any other.
+  defp conflicted(
+         workload,
+         %{state: :open, merged: false, mergeability: :conflicted} = pull,
+         number
+       ) do
+    case revisable(workload, {pull, number}) do
+      :yes ->
+        {:ok, {:revise_conflict, conflict_files(workload, pull, number), pull, number}}
+
+      :exhausted ->
+        {:ok, {:conflicted, not_revised(workload, :exhausted)}}
+
+      _off_or_not_ours ->
+        verdict(workload, pull, number)
+    end
+  end
+
+  defp conflicted(workload, pull, number), do: verdict(workload, pull, number)
+
+  # What the host says of the files both sides changed; a read that fails leaves the
+  # agent to find the conflict itself, which the revision does anyway.
+  defp conflict_files(workload, pull, number) do
+    case base_moved(workload, pull, number) do
+      {:ok, moved} -> moved
+      {:error, _reason} -> %{"commits" => [], "overlappingFiles" => []}
+    end
+  end
 
   # What the base gained since the pull request's head, newest first and as short as the
   # agent needs, and which of the files it changed the pull request changes too.
@@ -505,6 +542,14 @@ defmodule ControlPlane.Settle do
     revise(workload, [], pull, number, tell, %{"baseMoved" => moved})
   end
 
+  defp act(workload, {:revise_conflict, moved, pull, number}, _notes) do
+    tell = fn workload, _names, attempt, max ->
+      Tickets.revising_for_conflict(workload, moved["overlappingFiles"], attempt, max)
+    end
+
+    revise(workload, [], pull, number, tell, %{"baseMoved" => moved})
+  end
+
   defp act(workload, verdict, notes), do: write(workload, verdict, notes)
 
   defp revise(workload, failures, pull, number, tell, extra \\ %{}) do
@@ -572,11 +617,21 @@ defmodule ControlPlane.Settle do
        when not is_nil(sha) and not is_nil(base) do
     with {:ok, required} <- CodeHost.required_checks(workload.repository, base),
          {:ok, runs} <- CodeHost.checks(workload.repository, sha) do
-      judge(workload, required, newest(runs), {pull, number})
+      judge(workload, required, newest(runs), cancelled_suites(runs), {pull, number})
     end
   end
 
   defp verdict(_workload, _pull, _number), do: {:error, "the pull request has no head and base"}
+
+  # The workflow runs on the commit that GitHub cancelled, as their check suite ids: a run
+  # is cancelled when any of its checks ended cancelled. A check with no suite belongs to
+  # no known run.
+  defp cancelled_suites(runs) do
+    for %{conclusion: "cancelled", suite: suite} <- runs,
+        suite != nil,
+        into: MapSet.new(),
+        do: suite
+  end
 
   # The newest run of each name.
   defp newest(runs) do
@@ -754,7 +809,10 @@ defmodule ControlPlane.Settle do
   # reached when a maintainer last resumed it, so a resume grants a fresh budget.
   defp used(workload), do: attempt(workload) - workload.budget_base
 
-  defp judge(workload, required, runs, pull_and_number) do
+  # The job that fails when any job it needs did not succeed.
+  @aggregate "ci"
+
+  defp judge(workload, required, runs, cancelled_suites, pull_and_number) do
     # Every check on the commit counts, not only the ones the ruleset requires: a
     # failing check is investigated whether or not it blocks a merge (ADR 0024). The
     # required ones must also have appeared.
@@ -770,13 +828,24 @@ defmodule ControlPlane.Settle do
 
     # A run that is still going on the commit may be the one that superseded a cancelled
     # run of the same concurrency group, so while any is live a cancelled check is not a
-    # result: it is waited on, not failed, revised or re-run.
+    # result: it is waited on, not failed, revised or re-run. The cancelled run's aggregate
+    # job does not end cancelled but failed, because it fails when a job it needs did not
+    # succeed, so while a run is live a failed aggregate that belongs to a cancelled run
+    # (the same check suite) waits as well, and the live run's own result is read once it
+    # ends. Any other failure, including a failed aggregate of a run that was not cancelled,
+    # is judged at once.
     live? = Enum.any?(looked_at, fn {_name, run} -> run != nil and run.state != :completed end)
 
     {superseded, ended} =
-      if live?,
-        do: Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end),
-        else: {[], ended}
+      if live? do
+        Enum.split_with(ended, fn {name, run} ->
+          run.conclusion == "cancelled" or
+            (name == @aggregate and run.conclusion not in @good and
+               MapSet.member?(cancelled_suites, run.suite))
+        end)
+      else
+        {[], ended}
+      end
 
     bad = for {name, run} <- ended, run.conclusion not in @good, do: {name, run}
     cancelled = for {name, run} <- bad, run.conclusion == "cancelled", do: {name, run}

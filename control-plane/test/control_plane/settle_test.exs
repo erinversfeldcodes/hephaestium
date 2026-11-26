@@ -65,8 +65,10 @@ defmodule ControlPlane.SettleTest do
       "parameters" => %{"required_status_checks" => Enum.map(contexts, &%{"context" => &1})}
     }
 
-  defp run(id, name, status, conclusion),
-    do: %{"id" => id, "name" => name, "status" => status, "conclusion" => conclusion}
+  defp run(id, name, status, conclusion, suite \\ nil) do
+    run = %{"id" => id, "name" => name, "status" => status, "conclusion" => conclusion}
+    if suite, do: Map.put(run, "check_suite", %{"id" => suite}), else: run
+  end
 
   defp runs(list), do: %{"total_count" => length(list), "check_runs" => list}
 
@@ -797,6 +799,84 @@ defmodule ControlPlane.SettleTest do
       assert revision_of(id) == nil
     end
 
+    test "a failed aggregate check of a cancelled duplicate run starts no revision while the other run is live",
+         %{gh: gh, id: id} do
+      # One push started two runs. GitHub cancelled the first at once: its jobs ended
+      # cancelled, and its aggregate job, which fails when a job it needs did not succeed,
+      # ended as a failure. The second run is still going.
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(31, "ci", "completed", "failure", 1),
+          run(40, "rust", "in_progress", nil, 2)
+        ])
+      )
+
+      assert {:waiting, _} = result(id)
+      assert revision_of(id) == nil
+      assert StandInGitHub.writes(gh) == []
+    end
+
+    test "a failed aggregate of a run that was not cancelled is revised at once beside a live run",
+         %{gh: gh, id: id} do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(50, "rust", "completed", "success", 2),
+          run(51, "ci", "completed", "failure", 2),
+          run(60, "e2e", "in_progress", nil, 2)
+        ])
+      )
+
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/51/logs", "FAILED\n")
+
+      assert result(id) == {:revising, 1}
+    end
+
+    test "a real failure beside a cancelled duplicate and a live run is revised at once", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled", 1),
+          run(31, "ci", "completed", "failure", 1),
+          run(32, "e2e", "completed", "failure"),
+          run(40, "rust", "in_progress", nil)
+        ])
+      )
+
+      StandInGitHub.respond_text(gh, "repos/#{@repo}/actions/jobs/32/logs", "FAILED\n")
+
+      assert result(id) == {:revising, 1}
+      assert [%{"name" => "e2e"}] = revision_of(id).workload["revision"]["failures"]
+    end
+
+    test "the stale failed aggregate does not block once the live run succeeded", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(
+        gh,
+        @runs,
+        runs([
+          run(30, "rust", "completed", "cancelled"),
+          run(31, "ci", "completed", "failure"),
+          run(40, "rust", "completed", "success"),
+          run(41, "ci", "completed", "success")
+        ])
+      )
+
+      assert result(id) == :done
+      assert revision_of(id) == nil
+    end
+
     test "a real failure beside a cancelled check is revised, for the real one only", %{
       gh: gh,
       id: id
@@ -1237,6 +1317,74 @@ defmodule ControlPlane.SettleTest do
       assert {:waiting, _} = result(id)
       assert base_revision_of(id) == nil
       assert comments(gh) == []
+    end
+
+    # GitHub runs no checks on a pull request that conflicts with its base, so none is
+    # ever reported and waiting for one would be for ever.
+    test "a conflicted pull request with no checks is revised to bring the base in", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "dirty"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      assert result(id) == {:revising, 1}
+
+      revision = base_revision_of(id)
+      assert revision.state == "queued"
+
+      assert %{"failures" => [], "baseMoved" => moved} = revision.workload["revision"]
+      assert moved["overlappingFiles"] == ["e2e/tests/account.spec.ts"]
+
+      assert [comment] = comments(gh)
+      assert comment =~ "conflicts with its base"
+      assert comment =~ "revision 1 of 2"
+    end
+
+    test "a second pass does not start another revision while one is queued", %{gh: gh, id: id} do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "dirty"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      assert result(id) == {:revising, 1}
+      assert Enum.find(Settle.run(), &(&1.workload_id == id)) == nil
+
+      assert [_one] = Enum.filter(Workloads.for_ticket(@repo, 12), &(&1.parent_id == id))
+    end
+
+    test "a conflicted pull request with no revision left ends with the conflict named", %{
+      gh: gh,
+      id: id
+    } do
+      Application.put_env(:control_plane, :settle, revisions: 1)
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "dirty"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      # The one revision there was has been made and has ended, pushing nothing that mends it.
+      {:ok, first} = Workloads.create(revision_workload(id, 1), parent: id)
+
+      Workloads.keep_record(first.id, %{
+        "outcome" => "OUTCOME_COMPLETED",
+        "pullRequest" => %{"url" => @pr_url}
+      })
+
+      complete(first.id)
+      Workloads.settle(id)
+
+      assert {:conflicted, _} = result(first.id)
+      assert Workloads.get(first.id).settled_at
+      assert [comment] = comments(gh)
+      assert comment =~ "conflicts with its base"
+    end
+
+    test "a pull request whose mergeability GitHub has not worked out still waits", %{
+      gh: gh,
+      id: id
+    } do
+      StandInGitHub.respond(gh, @pull, behind_pull(@behind_branch, @repo, "unknown"))
+      StandInGitHub.respond(gh, @runs, runs([]))
+
+      assert {:waiting, _} = result(id)
+      assert base_revision_of(id) == nil
     end
 
     test "a red check is revised for the check, not for the base", %{gh: gh, id: id} do

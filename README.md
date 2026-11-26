@@ -182,6 +182,12 @@ session, so what bounds it in practice is the machine's memory and the model's r
 guards against a typing mistake; it is not a measured limit. Reviews are given out before new
 implementations, so an open pull request is not held up by new work.
 
+A worker removes the workspace of a run (its checkout and build output; the run's record and logs
+stay) once the run was last written more than `--keep-runs-for DAYS` ago (or
+`HEPH_WORKER_KEEP_RUNS`; seven if neither is set). It asks the control plane first and keeps the
+workspace of a workload that is still leased or whose pull request is open, and if it cannot ask it
+removes nothing. It logs what it removed and the space it freed.
+
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of
