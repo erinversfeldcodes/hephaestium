@@ -26,6 +26,15 @@ use crate::adapter::Adapter;
 /// a run cannot wait on a person.
 const ALLOWED_TOOLS: &str = "Read Edit Write Glob Grep Bash";
 
+/// The commands that stop a process by a name or a pattern, which the agent may not run. Runs
+/// share a machine, so a pattern that names a run's own tests names every other run's, and
+/// stopping them ends runs that did nothing wrong. A process the agent started it stops by the
+/// id it was given.
+const REFUSED_COMMANDS: [&str; 2] = ["pkill", "killall"];
+
+/// Why a command is refused, said where the agent reads its instructions.
+const REFUSED_BECAUSE: &str = "Never run `pkill`, `killall` or `kill` by name or pattern; stop only a process id you started. Other runs share this machine, and a pattern that matches your processes matches theirs, and stops their work. `pkill` and `killall` are refused here for that reason.";
+
 /// The environment the run may have: where to find programs, and its token.
 const ENVIRONMENT: [&str; 2] = ["PATH", "CLAUDE_CODE_OAUTH_TOKEN"];
 
@@ -94,10 +103,17 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
     text.push_str(
         "If the change needs a database migration, make it with `mix ecto.gen.migration`, which stamps the version with the time to the second, and never write or edit a migration's version by hand: agents working at once who each pick a round number pick the same one, and a repeated version stops the migrations from running.\n\n",
     );
+    text.push_str(&time_section(workload, workspace));
+    let server = std::env::var(crate::toolenv::SERVER).ok();
+    text.push_str(&crate::toolenv::prompt_section(
+        crate::toolenv::database_url(server.as_deref(), workspace).is_some(),
+    ));
     text.push_str(
         "Do not start a background process that outlives the command that started it, and do not generate artificial CPU load on the machine: other workloads share it, and a loop left running slows all of them past their timeouts. A proof that something fails before a change and passes after it under load is made with a bounded command that exits.\n\n",
     );
     text.push_str(&testing_section(workload, workspace));
+    text.push_str(REFUSED_BECAUSE);
+    text.push_str("\n\n");
     text.push_str(
         "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `.heph-commit-message` in the current directory: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body. Also write the pull request's description to `.heph-description.md` in the current directory, in these sections and no others: `## What the ticket asked for`, a brief summary of what the ticket required of this change; `## What this changes`, what this pull request introduces, each claim with how it was shown (a named test, or a command and its result); and `## Risks and shortcomings`, any known risk, and anything you could not confirm or did not check (leave this section out if there is none). Keep it brief, and do not write a section for what remains: the runtime writes `## What remains` from `.heph-resolution`. Also write `.heph-resolution` in the current directory: the single word `complete` if your change resolves everything the ticket asks, done and shown to work and not only passing the checks, or `partial: ` followed by what remains. A pull request that says `complete` closes its ticket when it merges, and a ticket is closed only when every item that affects it is resolved, so say `complete` only if it is true. Then say in one short paragraph what you changed.",
     );
@@ -137,6 +153,37 @@ fn testing_section(workload: &Workload, workspace: &Path) -> String {
         text.push('\n');
     }
     text
+}
+
+/// What the agent is told about its time: how much it has, when that ends, how to ask how
+/// much is left, and what wasting it looks like. The limit is the one the executor enforces,
+/// read from the workload, so a changed limit changes what is said.
+fn time_section(workload: &Workload, workspace: &Path) -> String {
+    let seconds = workload
+        .limits
+        .as_ref()
+        .and_then(|l| l.timeout.as_ref())
+        .map_or(0, |t| u64::try_from(t.seconds).unwrap_or(0));
+    // The end is the one the clock script was written with; only when there is no script yet
+    // (a prompt built before the run starts) is it worked out from now.
+    let ends = crate::agent::clock_end(workspace).unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            + seconds
+    });
+    format!(
+        "You have {minutes} minutes for this run, and it ends at {ends}: then you are stopped, and what you had not finished is lost. Ask how long is left with `sh {clock}`; it also tells you when half and when three quarters of your time have gone, so ask before you start anything long and after each long command. When a quarter is left, stop verifying and deliver what you can, saying in the description what was not run: reviews still judge what you deliver. Run only the tests your change touches, and never a second copy of a suite that is already running. Do not wait on processes by name: `pgrep -f \"mix test\"` waits for every run's tests on this machine, not only yours. Wait only on a process you started and whose id you hold, and never sleep or poll for more than a minute.\n\n",
+        minutes = seconds.div_ceil(60),
+        ends = utc_clock(ends),
+        clock = crate::agent::clock_path(workspace).display(),
+    )
+}
+
+/// The time of day in UTC, as hours and minutes, of a count of seconds since the epoch.
+fn utc_clock(epoch_seconds: u64) -> String {
+    let in_day = epoch_seconds % 86_400;
+    format!("{:02}:{:02} UTC", in_day / 3_600, in_day % 3_600 / 60)
 }
 
 /// A revision's part of the prompt. The pull request was opened for this ticket
@@ -232,6 +279,15 @@ fn base_moved_section(moved: &contracts::v1alpha1::BaseMoved, when: &str) -> Str
         }
         text.push('\n');
     }
+    if !moved.conflicted_files.is_empty() {
+        text.push_str(
+            "Merging them left conflicts in the working tree. Where both changed the same lines, the file holds conflict markers (`<<<<<<<`, `=======` and `>>>>>>>`) around the two versions, or one side deleted a file the other changed. Resolve each of these files, keeping what both changes set out to do, so that no marker is left; deleting a file is a valid resolution when the change no longer needs it. The merge is committed by the runtime once they are resolved. Files in conflict:\n",
+        );
+        for file in &moved.conflicted_files {
+            let _ = writeln!(text, "- {}", file.replace('`', "'"));
+        }
+        text.push('\n');
+    }
     text.push_str(
         "Before anything else, confirm two things against the tree as it now stands. First, that the ticket's problem still exists: if another change has addressed it, wholly or in part, say which commit did, and do not build a duplicate of it. Second, that your change still does what it set out to now that what came in is there. Run again whatever proved it, and do not reuse an earlier result. If both hold and nothing needs changing, say so in your account and make no change.\n\n",
     );
@@ -276,6 +332,9 @@ impl Adapter for ClaudeCode {
             "attribution": {"commit": "", "pr": ""},
             "disableAllHooks": true,
             "apiKeyHelper": "",
+            // In the settings and not on the command line, where the refused names would be a
+            // pattern that finds this run's agent.
+            "permissions": {"deny": REFUSED_COMMANDS.map(|name| format!("Bash({name}:*)"))},
         });
         std::fs::write(directory.join("settings.json"), settings.to_string())
     }
@@ -286,8 +345,10 @@ impl Adapter for ClaudeCode {
             "env".to_owned(),
             format!("CLAUDE_CONFIG_DIR={}", directory.display()),
             "claude".to_owned(),
+            // The prompt is on standard input, not here: a command line is matched by `pkill -f`
+            // in every other run on the machine, and the prompt names the very commands an agent
+            // reaches for.
             "-p".to_owned(),
-            prompt(workload, workspace),
             "--output-format".to_owned(),
             "stream-json".to_owned(),
             "--verbose".to_owned(),
@@ -313,6 +374,7 @@ impl Adapter for ClaudeCode {
             command,
             env_names: ENVIRONMENT.iter().map(|n| (*n).to_owned()).collect(),
             working_directory: workspace.display().to_string(),
+            stdin: prompt(workload, workspace),
         }
     }
 
@@ -419,4 +481,34 @@ fn cost_of(unit: CostUnit, amount: f64, breakdown: Option<TokenBreakdown>) -> Ki
         source: cost::Source::ReportedByRuntime as i32,
         breakdown,
     })
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::{time_section, utc_clock};
+    use contracts::v1alpha1::Workload;
+
+    #[test]
+    fn the_end_is_the_hour_and_minute_in_utc() {
+        assert_eq!(utc_clock(0), "00:00 UTC");
+        // 14:07:59 on some day.
+        assert_eq!(utc_clock(1_795_702_079), "14:07 UTC");
+        assert_eq!(utc_clock(1_795_702_079 + 1_800), "14:37 UTC");
+        assert_eq!(utc_clock(86_399), "23:59 UTC");
+    }
+
+    #[test]
+    fn the_prompt_states_the_end_the_clock_script_gives() {
+        let dir = std::env::temp_dir().join(format!("prompt-end-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let workspace = dir.join("run-1");
+        std::fs::write(
+            crate::agent::clock_path(&workspace),
+            "#!/bin/sh\nstarted=1795700000\nends=1795702079\n",
+        )
+        .expect("write");
+        let text = time_section(&Workload::default(), &workspace);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(text.contains("it ends at 14:07 UTC"), "{text}");
+    }
 }

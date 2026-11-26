@@ -351,7 +351,9 @@ fn a_relative_work_dir_and_source_mean_relative_to_where_the_executor_was_starte
     scratch.write("workload.json", &workload.to_string());
     scratch.write("transcript.jsonl", &transcript());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_executor"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_executor"));
+    common::without_heph_variables(&mut command);
+    let output = command
         .current_dir(&scratch.0)
         .args([
             "run",

@@ -62,4 +62,9 @@ message LaunchPlan {
   repeated string env_names = 2;
   // Where the runtime runs, an absolute path inside the workspace.
   string working_directory = 3;
+  // What the runtime is given on its standard input. The prompt goes here and
+  // never in `command`: a command line is readable by, and matched by a pattern
+  // against, every process on the machine, so a run's instructions on it can make
+  // another run's agent the target of a `pkill`.
+  string stdin = 4;
 }

@@ -32,9 +32,12 @@ defmodule ControlPlane.Settle do
     CodeHost,
     Evaluations,
     Finding,
+    PullRequests,
     ReviewApproval,
+    SettleAnnouncement,
     Reviews,
     Tickets,
+    Tracker,
     Workload,
     Workloads
   }
@@ -79,6 +82,39 @@ defmodule ControlPlane.Settle do
       message = "could not settle #{workload.id}: " <> Exception.message(exception)
       Logger.error(message)
       {:error, message}
+  end
+
+  @doc """
+  Settle the workloads of a ticket whose newest workload failed when the ticket has closed or
+  its pull request has merged or closed: nothing is left for a person to do on it, so the board
+  must not ask. A ticket that is still open with nothing restarted is left, and a ticket the
+  tracker cannot be read for is looked at again next time.
+  """
+  @spec closed_tickets() :: [%{ticket: {String.t(), integer()}, result: term()}]
+  def closed_tickets do
+    repositories = Application.get_env(:control_plane, :intake, [])[:repositories] || []
+    failed = Workloads.unsettled_failures(repositories)
+    pulls = PullRequests.for_tickets(failed)
+
+    for {repository, number} = ticket <- failed do
+      result =
+        if pulls[ticket] && pulls[ticket].state in ["merged", "closed"],
+          do: :pull_request_ended,
+          else: ticket_state(repository, number)
+
+      if result in [:pull_request_ended, :ticket_closed],
+        do: Workloads.settle_ticket(repository, number)
+
+      %{ticket: ticket, result: result}
+    end
+  end
+
+  defp ticket_state(repository, number) do
+    case Tracker.ticket(repository, number) do
+      {:ok, %{state: :closed}} -> :ticket_closed
+      {:ok, _open} -> :open
+      {:error, message} -> {:error, message}
+    end
   end
 
   @doc """
@@ -137,12 +173,13 @@ defmodule ControlPlane.Settle do
   defp settle(workload) do
     with {:ok, number} <- Workloads.pull_request_number(workload),
          {:ok, pull} <- CodeHost.change(workload.repository, number),
-         {:ok, verdict} <- verdict(workload, pull, number),
+         {:ok, verdict} <- conflicted(workload, pull, number),
          {:ok, verdict} <- behind(workload, pull, number, verdict),
          {:ok, verdict, notes} <- reviews(workload, pull, number, verdict),
          {:ok, verdict} <- merge(workload, pull, number, verdict),
+         {:ok, verdict} <- read_logs(workload, verdict),
          notes = with_left_to_ci(workload, pull, verdict, notes),
-         :ok <- act(workload, verdict, notes),
+         :ok <- announce(workload, pull, number, verdict, notes),
          :ok <- evaluate(workload, pull, verdict) do
       outcome(workload, verdict)
     else
@@ -181,10 +218,50 @@ defmodule ControlPlane.Settle do
   defp merged?(_pull, {:done, :merged}), do: true
   defp merged?(_pull, _verdict), do: false
 
+  # What is written to the ticket is written once for a head commit and a state, whichever
+  # workload or delivery got here: a ticket keeps a workload for every attempt, and a CI run's
+  # jobs finish one after another, each delivery looking at the same pull request. The claim is
+  # made before the write, so two at once cannot both write, and given up if the write fails, so
+  # it is tried again. A revision or a re-run writes nothing of this kind and is not claimed.
+  defp announce(workload, pull, number, verdict, notes) do
+    case claim_state(verdict) do
+      nil ->
+        act(workload, verdict, notes)
+
+      state ->
+        repository = workload.repository
+        n = String.to_integer(to_string(number))
+        sha = pull.head_sha || ""
+
+        if SettleAnnouncement.claim(repository, n, sha, state) do
+          with {:error, _} = error <- act(workload, verdict, notes) do
+            SettleAnnouncement.release(repository, n, sha, state)
+            error
+          end
+        else
+          :ok
+        end
+    end
+  end
+
+  defp claim_state({:rerun, _}), do: nil
+  defp claim_state({:revise, _, _, _}), do: nil
+  defp claim_state({:revise_review, _, _, _}), do: nil
+  defp claim_state({:revise_base, _, _, _}), do: nil
+  defp claim_state({:revise_conflict, _, _, _}), do: nil
+  defp claim_state({:conflicted, _}), do: "conflicted"
+  defp claim_state(:done), do: "done"
+  defp claim_state({:done, _}), do: "done"
+  defp claim_state(:abandoned), do: "abandoned"
+  defp claim_state({:failed, _names, _extra, :review}), do: "review_failed"
+  defp claim_state({:failed, _names}), do: "failed"
+  defp claim_state({:failed, _names, _extra}), do: "failed"
+
   defp outcome(_workload, {:rerun, _} = verdict), do: {:waiting, rerun_message(verdict)}
   defp outcome(workload, {:revise, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, {:revise_review, _, _, _}), do: {:revising, attempt(workload) + 1}
   defp outcome(workload, {:revise_base, _, _, _}), do: {:revising, attempt(workload) + 1}
+  defp outcome(workload, {:revise_conflict, _, _, _}), do: {:revising, attempt(workload) + 1}
 
   defp outcome(workload, {:failed, names, extra, :review}),
     do: finish(workload, {:failed, names, extra})
@@ -195,8 +272,8 @@ defmodule ControlPlane.Settle do
   # brought up to date by a revision that is told what came in, before it is reviewed,
   # because the reviews would be of a head that is about to change (ADR 0031). Only a
   # branch the runtime made, in this repository, and only while revisions are left:
-  # anything else is settled as it always was. A conflict is not handled here: the
-  # executor ends such a run naming the files, and a revision would only spend a run.
+  # anything else is settled as it always was. A conflict is handled before this, in
+  # `conflicted/3`, because it has to be answered whether or not any check exists.
   defp behind(workload, %{state: :open, mergeability: :behind} = pull, number, :done) do
     case revisable(workload, {pull, number}) do
       :yes ->
@@ -212,6 +289,40 @@ defmodule ControlPlane.Settle do
   end
 
   defp behind(_workload, _pull, _number, verdict), do: {:ok, verdict}
+
+  # GitHub runs no checks on a pull request that conflicts with its base, so waiting for
+  # them would be for ever. An open pull request on a branch the runtime made is revised
+  # to bring the base in (the executor hands the agent the conflict), told which of the
+  # files it changed the base changed too where the host gives them. With no revision
+  # left the ticket is told it conflicts. With revisions off, or a pull request that is
+  # not the runtime's to revise, is judged by its checks as any other.
+  defp conflicted(
+         workload,
+         %{state: :open, merged: false, mergeability: :conflicted} = pull,
+         number
+       ) do
+    case revisable(workload, {pull, number}) do
+      :yes ->
+        {:ok, {:revise_conflict, conflict_files(workload, pull, number), pull, number}}
+
+      :exhausted ->
+        {:ok, {:conflicted, not_revised(workload, :exhausted)}}
+
+      _off_or_not_ours ->
+        verdict(workload, pull, number)
+    end
+  end
+
+  defp conflicted(workload, pull, number), do: verdict(workload, pull, number)
+
+  # What the host says of the files both sides changed; a read that fails leaves the
+  # agent to find the conflict itself, which the revision does anyway.
+  defp conflict_files(workload, pull, number) do
+    case base_moved(workload, pull, number) do
+      {:ok, moved} -> moved
+      {:error, _reason} -> %{"commits" => [], "overlappingFiles" => []}
+    end
+  end
 
   # What the base gained since the pull request's head, newest first and as short as the
   # agent needs, and which of the files it changed the pull request changes too.
@@ -403,8 +514,8 @@ defmodule ControlPlane.Settle do
   # revision.
   defp act(workload, {:revise, runs, pull, number}, _notes) do
     failures =
-      for {name, run} <- runs do
-        %{"name" => name, "result" => run.conclusion, "excerpt" => excerpt(workload, run)}
+      for {name, run, excerpt} <- runs do
+        %{"name" => name, "result" => run.conclusion, "excerpt" => excerpt}
       end
 
     revise(workload, failures, pull, number, &Tickets.revising/4)
@@ -426,6 +537,14 @@ defmodule ControlPlane.Settle do
   defp act(workload, {:revise_base, moved, pull, number}, _notes) do
     tell = fn workload, _names, attempt, max ->
       Tickets.revising_for_base(workload, length(moved["commits"]), attempt, max)
+    end
+
+    revise(workload, [], pull, number, tell, %{"baseMoved" => moved})
+  end
+
+  defp act(workload, {:revise_conflict, moved, pull, number}, _notes) do
+    tell = fn workload, _names, attempt, max ->
+      Tickets.revising_for_conflict(workload, moved["overlappingFiles"], attempt, max)
     end
 
     revise(workload, [], pull, number, tell, %{"baseMoved" => moved})
@@ -498,11 +617,21 @@ defmodule ControlPlane.Settle do
        when not is_nil(sha) and not is_nil(base) do
     with {:ok, required} <- CodeHost.required_checks(workload.repository, base),
          {:ok, runs} <- CodeHost.checks(workload.repository, sha) do
-      judge(workload, required, newest(runs), {pull, number})
+      judge(workload, required, newest(runs), cancelled_suites(runs), {pull, number})
     end
   end
 
   defp verdict(_workload, _pull, _number), do: {:error, "the pull request has no head and base"}
+
+  # The workflow runs on the commit that GitHub cancelled, as their check suite ids: a run
+  # is cancelled when any of its checks ended cancelled. A check with no suite belongs to
+  # no known run.
+  defp cancelled_suites(runs) do
+    for %{conclusion: "cancelled", suite: suite} <- runs,
+        suite != nil,
+        into: MapSet.new(),
+        do: suite
+  end
 
   # The newest run of each name.
   defp newest(runs) do
@@ -511,42 +640,131 @@ defmodule ControlPlane.Settle do
     |> Map.new(fn {name, rs} -> {name, Enum.max_by(rs, & &1.id)} end)
   end
 
+  # A revision is told what the failed checks printed, so a log that cannot be read is no
+  # basis for one: it is recorded on the ticket with its reason, and the workload is left for
+  # the next pass, which is the retry. After the second pass that could not read it the
+  # failure is reported, not revised. Nothing sleeps or retries inside a pass.
+  @read_passes 2
+
+  defp read_logs(workload, {:revise, real, pull, number}) do
+    read = for {name, run} <- real, do: {name, run, read_excerpt(workload, run)}
+    unreadable = for {name, run, {:unreadable, why}} <- read, do: {name, run, why}
+
+    if unreadable == [] do
+      {:ok, {:revise, for({name, run, {:ok, text}} <- read, do: {name, run, text}), pull, number}}
+    else
+      unread_logs = workload.unread_logs || %{}
+
+      passes =
+        1 +
+          Enum.max(for {_, run, _} <- unreadable, do: Map.get(unread_logs, to_string(run.id), 0))
+
+      for {_, run, _} <- unreadable, do: Workloads.count_unread_log(workload.id, run.id)
+      lines = for {name, _run, why} <- unreadable, do: {name, why}
+      names = real |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+
+      if passes < @read_passes do
+        note_unread(workload, lines, passes)
+        {:waiting, "could not read the log of #{Enum.map_join(lines, ", ", &elem(&1, 0))}"}
+      else
+        {:ok, {:failed, names, unread_text(lines, passes)}}
+      end
+    end
+  end
+
+  defp read_logs(_workload, verdict), do: {:ok, verdict}
+
+  defp note_unread(workload, lines, passes) do
+    case Tickets.log_unread(workload, lines, passes, @read_passes) do
+      :ok -> :ok
+      {:error, message} -> Logger.error("could not say a log was unreadable: #{message}")
+    end
+  end
+
+  defp unread_text(lines, passes) do
+    "It was not revised: what #{if length(lines) == 1, do: "the check", else: "the checks"} printed could not be read in #{passes} passes, and a revision without it would be a guess.\n" <>
+      Enum.map_join(lines, "\n", fn {name, why} -> "- #{name}: #{why}" end)
+  end
+
   # What a failing check said, for the agent: the check's own title and summary and the
-  # tail of its job's log, cut to what fits. A log that cannot be read is no reason
-  # not to revise, so the revision gets what there is, or says there was nothing.
+  # failing lines of its job's log, cut to what fits.
   @excerpt_bytes 8_000
   @separator "\n--- the end of the job's log ---\n"
+  @context_before 1
+  @context_after 3
+  @failing ~r/(^|\s)\d+\) |\*\* \(|\bFAIL(ED|URES?)?\b|\bfail(ed|ure|ures)\b|\berror\b|\bpanicked\b|exit code [1-9]|##\[error\]/i
 
-  defp excerpt(workload, run) do
+  defp read_excerpt(workload, run) do
     summary =
       [run.title, run.summary]
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
       |> Enum.join("\n")
       |> cut_start(1_500)
 
-    log =
-      case CodeHost.check_log(workload.repository, run.id) do
-        {:ok, text} ->
+    case CodeHost.check_log(workload.repository, run.id) do
+      {:ok, text} ->
+        log =
           text
           |> strip_colours()
-          |> tail(@excerpt_bytes - byte_size(summary) - byte_size(@separator))
+          |> failing_lines(@excerpt_bytes - byte_size(summary) - byte_size(@separator))
 
-        {:error, _} ->
-          ""
+        cond do
+          log == "" -> {:unreadable, "the log was empty"}
+          summary == "" -> {:ok, log}
+          true -> {:ok, summary <> @separator <> log}
+        end
+
+      {:error, message} ->
+        {:unreadable, why_unreadable(message)}
+    end
+  end
+
+  defp why_unreadable(message) do
+    message = if is_binary(message), do: message, else: inspect(message)
+
+    cause =
+      cond do
+        message =~ ~r/\b403\b|forbidden|not accessible/i ->
+          "the token may not read job logs (permission)"
+
+        message =~ ~r/\b410\b|\bgone\b|expired/i ->
+          "the log has expired"
+
+        message =~ ~r/\b404\b|not found/i ->
+          "there is no log yet, or it is not for a finished job (not finished)"
+
+        true ->
+          "it could not be fetched"
       end
 
-    cond do
-      summary != "" and log != "" -> summary <> @separator <> log
-      summary != "" -> summary
-      log != "" -> log
-      true -> "(no output was available for this check)"
-    end
+    "#{cause}: #{String.slice(message, 0, 200)}"
   end
 
   defp cut_start(text, bytes) when byte_size(text) <= bytes, do: text
 
   defp cut_start(text, bytes),
     do: binary_part(text, 0, bytes) |> String.replace(~r/[^[:print:]\n]\z/u, "")
+
+  # A log that fits is quoted whole. A longer one is cut to the lines that say something
+  # failed and the few around each, because the end of a job's log is cleanup and the
+  # failure is above it; the last of those lines that fit are kept. A log with no such
+  # line is cut to its tail.
+  defp failing_lines(text, bytes) when byte_size(text) <= bytes, do: String.trim(text)
+
+  defp failing_lines(text, bytes) do
+    lines = text |> String.split("\n") |> Enum.with_index()
+    hits = for {line, index} <- lines, Regex.match?(@failing, line), do: index
+
+    keep =
+      hits
+      |> Enum.flat_map(&Range.to_list((&1 - @context_before)..(&1 + @context_after)))
+      |> MapSet.new()
+
+    selected =
+      for {line, index} <- lines, MapSet.member?(keep, index), do: line
+
+    if selected == [], do: tail(text, bytes), else: tail(Enum.join(selected, "\n"), bytes)
+  end
 
   # The last `bytes` of the text, from the start of a line.
   defp tail(text, bytes) when byte_size(text) <= bytes, do: String.trim(text)
@@ -591,7 +809,10 @@ defmodule ControlPlane.Settle do
   # reached when a maintainer last resumed it, so a resume grants a fresh budget.
   defp used(workload), do: attempt(workload) - workload.budget_base
 
-  defp judge(workload, required, runs, pull_and_number) do
+  # The job that fails when any job it needs did not succeed.
+  @aggregate "ci"
+
+  defp judge(workload, required, runs, cancelled_suites, pull_and_number) do
     # Every check on the commit counts, not only the ones the ruleset requires: a
     # failing check is investigated whether or not it blocks a merge (ADR 0024). The
     # required ones must also have appeared.
@@ -607,13 +828,24 @@ defmodule ControlPlane.Settle do
 
     # A run that is still going on the commit may be the one that superseded a cancelled
     # run of the same concurrency group, so while any is live a cancelled check is not a
-    # result: it is waited on, not failed, revised or re-run.
+    # result: it is waited on, not failed, revised or re-run. The cancelled run's aggregate
+    # job does not end cancelled but failed, because it fails when a job it needs did not
+    # succeed, so while a run is live a failed aggregate that belongs to a cancelled run
+    # (the same check suite) waits as well, and the live run's own result is read once it
+    # ends. Any other failure, including a failed aggregate of a run that was not cancelled,
+    # is judged at once.
     live? = Enum.any?(looked_at, fn {_name, run} -> run != nil and run.state != :completed end)
 
     {superseded, ended} =
-      if live?,
-        do: Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end),
-        else: {[], ended}
+      if live? do
+        Enum.split_with(ended, fn {name, run} ->
+          run.conclusion == "cancelled" or
+            (name == @aggregate and run.conclusion not in @good and
+               MapSet.member?(cancelled_suites, run.suite))
+        end)
+      else
+        {[], ended}
+      end
 
     bad = for {name, run} <- ended, run.conclusion not in @good, do: {name, run}
     cancelled = for {name, run} <- bad, run.conclusion == "cancelled", do: {name, run}

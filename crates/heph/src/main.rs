@@ -88,7 +88,7 @@ Commands:
                          be run.
 
   worker --control-plane URL [--runs-dir PATH] [--executor PATH]
-         [--workloads N]
+         [--workloads N] [--keep-runs-for DAYS]
                          Do the work a hosted control plane gives this machine:
                          ask it for a workload, run the executor on it as `run`
                          does, send the events and the run record back, and ask
@@ -107,7 +107,14 @@ Commands:
                          HEPH_WORKER_WORKLOADS) is how many workloads it runs
                          at once, each in a workspace and under a lease of its
                          own: 1 to 64, default 1. Each holds a workspace on
-                         disk and a model session. Exits 0 when
+                         disk and a model session. A run's
+                         workspace (its checkout and build output, not its
+                         record or logs) is removed once the run was last
+                         written more than --keep-runs-for days ago [default:
+                         HEPH_WORKER_KEEP_RUNS, or 7], unless the control plane
+                         still holds a lease on its workload or has a pull
+                         request open for it; what was removed and the space
+                         freed is logged. Exits 0 when
                          stopped, 2 on a usage error and 3 if it could not go
                          on.
 
@@ -1095,6 +1102,7 @@ struct Worker {
     runs_dir: Option<String>,
     executor: Option<String>,
     workloads: Option<String>,
+    keep_runs_for: Option<String>,
 }
 
 impl Worker {
@@ -1105,6 +1113,7 @@ impl Worker {
         let mut runs_dir = None;
         let mut executor = None;
         let mut workloads = None;
+        let mut keep_runs_for = None;
         let mut remaining = arguments.iter();
         while let Some(argument) = remaining.next() {
             let value = (*remaining.next()?).to_owned();
@@ -1113,6 +1122,7 @@ impl Worker {
                 "--runs-dir" => runs_dir = Some(value),
                 "--executor" => executor = Some(value),
                 "--workloads" => workloads = Some(value),
+                "--keep-runs-for" => keep_runs_for = Some(value),
                 _ => return None,
             }
         }
@@ -1121,13 +1131,14 @@ impl Worker {
             runs_dir,
             executor,
             workloads,
+            keep_runs_for,
         })
     }
 }
 
 fn worker_usage_error() -> ExitCode {
     eprintln!(
-        "heph: expected 'worker --control-plane URL [--runs-dir PATH] [--executor PATH] [--workloads N]'\n\n{USAGE}"
+        "heph: expected 'worker --control-plane URL [--runs-dir PATH] [--executor PATH] [--workloads N] [--keep-runs-for DAYS]'\n\n{USAGE}"
     );
     ExitCode::from(USAGE_ERROR)
 }
@@ -1142,12 +1153,17 @@ fn run_worker(request: &Worker) -> ExitCode {
         Ok(workloads) => workloads,
         Err(message) => return could_not_run(&message),
     };
+    let keep_runs_for = match worker::keep_runs_for(request.keep_runs_for.as_deref()) {
+        Ok(keep) => keep,
+        Err(message) => return could_not_run(&message),
+    };
     // A stop is passed on to the executor and waited for, and does not end this program
     // before the run has said how it ended.
     if let Err(error) = heph::process::install_cancellation() {
         return could_not_run(&format!("could not install the signal handlers: {error}"));
     }
     let options = worker::Options {
+        keep_runs_for,
         control_plane: request.control_plane.clone(),
         runs_dir: request.runs_dir.as_ref().map(std::path::PathBuf::from),
         executor: request.executor.as_ref().map(std::path::PathBuf::from),

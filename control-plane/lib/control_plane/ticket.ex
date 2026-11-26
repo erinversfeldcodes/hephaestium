@@ -92,10 +92,11 @@ defmodule ControlPlane.Check do
   @moduledoc """
   One run of a check on a commit. `state` is `:completed` or `:running`. `conclusion` is the
   code host's word for how it ended (`"success"`, `"failure"`, `"cancelled"`, ...) and nil
-  while it runs. `title` and `summary` are what the check said of itself.
+  while it runs. `title` and `summary` are what the check said of itself. `suite` is the id of
+  the check suite, one workflow run, the check belongs to; nil when not known.
   """
 
-  defstruct [:id, :name, :state, :conclusion, :title, :summary]
+  defstruct [:id, :name, :state, :conclusion, :title, :summary, :suite]
 
   @type t :: %__MODULE__{
           id: term(),
@@ -103,7 +104,8 @@ defmodule ControlPlane.Check do
           state: :completed | :running,
           conclusion: String.t() | nil,
           title: String.t() | nil,
-          summary: String.t() | nil
+          summary: String.t() | nil,
+          suite: term()
         }
 end
 

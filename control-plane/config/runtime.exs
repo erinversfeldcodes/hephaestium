@@ -186,6 +186,23 @@ case System.get_env("HEPH_OBAN_NOTIFIER") do
   value -> raise "HEPH_OBAN_NOTIFIER must be pg or postgres, not #{inspect(value)}"
 end
 
+# A deployment nobody uses all the time (a preview) turns the recurring work off, so that its
+# database can suspend. Without the cron plugin nothing is scheduled; without the stager no
+# query asks every second for jobs that became due; without a peer no query renews leadership.
+# Jobs still run when something inserts one, because the node that inserts it is told directly.
+case System.get_env("HEPH_RECURRING_JOBS") do
+  value when value in [nil, "", "on"] ->
+    :ok
+
+  "off" ->
+    config :control_plane, Oban, plugins: [], stage_interval: :infinity, peer: false
+    # The sweep for lapsed leases asks the database every few seconds, which keeps it awake too.
+    config :control_plane, :executor_link, reap: false
+
+  value ->
+    raise "HEPH_RECURRING_JOBS must be on or off, not #{inspect(value)}"
+end
+
 # Connect through Postgres's Unix socket in this directory instead of TCP (#140). Another
 # project's script on the same machine stops every BEAM that holds a TCP connection to port
 # 5432, whichever project it belongs to; a socket connection is not one.

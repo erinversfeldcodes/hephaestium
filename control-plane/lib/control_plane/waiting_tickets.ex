@@ -64,8 +64,14 @@ defmodule ControlPlane.WaitingTickets do
     :ok
   end
 
-  @doc "The waiting tickets, the most recently approved first, up to a limit."
-  @spec list(non_neg_integer()) :: [%WaitingTicket{}]
-  def list(limit),
-    do: Repo.all(from w in WaitingTicket, order_by: [desc: w.approved_at], limit: ^limit)
+  @doc "The waiting tickets of these repositories, the most recently approved first, up to a limit."
+  @spec list(non_neg_integer(), [String.t()]) :: [%WaitingTicket{}]
+  def list(limit, repositories) do
+    Repo.all(
+      from w in WaitingTicket,
+        where: w.repository in ^repositories,
+        order_by: [desc: w.approved_at],
+        limit: ^limit
+    )
+  end
 end

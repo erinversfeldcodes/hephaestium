@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Destroy the previews no open pull request owns: the backstop for a close that never ran the
-# cleanup, a crashed run, or a deploy made by hand.
+# Destroy the previews no open pull request owns, and those of an open pull request that has had
+# no push for a while: the backstop for a close that never ran the cleanup, a crashed run, a
+# deploy made by hand, and a pull request left open for days.
 #
 #   scripts/sweep-preview-orphans.sh [--dry-run]
 #
 # An orphan is a Fly app named like a preview, or a Neon branch under `preview/` of the staging
 # project, that is not the name of any open pull request's branch and is older than the grace
 # period (GRACE_HOURS, default 24), which protects a run that is still deploying. A listing that
-# cannot be read, or that comes back empty of anything it should hold, is a failure: a sweep that
+# A preview of an open pull request is removed once its last push is older than the stale limit
+# (STALE_HOURS, default 48). A push deploys the preview again, which makes its Neon branch anew,
+# so the branch's age is the age of the last push; the machine's age is not used, because a
+# deploy may leave a machine in place. The next push after a removal makes the preview again.
+# A listing that cannot be read, or that comes back empty of anything it should hold, is a failure: a sweep that
 # sweeps nothing and says so cheerfully is how the last leak survived.
 #
 # Needed: FLY_API_TOKEN NEON_STAGING_API_KEY NEON_STAGING_PROJECT_ID, and `gh` with GH_TOKEN
@@ -23,6 +28,7 @@ source "$root/scripts/lib/neon.sh"
 dry=0
 [[ ${1:-} == --dry-run ]] && dry=1
 grace=$((${GRACE_HOURS:-24} * 3600))
+stale=$((${STALE_HOURS:-48} * 3600))
 now=$(date -u +%s)
 
 die() { echo "FAIL sweep: $*" >&2; exit 1; }
@@ -46,6 +52,27 @@ done <<<"$branches"
 echo "==> sweeping preview orphans (grace ${GRACE_HOURS:-24}h, dry run: ${dry}); kept for open pull requests: $(grep -c . "$allow" || true) names"
 
 swept=0 kept=0 failed=0
+
+# Neon: the branches under preview/, listed first because their age is also the age of the
+# Fly app of the same name.
+listing=$(neon_get "$NEON_STAGING_API_KEY" "/projects/${NEON_STAGING_PROJECT_ID}/branches") || die "could not list the Neon branches"
+rows=$(printf '%s' "$listing" | python3 -c '
+import json, sys, datetime
+branches = json.load(sys.stdin).get("branches")
+if not isinstance(branches, list) or not branches:
+    sys.exit(3)
+for b in branches:
+    created = (b.get("created_at") or "").split(".")[0].rstrip("Z")
+    try:
+        epoch = int(datetime.datetime.fromisoformat(created).replace(tzinfo=datetime.timezone.utc).timestamp())
+    except ValueError:
+        epoch = 0
+    print("{}\t{}\t{}".format(b.get("id", ""), b.get("name", ""), epoch))') || die "the Neon listing was empty or unreadable"
+
+# branch_epoch <name>: when the branch was made, or 0 when there is none or it is undated.
+branch_epoch() {
+  awk -F'\t' -v n="$1" '$2 == n { print $3; found = 1; exit } END { if (!found) print 0 }' <<<"$rows"
+}
 
 # Fly: the apps, and the age of the newest machine of each.
 apps=$(fly apps list --json | python3 -c '
@@ -73,11 +100,16 @@ else:
 while IFS= read -r app; do
   [[ $app =~ $PREVIEW_APP_PATTERN ]] || continue
   if grep -qxF "$app" "$allow"; then
-    echo "    KEEP ${app} (open pull request)"; kept=$((kept + 1)); continue
-  fi
-  born=$(app_epoch "$app") || born=0
-  if [[ $born == 0 ]] || ((now - born < grace)); then
-    echo "    KEEP ${app} (younger than the grace period, or undated)"; kept=$((kept + 1)); continue
+    pushed=$(branch_epoch "preview/${app#heph-cp-pr-}")
+    if [[ $pushed == 0 ]] || ((now - pushed < stale)); then
+      echo "    KEEP ${app} (open pull request)"; kept=$((kept + 1)); continue
+    fi
+    echo "    ${app}: no push for over ${STALE_HOURS:-48}h"
+  else
+    born=$(app_epoch "$app") || born=0
+    if [[ $born == 0 ]] || ((now - born < grace)); then
+      echo "    KEEP ${app} (younger than the grace period, or undated)"; kept=$((kept + 1)); continue
+    fi
   fi
   if ((dry)); then
     echo "    WOULD DESTROY ${app}"; swept=$((swept + 1))
@@ -88,27 +120,13 @@ while IFS= read -r app; do
   fi
 done <<<"$apps"
 
-# Neon: the branches under preview/.
-listing=$(neon_get "$NEON_STAGING_API_KEY" "/projects/${NEON_STAGING_PROJECT_ID}/branches") || die "could not list the Neon branches"
-rows=$(printf '%s' "$listing" | python3 -c '
-import json, sys, datetime
-branches = json.load(sys.stdin).get("branches")
-if not isinstance(branches, list) or not branches:
-    sys.exit(3)
-for b in branches:
-    created = (b.get("created_at") or "").split(".")[0].rstrip("Z")
-    try:
-        epoch = int(datetime.datetime.fromisoformat(created).replace(tzinfo=datetime.timezone.utc).timestamp())
-    except ValueError:
-        epoch = 0
-    print("{}\t{}\t{}".format(b.get("id", ""), b.get("name", ""), epoch))') || die "the Neon listing was empty or unreadable"
-
 while IFS=$'\t' read -r id name born; do
   [[ $name == preview/* ]] || continue
   if grep -qxF "$name" "$allow"; then
-    echo "    KEEP neon:${name} (open pull request)"; kept=$((kept + 1)); continue
-  fi
-  if [[ $born == 0 ]] || ((now - born < grace)); then
+    if [[ $born == 0 ]] || ((now - born < stale)); then
+      echo "    KEEP neon:${name} (open pull request)"; kept=$((kept + 1)); continue
+    fi
+  elif [[ $born == 0 ]] || ((now - born < grace)); then
     echo "    KEEP neon:${name} (younger than the grace period, or undated)"; kept=$((kept + 1)); continue
   fi
   if ((dry)); then

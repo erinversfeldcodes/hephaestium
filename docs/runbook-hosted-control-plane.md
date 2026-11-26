@@ -225,7 +225,11 @@ as the first deploy in [the checklist](#verify).
    image first, over the direct string; if it fails the old version keeps serving.
 2. **A preview**: opening or updating a pull request runs the checks, then, if they pass, makes
    the Fly app and the Neon branch for it and deploys. Closing the pull request deletes both. A
-   weekly sweep deletes any that no open pull request owns.
+   preview uses `control-plane/fly.preview.toml`: its recurring jobs are off
+   (`HEPH_RECURRING_JOBS = "off"`), its machine stops when idle and starts on a request, and it has
+   no database health check, so its Neon compute suspends when nobody is using it. A daily sweep
+   deletes any preview that no open pull request owns, and any whose pull request has had no push
+   for two days; the next push makes it again.
 
 What is in `control-plane/fly.toml`, and why:
 

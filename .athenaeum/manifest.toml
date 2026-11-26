@@ -36,6 +36,24 @@ paths = ["docs/**", "README.md", "AGENTS.md", "LICENSE"]
 root = "."
 paths = [".github/**", "scripts/**", ".athenaeum/**", ".gitignore"]
 
+# What a fresh workspace needs before a test can run in it. The steps run in the executor's own
+# home for tools, which every workspace on the machine shares, so Hex's and npm's package
+# caches make a second run take seconds. `npm ci` installs exactly what the lock file says.
+[[bootstrap]]
+run = ["mix", "local.hex", "--force", "--if-missing"]
+root = "control-plane"
+timeout_seconds = 300
+
+[[bootstrap]]
+run = ["mix", "deps.get"]
+root = "control-plane"
+timeout_seconds = 600
+
+[[bootstrap]]
+run = ["npm", "ci", "--no-audit", "--no-fund"]
+root = "dashboard"
+timeout_seconds = 900
+
 [gates.format-rust]
 run = ["cargo", "fmt", "--all", "--check"]
 when_paths = ["crates/**", "Cargo.toml", "Cargo.lock"]

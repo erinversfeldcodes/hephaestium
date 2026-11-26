@@ -58,13 +58,13 @@ pub struct Component {
     pub pack: Option<String>,
     /// Globs for the files that belong to it.
     pub paths: Vec<String>,
-    /// Runs only the tests for the files a change touched: the command, with the paths of the
-    /// changed files under the component's root appended as arguments, relative to that root.
-    pub test_changed: Option<Vec<String>>,
     /// Its format and lint checks, each a command that changes nothing and
     /// fails on a finding.
     #[serde(default)]
     pub lint: Vec<Vec<String>>,
+    /// The command that runs the tests of only the changed files, which are
+    /// appended to it as arguments. Absent means the component has none.
+    pub test_changed: Option<Vec<String>>,
 }
 
 /// How to enter the repository's pinned toolchain.

@@ -56,6 +56,8 @@ defmodule ControlPlane.Jobs.RunWorkload do
     case Workloads.claim(id) do
       {:ok, workload} -> start_if_needed(workload, last_attempt?)
       :already_claimed -> :ok
+      # Another workload of the ticket holds its branch: wait, and do not count an attempt.
+      :ticket_busy -> {:snooze, @wait_seconds}
       :unknown -> {:discard, "there is no workload #{id}"}
     end
   end

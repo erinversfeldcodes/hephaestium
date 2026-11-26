@@ -109,12 +109,25 @@ defmodule ControlPlane.Workloads do
 
   @doc "The number of a workload's pull request, from the address its record holds."
   @spec pull_request_number(%Workload{}) :: {:ok, String.t()} | {:error, String.t()}
-  def pull_request_number(%Workload{} = workload) do
-    url = get_in(workload.record || %{}, ["pullRequest", "url"]) || ""
+  def pull_request_number(%Workload{} = workload),
+    do:
+      pull_request_number(
+        workload.repository,
+        get_in(workload.record || %{}, ["pullRequest", "url"])
+      )
+
+  @doc """
+  `pull_request_number/1` for a pull request address read on its own, so a caller that selects
+  only that address from the record need not load the whole record to find the number.
+  """
+  @spec pull_request_number(String.t(), String.t() | nil) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def pull_request_number(repository, url) do
+    url = url || ""
 
     case Regex.run(~r{^https://github\.com/([^/]+/[^/]+)/pull/(\d+)$}, url) do
-      [_, repository, number] when repository == workload.repository -> {:ok, number}
-      _ -> {:error, "the pull request #{inspect(url)} is not one of #{workload.repository}"}
+      [_, ^repository, number] -> {:ok, number}
+      _ -> {:error, "the pull request #{inspect(url)} is not one of #{repository}"}
     end
   end
 
@@ -276,23 +289,76 @@ defmodule ControlPlane.Workloads do
   @doc "The states a workload does not leave."
   def terminal_states, do: @terminal
 
-  @doc """
-  Take a queued workload to run, once. A workload that is not queued (it is
-  running, or has ended, or another job has it) is not taken again.
-  """
-  @spec claim(Ecto.UUID.t()) :: {:ok, %Workload{}} | :already_claimed | :unknown
-  def claim(id) do
-    {count, rows} =
-      Repo.update_all(
-        from(w in Workload, where: w.id == ^id and w.state == "queued", select: w),
-        set: [state: "preparing", updated_at: DateTime.utc_now()]
-      )
+  # The states in which a workload holds its ticket's branch.
+  @in_flight ["preparing", "running", "gating"]
 
-    cond do
-      count == 1 -> {:ok, hd(rows)}
-      get(id) == nil -> :unknown
-      true -> :already_claimed
-    end
+  # The key of the lock that serialises every claim, so that two claims at once cannot each see
+  # the ticket free and each take a workload for it.
+  @claim_lock 331_001
+
+  @doc "Wait for the lock that serialises claims; held until the transaction ends."
+  @spec lock_claims() :: :ok
+  def lock_claims do
+    Repo.query!("SELECT pg_advisory_xact_lock($1)", [@claim_lock])
+    :ok
+  end
+
+  @doc """
+  A condition on a query whose workload has the binding `:w`: the workload may be given now. A
+  review never changes the branch, so it always may; any other workload may not while another
+  that is not a review is under way for the same ticket. The one home of the
+  one-workload-per-ticket rule.
+  """
+  def branch_free do
+    dynamic(
+      [w: w],
+      not is_nil(fragment("?->'review'", w.workload)) or
+        not exists(
+          from(o in ControlPlane.Workload,
+            where:
+              o.repository == parent_as(:w).repository and
+                o.ticket_number == parent_as(:w).ticket_number and
+                o.id != parent_as(:w).id and
+                o.state in ^@in_flight and
+                is_nil(fragment("?->'review'", o.workload)),
+            select: 1
+          )
+        )
+    )
+  end
+
+  @doc """
+  Take a queued workload to run, once. A workload that is not queued (it is running, or has
+  ended, or another job has it) is not taken again. One whose ticket's branch is held by another
+  workload is not taken: `:ticket_busy`, and it stays queued.
+  """
+  @spec claim(Ecto.UUID.t()) :: {:ok, %Workload{}} | :already_claimed | :ticket_busy | :unknown
+  def claim(id) do
+    result =
+      Repo.transaction(fn ->
+        lock_claims()
+
+        {count, rows} =
+          Repo.update_all(
+            from(w in Workload,
+              as: :w,
+              where: w.id == ^id and w.state == "queued",
+              where: ^branch_free(),
+              select: w
+            ),
+            set: [state: "preparing", updated_at: DateTime.utc_now()]
+          )
+
+        cond do
+          count == 1 -> {:ok, hd(rows)}
+          get(id) == nil -> :unknown
+          get(id).state == "queued" -> :ticket_busy
+          true -> :already_claimed
+        end
+      end)
+
+    {:ok, outcome} = result
+    outcome
   end
 
   @doc "Put a claimed workload back on the queue, because the executor could not be started."
@@ -394,6 +460,65 @@ defmodule ControlPlane.Workloads do
     )
   end
 
+  @doc """
+  Which of these workloads still need the workspace a worker made for them: those not yet
+  ended, which a lease may be held on or a queue may give again, and those that completed with
+  a pull request that is not settled, which a revision may resume. Ids that are not workloads
+  are not held.
+  """
+  @spec held([String.t()]) :: [Ecto.UUID.t()]
+  def held(ids) do
+    Repo.all(
+      from w in Workload,
+        where:
+          w.id in ^ids and
+            (w.state not in ^@terminal or
+               (w.state == "completed" and is_nil(w.settled_at) and
+                  fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record))),
+        select: w.id
+    )
+  end
+
+  @doc """
+  The tickets of these repositories whose newest workload failed or timed out and has not been
+  settled: the ones a board lists as needing a person.
+  """
+  @spec unsettled_failures([String.t()]) :: [{String.t(), integer()}]
+  def unsettled_failures(repositories) do
+    latest =
+      from w in Workload,
+        where: w.repository in ^repositories,
+        distinct: [w.repository, w.ticket_number],
+        order_by: [w.repository, w.ticket_number, desc: w.inserted_at, desc: w.id],
+        select: %{
+          repository: w.repository,
+          number: w.ticket_number,
+          state: w.state,
+          settled_at: w.settled_at
+        }
+
+    Repo.all(
+      from l in subquery(latest),
+        where: l.state in ["failed", "timed_out"] and is_nil(l.settled_at),
+        select: {l.repository, l.number}
+    )
+  end
+
+  @doc "Settle every workload of a ticket that is not settled: nothing is left for anyone to do on it."
+  @spec settle_ticket(String.t(), integer()) :: :ok
+  def settle_ticket(repository, number) do
+    now = DateTime.utc_now()
+
+    Repo.update_all(
+      from(w in Workload,
+        where: w.repository == ^repository and w.ticket_number == ^number and is_nil(w.settled_at)
+      ),
+      set: [settled_at: now, updated_at: now]
+    )
+
+    :ok
+  end
+
   @doc "Record that the ticket was settled."
   def settle(id) do
     Repo.update_all(from(w in Workload, where: w.id == ^id and is_nil(w.settled_at)),
@@ -435,21 +560,26 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc "Record that the check of this name on the workload's pull request was re-run."
-  def count_rerun(id, name) do
+  def count_rerun(id, name), do: bump(id, :reruns, name)
+
+  @doc "Record that a settle pass could not read the log of this check run."
+  def count_unread_log(id, check_run_id), do: bump(id, :unread_logs, to_string(check_run_id))
+
+  defp bump(id, field, key) do
     Repo.update_all(
       from(w in Workload,
         where: w.id == ^id,
         update: [
           set: [
-            reruns:
-              fragment(
-                "jsonb_set(coalesce(?, '{}'::jsonb), ARRAY[?::text], to_jsonb(coalesce((? ->> ?)::int, 0) + 1))",
-                w.reruns,
-                ^name,
-                w.reruns,
-                ^name
-              ),
-            updated_at: ^DateTime.utc_now()
+            {^field,
+             fragment(
+               "jsonb_set(coalesce(?, '{}'::jsonb), ARRAY[?::text], to_jsonb(coalesce((? ->> ?)::int, 0) + 1))",
+               field(w, ^field),
+               ^key,
+               field(w, ^field),
+               ^key
+             )},
+            {:updated_at, ^DateTime.utc_now()}
           ]
         ]
       ),

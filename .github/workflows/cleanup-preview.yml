@@ -1,14 +1,16 @@
 # Two layers against a preview that outlives its pull request:
 #   1. When a pull request closes or merges, its Fly app and its Neon branch are deleted.
-#   2. Weekly, any preview no open pull request owns, and older than a day, is deleted. This is
-#      the backstop for a close that never ran, a crashed deploy and a deploy made by hand.
+#   2. Daily, any preview no open pull request owns, and older than a day, is deleted, and so is
+#      one whose pull request has had no push for two days (the next push makes it again). This
+#      is the backstop for a close that never ran, a crashed deploy, a deploy made by hand and a
+#      pull request left open.
 name: cleanup-preview
 
 on:
   pull_request:
     types: [closed]
   schedule:
-    - cron: "23 5 * * 1"
+    - cron: "23 5 * * *"
   workflow_dispatch:
 
 permissions:

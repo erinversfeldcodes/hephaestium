@@ -337,6 +337,34 @@ fn the_wrapper_is_not_applied_when_the_caller_is_already_inside_the_toolchain() 
 }
 
 #[test]
+fn a_gate_does_not_see_the_workers_heph_variables() {
+    let scratch = Scratch::new("gate-environment");
+    scratch.write(
+        ".athenaeum/manifest.toml",
+        &manifest(
+            "",
+            &gate(
+                "regression",
+                &shell("test -z \"$HEPH_TEST_WORKER_SETTING\""),
+                30,
+                "",
+            ),
+        ),
+    );
+
+    let result = result_of(&heph_with_env(
+        &scratch.0,
+        &["gate", "run", "regression"],
+        &[("HEPH_TEST_WORKER_SETTING", "set by the worker")],
+    ));
+
+    assert_eq!(
+        result["outcome"], "passed",
+        "the gate saw the variable: {result}"
+    );
+}
+
+#[test]
 fn a_program_that_does_not_exist_fails_the_gate_with_127() {
     let scratch = Scratch::new("missing-program");
     scratch.write(
@@ -412,14 +440,18 @@ fn a_gate_that_reads_its_input_is_given_none_even_when_the_caller_holds_stdin_op
         &manifest("", &gate("regression", &shell("cat > /dev/null"), 8, "")),
     );
 
-    let mut heph = std::process::Command::new(env!("CARGO_BIN_EXE_heph"))
-        .current_dir(&scratch.0)
-        .args(["gate", "run", "regression"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("heph to start");
+    let mut heph = {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_heph"));
+        common::without_heph_variables(&mut command);
+        command
+    }
+    .current_dir(&scratch.0)
+    .args(["gate", "run", "regression"])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .expect("heph to start");
     let held_open = heph.stdin.take().expect("a pipe to hold open");
 
     let started = Instant::now();
