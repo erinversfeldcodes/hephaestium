@@ -179,6 +179,32 @@ fn an_agent_that_changes_a_file_gives_none_whatever_it_wrote() {
 }
 
 #[test]
+fn an_agent_that_only_lets_gh_write_its_own_state_still_gives_its_verdict() {
+    let local = local("prepush-gh-state");
+    let script = format!(
+        "mkdir -p .local/state/gh .config/gh; echo id > .local/state/gh/device-id; echo c > .config/gh/hosts.yml; {}",
+        writes(&verdict(&local.commit, "rust"))
+    );
+
+    let (kept, _) = read(&local, "rust", &script, 0.0);
+
+    assert!(kept.is_ok(), "{kept:?}");
+}
+
+#[test]
+fn an_agent_that_edits_a_source_file_beside_gh_state_is_still_caught() {
+    let local = local("prepush-gh-and-source");
+    let script = format!(
+        "mkdir -p .local/state/gh src; echo id > .local/state/gh/device-id; echo 'fn x() {{}}' > src/lib.rs; {}",
+        writes(&verdict(&local.commit, "rust"))
+    );
+
+    let (kept, _) = read(&local, "rust", &script, 0.0);
+
+    refused(&kept, &["changed the workspace", "src/lib.rs"]);
+}
+
+#[test]
 fn an_agent_that_fails_gives_none() {
     let local = local("prepush-fails");
 

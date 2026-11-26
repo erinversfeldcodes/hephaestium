@@ -52,12 +52,7 @@ fn one_failure() -> Value {
 fn prompt_of(value: &Value) -> String {
     let workload: Workload = serde_json::from_value(value.clone()).expect("a workload");
     let plan = ClaudeCode.plan(&workload, std::path::Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 fn rig_with_branch(name: &str) -> (Rig, String) {
@@ -101,6 +96,26 @@ fn the_prompt_of_a_revision_for_a_moved_base_names_what_came_in() {
     ] {
         assert!(prompt.contains(expected), "{expected} is missing: {prompt}");
     }
+}
+
+#[test]
+fn the_prompt_names_the_files_in_conflict_and_says_deleting_one_is_allowed() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let mut moved = base_moved();
+    moved["conflictedFiles"] = json!(["web/first.txt"]);
+    let prompt = prompt_of(&revising(head, &one_failure(), Some(moved)));
+
+    assert!(prompt.contains("- web/first.txt"), "{prompt}");
+    assert!(prompt.contains("conflict markers"), "{prompt}");
+    assert!(
+        prompt.contains("deleting a file is a valid resolution"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt_of(&revising(head, &one_failure(), Some(base_moved())))
+            .contains("conflict markers"),
+        "a base that moved without a conflict does not mention markers"
+    );
 }
 
 #[test]

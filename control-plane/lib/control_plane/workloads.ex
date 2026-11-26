@@ -239,7 +239,7 @@ defmodule ControlPlane.Workloads do
   @spec for_change(String.t(), integer() | String.t()) :: [%Workload{}]
   def for_change(repository, number) do
     since = DateTime.add(DateTime.utc_now(), -14 * 86_400, :second)
-    wanted = to_string(number)
+    url = "https://github.com/#{repository}/pull/#{number}"
 
     Repo.all(
       from w in Workload,
@@ -248,10 +248,9 @@ defmodule ControlPlane.Workloads do
             (is_nil(w.settled_at) or w.updated_at >= ^since) and
             fragment("?->'review' IS NULL", w.workload) and
             fragment("?->'completeness' IS NULL", w.workload) and
-            fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
+            fragment("?->'pullRequest'->>'url' = ?", w.record, ^url),
         order_by: w.inserted_at
     )
-    |> Enum.filter(&(pull_request_number(&1) == {:ok, wanted}))
     |> Enum.group_by(& &1.ticket_number)
     |> Enum.map(fn {_ticket, workloads} -> List.last(workloads) end)
   end
@@ -430,14 +429,62 @@ defmodule ControlPlane.Workloads do
   settled yet, oldest first.
   """
   def awaiting_settlement do
-    Repo.all(
-      from(w in Workload,
-        where:
-          w.state == "completed" and is_nil(w.settled_at) and
-            fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
-        order_by: [asc: w.inserted_at]
-      )
+    Repo.all(awaiting_settlement_query())
+  end
+
+  @doc "The same, for one repository, chosen by the database rather than after loading all."
+  @spec awaiting_settlement(String.t()) :: [%Workload{}]
+  def awaiting_settlement(repository) do
+    Repo.all(from(w in awaiting_settlement_query(), where: w.repository == ^repository))
+  end
+
+  defp awaiting_settlement_query do
+    from(w in Workload,
+      where:
+        w.state == "completed" and is_nil(w.settled_at) and
+          fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
+      order_by: [asc: w.inserted_at]
     )
+  end
+
+  @doc """
+  The tickets of these repositories whose newest workload failed or timed out and has not been
+  settled: the ones a board lists as needing a person.
+  """
+  @spec unsettled_failures([String.t()]) :: [{String.t(), integer()}]
+  def unsettled_failures(repositories) do
+    latest =
+      from w in Workload,
+        where: w.repository in ^repositories,
+        distinct: [w.repository, w.ticket_number],
+        order_by: [w.repository, w.ticket_number, desc: w.inserted_at, desc: w.id],
+        select: %{
+          repository: w.repository,
+          number: w.ticket_number,
+          state: w.state,
+          settled_at: w.settled_at
+        }
+
+    Repo.all(
+      from l in subquery(latest),
+        where: l.state in ["failed", "timed_out"] and is_nil(l.settled_at),
+        select: {l.repository, l.number}
+    )
+  end
+
+  @doc "Settle every workload of a ticket that is not settled: nothing is left for anyone to do on it."
+  @spec settle_ticket(String.t(), integer()) :: :ok
+  def settle_ticket(repository, number) do
+    now = DateTime.utc_now()
+
+    Repo.update_all(
+      from(w in Workload,
+        where: w.repository == ^repository and w.ticket_number == ^number and is_nil(w.settled_at)
+      ),
+      set: [settled_at: now, updated_at: now]
+    )
+
+    :ok
   end
 
   @doc "Record that the ticket was settled."

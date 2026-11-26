@@ -189,6 +189,56 @@ fn a_timeout_stops_the_agent_and_what_it_started_ends_timed_out_and_runs_no_gate
     assert!(!alive(&pid), "the agent's child {pid} outlived it");
 }
 
+/// A script that starts a loop in a process group of its own, as a shell with job control does,
+/// so that stopping the agent's own group does not reach it, and writes its pid down.
+fn leaves_a_loop() -> String {
+    format!(
+        "set -m; (while :; do sleep 1; done) >/dev/null 2>&1 & echo $! > loop.pid; {}",
+        say("started a loop")
+    )
+}
+
+fn assert_the_loop_was_stopped(ran: &Ran) {
+    let pid = std::fs::read_to_string(workspace_of(ran).join("loop.pid"))
+        .expect("a pid")
+        .trim()
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(&pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let still = alive(&pid);
+    if still {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid])
+            .status();
+    }
+    assert!(!still, "the loop {pid} the agent left outlived the run");
+}
+
+#[test]
+fn a_background_loop_the_agent_leaves_running_is_stopped_when_the_run_ends() {
+    let ran = ran("agent-loop", |_| {}, &leaves_a_loop(), &[]);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_the_loop_was_stopped(&ran);
+}
+
+#[test]
+fn a_timed_out_run_leaves_no_loop_running_and_reports_the_load_average() {
+    let ran = ran(
+        "agent-timeout-loop",
+        |w| w["limits"]["timeout"] = json!("2s"),
+        &format!("{}; sleep 60", leaves_a_loop()),
+        &[],
+    );
+
+    let (outcome, reason) = finished(&ran.events());
+    assert_eq!(outcome, Outcome::TimedOut);
+    assert!(reason.contains("load average"), "{reason}");
+    assert_the_loop_was_stopped(&ran);
+}
+
 #[test]
 fn a_spent_budget_stops_the_agent_and_ends_failed_naming_the_budget() {
     let started = Instant::now();

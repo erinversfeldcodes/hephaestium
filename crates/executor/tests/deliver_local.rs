@@ -181,3 +181,37 @@ fn amending_when_the_agent_changed_nothing_keeps_the_commit_as_it_was() {
         "the change"
     );
 }
+
+#[test]
+fn a_crash_dump_in_the_workspace_is_committed_without_it() {
+    let tree = tree("local-crash-dump", |_| {});
+    tree.scratch
+        .write("source/erl_crash.dump", "=erl_crash_dump:0.5\n");
+    tree.scratch.write(
+        "source/control-plane/erl_crash.dump",
+        "=erl_crash_dump:0.5\n",
+    );
+
+    deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
+
+    assert_eq!(
+        git(
+            &tree.workspace,
+            &["show", "--name-only", "--format=", "HEAD"]
+        ),
+        "web/change.txt"
+    );
+}
+
+#[test]
+fn a_file_over_the_size_limit_stops_the_commit_and_is_named() {
+    let tree = tree("local-big-file", |_| {});
+    let big = vec![b'x'; usize::try_from(deliver::LARGEST_FILE).expect("fits") + 1];
+    std::fs::create_dir_all(tree.workspace.join("web")).expect("dir");
+    std::fs::write(tree.workspace.join("web/huge.bin"), big).expect("write");
+
+    let why = deliver::commit_locally(&tree.workload, &tree.workspace).expect_err("refused");
+
+    assert!(why.contains("web/huge.bin"), "{why}");
+    assert_eq!(commits_past_main(&tree).len(), 0);
+}

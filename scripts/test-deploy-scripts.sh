@@ -182,7 +182,7 @@ grep -q "^fly secrets set --stage --app heph-cp-pr-feat-x DATABASE_URL=postgresq
 expect "the pooled string is DATABASE_URL and the direct one is the migration's, query strings dropped" $?
 ! grep "secrets set" "$CALLS" | grep -q "HEPH_WEBHOOK_SECRET\|GH_TOKEN\|HEPH_REPOSITORIES"
 expect "a preview is given no webhook secret, token or repositories" $?
-grep -q "^fly deploy --config control-plane/fly.toml --app heph-cp-pr-feat-x --ha=false --yes --env HEPH_API_BASE_URL=https://heph-cp-pr-feat-x.fly.dev" "$CALLS"
+grep -q "^fly deploy --config control-plane/fly.preview.toml --app heph-cp-pr-feat-x --ha=false --yes --env HEPH_API_BASE_URL=https://heph-cp-pr-feat-x.fly.dev" "$CALLS"
 expect "it deploys the one file with its own address" $?
 ! grep -q "SECRETPW\|sessionkey-value\|csecret-value" "$scratch/out"
 expect "no secret is printed" $?
@@ -328,21 +328,26 @@ expect "cleanup with no fly on the path fails rather than skips" $((r == 1 ? 0 :
 old=2020-01-01T00:00:00Z
 young=$(date -u -v-1H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
 reset
-echo feat-open >"$FIXTURES/open-prs.txt"
-echo '[{"Name":"hephaestium-control-plane"},{"Name":"heph-cp-pr-feat-open"},{"Name":"heph-cp-pr-gone"},{"Name":"heph-cp-pr-fresh"}]' >"$FIXTURES/apps-list.json"
+printf 'feat-open\nfeat-stale\n' >"$FIXTURES/open-prs.txt"
+echo '[{"Name":"hephaestium-control-plane"},{"Name":"heph-cp-pr-feat-open"},{"Name":"heph-cp-pr-feat-stale"},{"Name":"heph-cp-pr-gone"},{"Name":"heph-cp-pr-fresh"}]' >"$FIXTURES/apps-list.json"
+# An open pull request's preview is as old as its last push, which is when its Neon branch was
+# made; its machine can be older, so the machine's age must not decide.
 echo "[{\"created_at\":\"$old\"}]" >"$FIXTURES/machines-heph-cp-pr-feat-open.json"
+echo "[{\"created_at\":\"$old\"}]" >"$FIXTURES/machines-heph-cp-pr-feat-stale.json"
 echo "[{\"created_at\":\"$old\"}]" >"$FIXTURES/machines-heph-cp-pr-gone.json"
 echo "[{\"created_at\":\"$young\"}]" >"$FIXTURES/machines-heph-cp-pr-fresh.json"
-echo "{\"branches\":[{\"id\":\"br-parent\",\"name\":\"production\",\"created_at\":\"$old\"},{\"id\":\"br-o\",\"name\":\"preview/feat-open\",\"created_at\":\"$old\"},{\"id\":\"br-g\",\"name\":\"preview/gone\",\"created_at\":\"$old\"},{\"id\":\"br-f\",\"name\":\"preview/fresh\",\"created_at\":\"$young\"}]}" >"$FIXTURES/branches.json"
+echo "{\"branches\":[{\"id\":\"br-parent\",\"name\":\"production\",\"created_at\":\"$old\"},{\"id\":\"br-o\",\"name\":\"preview/feat-open\",\"created_at\":\"$young\"},{\"id\":\"br-s\",\"name\":\"preview/feat-stale\",\"created_at\":\"$old\"},{\"id\":\"br-g\",\"name\":\"preview/gone\",\"created_at\":\"$old\"},{\"id\":\"br-f\",\"name\":\"preview/fresh\",\"created_at\":\"$young\"}]}" >"$FIXTURES/branches.json"
 run sweep-preview-orphans.sh --dry-run
 [[ $status -eq 0 ]] && grep -q "WOULD DESTROY heph-cp-pr-gone" "$scratch/out" && ! grep -q "apps destroy" "$CALLS" && ! grep -q "DELETE" "$CALLS"
 expect "a dry run says what would go and destroys nothing" $?
 run sweep-preview-orphans.sh
 grep -q "fly apps destroy heph-cp-pr-gone --yes" "$CALLS" && grep -q "DELETE .*/branches/br-g" "$CALLS"
 expect "an app and a branch no open pull request owns are destroyed" $?
+grep -q "fly apps destroy heph-cp-pr-feat-stale --yes" "$CALLS" && grep -q "DELETE .*/branches/br-s" "$CALLS"
+expect "a preview of an open pull request with no push past the limit is removed" $?
 ! grep -q "destroy heph-cp-pr-feat-open\|destroy heph-cp-pr-fresh\|destroy hephaestium-control-plane" "$CALLS" &&
   ! grep -q "DELETE .*/branches/br-o\|DELETE .*/branches/br-f\|DELETE .*/branches/br-parent" "$CALLS"
-expect "an open pull request's, a young one's, production's and the parent are kept" $?
+expect "a preview of an open pull request pushed to within the limit is kept, as are a young one's, production's and the parent are kept" $?
 
 reset
 echo "[]" >"$FIXTURES/apps-list.json"

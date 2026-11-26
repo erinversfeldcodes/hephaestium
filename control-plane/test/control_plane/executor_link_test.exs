@@ -119,6 +119,14 @@ defmodule ControlPlane.ExecutorLinkTest do
 
   defp beginning(id), do: stream(id, 1, [started(), workspace_ready()])
 
+  defp drain_queries(acc) do
+    receive do
+      {:query, query} -> drain_queries([query | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   defp lease(id), do: Repo.get(WorkloadLease, id)
 
   # The lease ended a minute ago, as a laptop that closed would leave it.
@@ -156,6 +164,36 @@ defmodule ControlPlane.ExecutorLinkTest do
       assert %{status: 200} = StandInWorker.record(ctx.port, ctx.mine, id, record)
       assert Workloads.get(id).record == record
       refute lease(id).active, "the lease is let go when the record is kept"
+    end
+
+    test "locks a workload for an event without reading its documents", ctx do
+      id = queued()
+      assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine)
+
+      test_pid = self()
+      handler = "lock-query-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler,
+        [:control_plane, :repo, :query],
+        fn _event, _measure, %{query: query}, _config ->
+          if self() == test_pid, do: send(test_pid, {:query, query})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      assert {:ok, 1, _} = Leases.ingest(ctx.mine_record, id, [event(id, 1, started())])
+      :telemetry.detach(handler)
+
+      queries = drain_queries([])
+      # The first lock is the lease's; the append takes its own, which reads the row it advances.
+      [lock | _] = Enum.filter(queries, &(&1 =~ ~r/FOR UPDATE/))
+
+      assert lock =~ ~r/^SELECT w0\."id" FROM "workloads"/
+      refute lock =~ "workload\""
+      refute lock =~ "record"
     end
 
     test "is given a queued review before an implementation that was queued earlier", ctx do

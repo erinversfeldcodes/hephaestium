@@ -32,14 +32,22 @@ defmodule ControlPlane.Api.Read do
   queued one, has `waiting`: since when, and for a queued workload whether no worker has
   claimed it, which is so when no executor of the ticket's approver is connected. A time the
   control plane does not hold is nil, and the age is unknown.
+
+  Each carries `runs` (its workloads, oldest first, with kind, state, lens and time: what the
+  board draws a track from), `spend_usd`, and `needs`: `%{kind: "question", text: ...}` for a
+  question waiting, `%{kind: "failure", step: ..., runs: n}` for a ticket whose latest run
+  failed and nothing has restarted (the gate it stopped at, or the run's kind, and how many runs
+  in a row stopped there), or nil when it needs no person.
   """
   @spec tickets(non_neg_integer(), non_neg_integer()) :: [map()]
   def tickets(limit, offset) do
-    rows = with_workloads(limit + offset)
-    waiting = for w <- WaitingTickets.list(limit + offset), do: waiting_ticket(w)
+    watched = watched()
+    rows = with_workloads(limit + offset, watched)
+    waiting = for w <- WaitingTickets.list(limit + offset, watched), do: waiting_ticket(w)
 
     page =
-      (rows ++ waiting)
+      rows
+      |> join_waiting(waiting)
       |> Enum.sort_by(& &1.sort_at, {:desc, DateTime})
       |> Enum.drop(offset)
       |> Enum.take(limit)
@@ -51,14 +59,152 @@ defmodule ControlPlane.Api.Read do
           into: %{},
           do: {login, DeviceTokens.connected?(login)}
 
-    pulls = PullRequests.for_tickets(for row <- page, do: {row.repository, row.number})
+    keys = for row <- page, do: {row.repository, row.number}
+    pulls = PullRequests.for_tickets(keys)
+    runs = runs_of(keys)
+    spent = spent_usd(keys)
+    asked = for q <- questions(), into: %{}, do: {{q.repository, q.ticket}, q.question}
 
     Enum.map(page, fn row ->
+      key = {row.repository, row.number}
+      row_runs = Map.get(runs, key, [])
+
       row
       |> Map.delete(:sort_at)
       |> Map.update!(:waiting, &worker_known(&1, connected))
-      |> Map.put(:pull_request, pulls[{row.repository, row.number}])
+      |> Map.put(:pull_request, pulls[key])
+      |> Map.put(:runs, row_runs)
+      |> Map.put(:spend_usd, Map.get(spent, key, 0.0))
+      |> Map.put(:needs, needs(row, asked[key], row_runs, pulls[key]))
     end)
+  end
+
+  # The repositories the control plane watches. A ticket of any other repository is not on the
+  # board: its repository may be deleted or no longer served, and nothing will ever settle it.
+  defp watched, do: Application.get_env(:control_plane, :intake, [])[:repositories] || []
+
+  # A ticket is one row. One that has workloads and waits again keeps its latest workload,
+  # count, runs and spend, and takes the waiting that the approval gives; one that has no
+  # workload is the waiting row alone.
+  defp join_waiting(rows, waiting) do
+    by_key = Map.new(waiting, &{{&1.repository, &1.number}, &1})
+    started = MapSet.new(rows, &{&1.repository, &1.number})
+
+    joined =
+      Enum.map(rows, fn row ->
+        case by_key[{row.repository, row.number}] do
+          nil ->
+            row
+
+          wait ->
+            %{row | waiting: wait.waiting, sort_at: later(row.sort_at, wait.sort_at)}
+        end
+      end)
+
+    joined ++ Enum.reject(waiting, &MapSet.member?(started, {&1.repository, &1.number}))
+  end
+
+  defp later(a, b), do: if(DateTime.compare(a, b) == :lt, do: b, else: a)
+
+  # What a person is asked for on a ticket: the question a run stopped to ask, or the step a run
+  # failed at when nothing has started a run since. A settled ticket, one that waits, one whose
+  # pull request ended, and one that needs nothing, carry nil.
+  defp needs(%{settled_at: settled}, _question, _runs, _pull) when not is_nil(settled), do: nil
+
+  defp needs(row, question, runs, pull) do
+    case {question, Enum.reverse(runs)} do
+      {text, _} when is_binary(text) and text != "" ->
+        %{kind: "question", text: text |> Account.clean() |> String.trim()}
+
+      # Approved again and waiting for a worker or for a blocker: the earlier failure was
+      # answered by the approval, and a person has nothing to do until a run starts.
+      {_, _} when not is_nil(row.waiting) ->
+        nil
+
+      # The pull request ended, merged or closed: there is nothing left for a person to retry.
+      {_, _} when is_map(pull) and pull.state in ["merged", "closed"] ->
+        nil
+
+      {_, [%{state: state} = latest | earlier]} when state in ["failed", "timed_out"] ->
+        same =
+          Enum.take_while(
+            earlier,
+            &(&1.state in ["failed", "timed_out"] and &1.failed_gate == latest.failed_gate and
+                &1.kind == latest.kind)
+          )
+
+        %{kind: "failure", step: latest.failed_gate || latest.kind, runs: 1 + length(same)}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Each ticket's workloads, oldest first, as far as the board needs to place a ticket on its
+  # track: their kind, state, lens and when they were made, and the gate a failed one stopped at
+  # (nil when it stopped at none).
+  defp runs_of([]), do: %{}
+
+  defp runs_of(keys) do
+    repositories = keys |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    numbers = keys |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    wanted = MapSet.new(keys)
+
+    Repo.all(
+      from w in Workload,
+        where: w.repository in ^repositories and w.ticket_number in ^numbers,
+        order_by: [asc: w.inserted_at, asc: w.id],
+        select: %{
+          repository: w.repository,
+          number: w.ticket_number,
+          state: w.state,
+          at: w.inserted_at,
+          document: w.workload,
+          gates: fragment("?->'gates'", w.record)
+        }
+    )
+    |> Enum.filter(&MapSet.member?(wanted, {&1.repository, &1.number}))
+    |> Enum.group_by(&{&1.repository, &1.number}, fn w ->
+      kind = kind(w.document)
+
+      %{
+        kind: kind,
+        state: w.state,
+        lens: get_in(w.document || %{}, ["review", "lens"]),
+        at: utc(w.at),
+        failed_gate: failed_gate(w.gates)
+      }
+    end)
+  end
+
+  defp failed_gate(gates) when is_list(gates) do
+    Enum.find_value(gates, fn
+      %{"name" => name, "result" => %{"outcome" => outcome}}
+      when outcome in ["failed", "timed out", "timed_out"] ->
+        name
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp failed_gate(_), do: nil
+
+  defp spent_usd([]), do: %{}
+
+  defp spent_usd(keys) do
+    repositories = keys |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    numbers = keys |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    wanted = MapSet.new(keys)
+
+    Repo.all(
+      from e in ControlPlane.SpendEntry,
+        where: e.repository in ^repositories and e.ticket_number in ^numbers and e.unit == "usd",
+        group_by: [e.repository, e.ticket_number],
+        select: {{e.repository, e.ticket_number}, coalesce(sum(e.amount), 0.0)}
+    )
+    |> Enum.filter(fn {key, _} -> MapSet.member?(wanted, key) end)
+    |> Map.new(fn {key, usd} -> {key, usd * 1.0} end)
   end
 
   defp worker_known(%{no_worker: :unknown, approved_by: login} = waiting, connected),
@@ -79,9 +225,10 @@ defmodule ControlPlane.Api.Read do
     }
   end
 
-  defp with_workloads(limit) do
+  defp with_workloads(limit, watched) do
     latest =
       from w in Workload,
+        where: w.repository in ^watched,
         distinct: [w.repository, w.ticket_number],
         order_by: [w.repository, w.ticket_number, desc: w.inserted_at, desc: w.id],
         select: %{
@@ -224,9 +371,10 @@ defmodule ControlPlane.Api.Read do
   defp blank(value), do: value
 
   @doc """
-  The gates a workload ran, each with its name and what it came to. Only the gate's own result
-  is read: its outcome, why it did not run, the check it was left to, how long it took and its
-  exit code. None of it is an agent's text.
+  The gates a workload ran, each with its name and what it came to: its outcome, why it did not
+  run, the check it was left to, how long it took and its exit code, and the last lines it
+  printed (at most 40) with how many lines came before them. The output can carry private paths,
+  so this is read only behind the login. A record that holds more than 40 lines is cut again here.
   """
   @spec gates(%Workload{}) :: [map()]
   def gates(%Workload{record: %{"gates" => gates}}) when is_list(gates) do
@@ -241,10 +389,32 @@ defmodule ControlPlane.Api.Read do
         duration_ms: result["duration_ms"],
         exit_code: result["exit_code"]
       }
+      |> Map.merge(output(gate))
     end
   end
 
   def gates(%Workload{}), do: []
+
+  @output_lines 40
+
+  # The last lines a gate printed, and how many lines were left out: those the executor left out
+  # and any this cuts.
+  defp output(gate) do
+    text = if is_binary(gate["output"]), do: gate["output"], else: ""
+
+    left_out =
+      if is_integer(gate["omittedLines"]) and gate["omittedLines"] > 0,
+        do: gate["omittedLines"],
+        else: 0
+
+    lines = String.split(text, "\n")
+    cut = max(length(lines) - @output_lines, 0)
+
+    %{
+      output: lines |> Enum.drop(cut) |> Enum.join("\n"),
+      omitted_lines: left_out + cut
+    }
+  end
 
   @doc """
   Every completeness verdict a ticket has had, oldest first. Each is the verdict as it passed

@@ -45,7 +45,7 @@ root = "."
 paths = ["**"]
 
 [gates.noisy]
-run = ["sh", "-c", "printf '{\"key\":\"%s\"}' \"$PIXABAY_API_KEY\""]
+run = ["sh", "-c", "printf '{\"key\":\"%s\"}' \"$PIXABAY_API_KEY\"; echo \"key is $PIXABAY_API_KEY\" >&2"]
 result = "json"
 timeout_seconds = 30
 
@@ -162,6 +162,25 @@ fn a_gate_secret_a_gate_prints_is_a_marker_in_the_events_and_the_record() {
         "an event holds the secret:\n{events}"
     );
     assert!(!record_text(&ran).contains(GATE));
+}
+
+#[test]
+fn a_gate_secret_a_gate_prints_is_a_marker_in_the_output_the_record_keeps_for_that_gate() {
+    let rig = rig_with_gate("redact-gate-output");
+    let script = agent_script("");
+
+    let ran = run(rig, &script, &[("HEPH_GATE_SECRET_PIXABAY_API_KEY", GATE)]);
+
+    let record: Value = serde_json::from_str(&record_text(&ran)).expect("a record");
+    let output = record["gates"][0]["output"].as_str().expect("an output");
+    assert!(
+        output.contains("[redacted: PIXABAY_API_KEY]"),
+        "the gate's output in the record: {output}"
+    );
+    assert!(
+        !output.contains(GATE),
+        "the gate's output holds the secret: {output}"
+    );
 }
 
 #[test]

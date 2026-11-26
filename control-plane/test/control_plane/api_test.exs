@@ -12,7 +12,8 @@ defmodule ControlPlane.ApiTest do
   import Ecto.Query, only: [from: 2]
 
   alias ControlPlane.Api.{Router, Session, Settings, UsedStates}
-  alias ControlPlane.{Events, Fixtures, StandInGitHubLogin, Workloads}
+  alias ControlPlane.{Events, Fixtures, StandInGitHubLogin, StandInSystems, Ticket, Workloads}
+  alias ControlPlane.Webhooks.{Event, Handle}
 
   @secret String.duplicate("k", 64)
 
@@ -33,8 +34,31 @@ defmodule ControlPlane.ApiTest do
 
   setup do
     start_supervised!(UsedStates)
+    start_supervised!(ControlPlane.StandInSystems)
     StandInGitHubLogin.accept(%{"good" => "octocat", "stranger" => "mallory"})
-    on_exit(fn -> Application.delete_env(:control_plane, :stand_in_logins) end)
+
+    saved = for key <- [:systems, :intake], do: {key, Application.fetch_env(:control_plane, key)}
+
+    Application.put_env(:control_plane, :systems, %{
+      "erinversfeldcodes/gazebolang" => %{
+        tracker: {ControlPlane.StandInTracker, "erinversfeldcodes/gazebolang"},
+        code_host: {ControlPlane.StandInCodeHost, "erinversfeldcodes/gazebolang"}
+      }
+    })
+
+    Application.put_env(:control_plane, :intake, repositories: ["erinversfeldcodes/gazebolang"])
+
+    on_exit(fn ->
+      Application.delete_env(:control_plane, :stand_in_logins)
+
+      for {key, value} <- saved do
+        case value do
+          {:ok, value} -> Application.put_env(:control_plane, key, value)
+          :error -> Application.delete_env(:control_plane, key)
+        end
+      end
+    end)
+
     :ok
   end
 
@@ -94,6 +118,11 @@ defmodule ControlPlane.ApiTest do
     id
   end
 
+  defp tickets_by_number do
+    %{"tickets" => tickets} = get_as("/api/tickets") |> json()
+    Map.new(tickets, &{&1["number"], &1})
+  end
+
   defp set_state(id, state) do
     import Ecto.Query
     Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^id), set: [state: state])
@@ -141,6 +170,7 @@ defmodule ControlPlane.ApiTest do
             "/api/workloads/#{id}/events",
             "/api/workloads/#{id}/events/stream",
             "/api/workloads/#{id}/steps",
+            "/api/workloads/#{id}/gates",
             "/api/workloads/#{id}/account",
             "/api/spend/tickets/erinversfeldcodes/gazebolang/12",
             "/api/spend/epics/erinversfeldcodes/gazebolang/12",
@@ -539,6 +569,140 @@ defmodule ControlPlane.ApiTest do
       assert ticket["waiting"]["no_worker"] == false
     end
 
+    test "a ticket with a question waiting carries it as what it needs" do
+      asked = seed_kind(60, %{}, "blocked")
+
+      :ok =
+        Workloads.keep_record(asked, %{
+          "outcome" => "OUTCOME_BLOCKED",
+          "question" => "Which database should the guards be stored in?"
+        })
+
+      assert tickets_by_number()[60]["needs"] == %{
+               "kind" => "question",
+               "text" => "Which database should the guards be stored in?"
+             }
+    end
+
+    test "a ticket whose runs failed at a gate and were not restarted carries the step and the runs" do
+      for _ <- 1..3 do
+        id = seed_kind(61, %{}, "failed")
+
+        :ok =
+          Workloads.keep_record(id, %{
+            "gates" => [
+              %{"name" => "build", "result" => %{"outcome" => "passed"}},
+              %{"name" => "format-rust", "result" => %{"outcome" => "failed"}}
+            ]
+          })
+      end
+
+      ticket = tickets_by_number()[61]
+      assert ticket["needs"] == %{"kind" => "failure", "step" => "format-rust", "runs" => 3}
+      assert ticket["workloads"] == 3
+    end
+
+    test "a failure that a later run has replaced is not what the ticket needs" do
+      seed_kind(62, %{}, "failed")
+      seed_kind(62, %{}, "running")
+
+      assert tickets_by_number()[62]["needs"] == nil
+    end
+
+    test "a ticket with a failed workload and a waiting row is listed once and needs nothing" do
+      seed_kind(70, %{}, "failed")
+      approved_at = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.truncate(:second)
+      :ok = ControlPlane.WaitingTickets.put(@repository, 70, "octocat", approved_at)
+
+      %{"tickets" => tickets} = get_as("/api/tickets") |> json()
+      assert [ticket] = Enum.filter(tickets, &(&1["number"] == 70))
+      assert ticket["needs"] == nil
+      assert ticket["workloads"] == 1
+      assert [%{"state" => "failed"}] = ticket["runs"]
+      assert ticket["waiting"]["approved_by"] == "octocat"
+    end
+
+    test "a closed ticket with a failed newest workload needs nothing" do
+      id = seed_kind(71, %{}, "failed")
+      StandInSystems.answer(:tracker, :ticket, {:ok, %Ticket{key: 71, state: :closed}})
+
+      Handle.run(%Event{kind: :ticket_closed, repository: @repository, number: 71})
+
+      assert tickets_by_number()[71]["needs"] == nil
+      assert Workloads.get(id).settled_at != nil
+    end
+
+    test "a ticket whose pull request merged needs nothing for an earlier failure" do
+      id = seed_kind(72, %{}, "failed")
+      StandInSystems.answer(:tracker, :ticket, {:ok, %Ticket{key: 72, state: :open}})
+
+      Workloads.keep_record(id, %{
+        "pullRequest" => %{"url" => "https://github.com/#{@repository}/pull/9"}
+      })
+
+      Repo.insert!(%ControlPlane.PullRequest{
+        repository: @repository,
+        number: 9,
+        url: "https://github.com/#{@repository}/pull/9",
+        state: "merged",
+        checks: "none",
+        changed_at: DateTime.utc_now(),
+        refreshed_at: DateTime.utc_now()
+      })
+
+      ControlPlane.Settle.closed_tickets()
+
+      assert tickets_by_number()[72]["needs"] == nil
+      assert Workloads.get(id).settled_at != nil
+    end
+
+    test "a ticket of a repository that is not watched is not listed" do
+      id = Ecto.UUID.generate()
+
+      {:ok, _} =
+        Fixtures.workload(id)
+        |> put_in(["ticket", "number"], "73")
+        |> put_in(["repository", "name"], "hephaestium-sandbox")
+        |> Workloads.create()
+
+      :ok =
+        ControlPlane.WaitingTickets.put(
+          "erinversfeldcodes/hephaestium-sandbox",
+          74,
+          "octocat",
+          DateTime.utc_now() |> DateTime.truncate(:second)
+        )
+
+      assert tickets_by_number()[73] == nil
+      assert tickets_by_number()[74] == nil
+    end
+
+    test "a failed ticket that nothing restarted is still under Needs you" do
+      seed_kind(75, %{}, "failed")
+
+      assert %{"kind" => "failure"} = tickets_by_number()[75]["needs"]
+    end
+
+    test "a ticket that needs nothing carries no needs, and says what each run was and its cost" do
+      import ControlPlane.SpendFixtures
+      %{id: id} = spent(63, [usd(1.5)])
+      set_state(id, "running")
+
+      ticket = tickets_by_number()[63]
+      assert ticket["needs"] == nil
+      assert ticket["spend_usd"] == 1.5
+
+      assert [
+               %{
+                 "kind" => "implementation",
+                 "state" => "running",
+                 "lens" => nil,
+                 "failed_gate" => nil
+               }
+             ] =
+               ticket["runs"]
+    end
+
     test "a ticket with its workloads and what it spent" do
       id = seed(12)
       conn = get_as("/api/tickets/#{@repository}/12")
@@ -804,6 +968,55 @@ defmodule ControlPlane.ApiTest do
 
       assert get_as("/api/workloads/#{seed(14)}/gates") |> json() == %{"gates" => []}
       assert get_as("/api/workloads/#{Ecto.UUID.generate()}/gates").status == 404
+    end
+
+    test "a gate's last lines are served, cut to 40 and saying how many were left out" do
+      id = seed()
+      long = Enum.map_join(1..55, "\n", &"line #{&1}")
+
+      :ok =
+        Workloads.keep_record(id, %{
+          "gates" => [
+            %{"name" => "format", "result" => %{"outcome" => "passed"}, "output" => "ok"},
+            %{
+              "name" => "test",
+              "result" => %{"outcome" => "failed", "exit_code" => 1},
+              "output" => long,
+              "omittedLines" => 10
+            },
+            %{"name" => "old", "result" => %{"outcome" => "passed"}}
+          ]
+        })
+
+      assert %{"gates" => [format, test, old]} = get_as("/api/workloads/#{id}/gates") |> json()
+      assert %{"output" => "ok", "omitted_lines" => 0} = format
+      assert test["omitted_lines"] == 25
+      lines = String.split(test["output"], "\n")
+      assert length(lines) == 40
+      assert hd(lines) == "line 16"
+      assert List.last(lines) == "line 55"
+      assert %{"output" => "", "omitted_lines" => 0} = old
+    end
+
+    test "a run's reason is served in full, and a run that has not finished has neither it nor gates" do
+      failed = seed()
+
+      :ok =
+        Workloads.fail(
+          failed,
+          "gate test failed in /Users/someone/work: " <> String.duplicate("x", 3000)
+        )
+
+      running = seed(15)
+
+      body = get_as("/api/workloads/#{failed}") |> json()
+      assert body["state"] == "failed"
+      assert String.starts_with?(body["reason"], "gate test failed in /Users/someone/work: ")
+      assert String.length(body["reason"]) > 3000
+
+      body = get_as("/api/workloads/#{running}") |> json()
+      assert body["reason"] == nil
+      assert get_as("/api/workloads/#{running}/gates") |> json() == %{"gates" => []}
     end
 
     test "a ticket's verdict history, oldest first, with each requirement's evidence" do

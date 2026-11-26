@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -109,8 +109,15 @@ pub fn execute(
 /// that failed had said last. It is shared: clones see the same lines.
 #[derive(Debug, Clone)]
 pub struct Tail {
-    lines: Arc<Mutex<VecDeque<String>>>,
+    lines: Arc<Mutex<Kept>>,
     most: usize,
+}
+
+/// The lines held, and how many were printed in all.
+#[derive(Debug, Default)]
+struct Kept {
+    lines: VecDeque<String>,
+    printed: usize,
 }
 
 impl Tail {
@@ -118,16 +125,17 @@ impl Tail {
     #[must_use]
     pub fn new(most: usize) -> Self {
         Self {
-            lines: Arc::new(Mutex::new(VecDeque::new())),
+            lines: Arc::new(Mutex::new(Kept::default())),
             most,
         }
     }
 
     fn push(&self, line: String) {
-        if let Ok(mut lines) = self.lines.lock() {
-            lines.push_back(line);
-            while lines.len() > self.most {
-                lines.pop_front();
+        if let Ok(mut kept) = self.lines.lock() {
+            kept.printed += 1;
+            kept.lines.push_back(line);
+            while kept.lines.len() > self.most {
+                kept.lines.pop_front();
             }
         }
     }
@@ -137,12 +145,32 @@ impl Tail {
     pub fn text(&self) -> String {
         self.lines.lock().map_or_else(
             |_| String::new(),
-            |lines| {
-                lines
+            |kept| {
+                kept.lines
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join("\n")
+            },
+        )
+    }
+
+    /// The last `most` lines kept, joined with newlines, and how many lines printed before them
+    /// that are not among them.
+    #[must_use]
+    pub fn last(&self, most: usize) -> (String, usize) {
+        self.lines.lock().map_or_else(
+            |_| (String::new(), 0),
+            |kept| {
+                let shown = kept.lines.len().min(most);
+                let text = kept
+                    .lines
+                    .iter()
+                    .skip(kept.lines.len() - shown)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (text, kept.printed - shown)
             },
         )
     }
@@ -245,6 +273,13 @@ pub fn execute_with_tail(
     }
 
     let mut command = Command::new(program);
+    // The worker's own settings are not the command's: a gate that read one would pass or fail
+    // by how the worker was started. Only what the caller names is passed on.
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("HEPH_") {
+            command.env_remove(name);
+        }
+    }
     command
         .args(arguments)
         .current_dir(directory)
@@ -386,7 +421,7 @@ pub enum Go {
 }
 
 /// How a streamed command ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Streamed {
     /// It exited with this code, or the one a shell reports for a signal.
     Exited(i32),
@@ -396,6 +431,9 @@ pub enum Streamed {
     Stopped,
     /// It never started. The code is the one a shell would report.
     NotRun(i32),
+    /// The input it was to be given could not be written to it, and why. It was stopped, since
+    /// a command that never had its input is not running the work it was asked to.
+    InputFailed(String),
     /// The process was told to stop, and the command was killed with everything it
     /// started, or was not started.
     Cancelled,
@@ -448,6 +486,47 @@ pub fn stream(
     )
 }
 
+/// [`stream`], giving the command `input` on its standard input and then closing it. A caller
+/// uses this for text that must not be on the command line, where every process on the machine
+/// can read it and a pattern match on command lines finds it.
+///
+/// # Errors
+///
+/// As for [`stream`]. Input that could not be written ends the command and is reported as
+/// [`Streamed::InputFailed`].
+///
+/// # Panics
+///
+/// If `argv` is empty, as for [`stream`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: what to run, where, with what, what to give it, for how long, how often to tick, and the three things the caller does"
+)]
+pub fn stream_with_input(
+    argv: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    input: &str,
+    deadline: Duration,
+    tick: Duration,
+    on_line: impl FnMut(&str) -> Go,
+    on_tick: impl FnMut() -> Go,
+    notify: impl Fn(&str),
+) -> Result<Streamed, std::io::Error> {
+    run_streaming(
+        argv,
+        directory,
+        environment,
+        Some(input),
+        deadline,
+        tick,
+        on_line,
+        on_tick,
+        notify,
+        None,
+    )
+}
+
 /// [`stream`], keeping the last lines the command wrote to standard error in `tail`. They still
 /// go to this process's standard error a line at a time, as they would have. A caller that
 /// ends a run on the command's failure uses them to say why, since the exit code alone does not.
@@ -469,6 +548,36 @@ pub fn stream_with_tail(
     environment: &[(String, String)],
     deadline: Duration,
     tick: Duration,
+    on_line: impl FnMut(&str) -> Go,
+    on_tick: impl FnMut() -> Go,
+    notify: impl Fn(&str),
+    tail: Option<&Tail>,
+) -> Result<Streamed, std::io::Error> {
+    run_streaming(
+        argv,
+        directory,
+        environment,
+        None,
+        deadline,
+        tick,
+        on_line,
+        on_tick,
+        notify,
+        tail,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the union of what the public forms say"
+)]
+fn run_streaming(
+    argv: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    input: Option<&str>,
+    deadline: Duration,
+    tick: Duration,
     mut on_line: impl FnMut(&str) -> Go,
     mut on_tick: impl FnMut() -> Go,
     notify: impl Fn(&str),
@@ -482,21 +591,14 @@ pub fn stream_with_tail(
         return Ok(Streamed::Cancelled);
     }
 
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .current_dir(directory)
-        .env_clear()
-        .envs(environment.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(if tail.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        })
-        .process_group(0);
-
+    let mut command = command_for(
+        program,
+        arguments,
+        directory,
+        environment,
+        input.is_some(),
+        tail.is_some(),
+    );
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -504,6 +606,8 @@ pub fn stream_with_tail(
             return Ok(Streamed::NotRun(code_when_not_started(&error)));
         }
     };
+
+    let mut given = Given::start(&mut child, input);
 
     let standard_output = child.stdout.take().expect("standard output was piped");
     let (lines, reader) = read_lines(standard_output);
@@ -532,6 +636,12 @@ pub fn stream_with_tail(
             stop_everything_started_by(&child);
             let _ = child.wait();
             break Streamed::Cancelled;
+        }
+
+        if let Some(reason) = given.failure() {
+            stop_everything_started_by(&child);
+            let _ = child.wait();
+            break Streamed::InputFailed(reason);
         }
 
         let now = Instant::now();
@@ -583,12 +693,100 @@ pub fn stream_with_tail(
     };
 
     stop_everything_started_by(&child);
+    // A command that exited before it read its input ends the loop before the writer has said
+    // so, and the input it never had is the reason it did not do its work.
+    let ended = with_input_failure(ended, given.finish());
     // The reader is not joined. It ends when the pipe closes, which killing the
     // group brings about, except when a process outside the group holds the pipe
     // open, and then waiting for it would wait for that process.
     drop(reader);
     give_a_moment_to_finish(tee);
     Ok(ended)
+}
+
+/// The command, in a process group of its own, with exactly the environment it was given.
+fn command_for(
+    program: &str,
+    arguments: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    piped_input: bool,
+    piped_errors: bool,
+) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .current_dir(directory)
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .stdin(if piped_input {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(if piped_errors {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
+        .process_group(0);
+    command
+}
+
+/// A command that exited has not done its work if its input was never delivered.
+fn with_input_failure(ended: Streamed, failure: Option<String>) -> Streamed {
+    match (ended, failure) {
+        (Streamed::Exited(_), Some(reason)) => Streamed::InputFailed(reason),
+        (ended, _) => ended,
+    }
+}
+
+/// The input being written to a command's standard input, and why that failed if it did.
+struct Given {
+    error: Arc<Mutex<Option<String>>>,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Given {
+    /// Write `input`, if there is any, from a thread of its own, and close the command's
+    /// standard input after it. Input larger than the pipe holds is taken as the command reads
+    /// it, and a command that never reads must not hold the caller up past its deadline.
+    fn start(child: &mut std::process::Child, input: Option<&str>) -> Self {
+        let error = Arc::new(Mutex::new(None));
+        let writer = input.map(|input| {
+            let mut standard_input = child.stdin.take().expect("standard input was piped");
+            let input = input.to_owned();
+            let error = Arc::clone(&error);
+            std::thread::spawn(move || {
+                let written = standard_input
+                    .write_all(input.as_bytes())
+                    .and_then(|()| standard_input.flush());
+                if let Err(failure) = written {
+                    *error
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(failure.to_string());
+                }
+            })
+        });
+        Self { error, writer }
+    }
+
+    /// Why the input could not be written, if it could not.
+    fn failure(&self) -> Option<String> {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Why it failed, after giving the writer a moment to say so: a command that exited before it
+    /// read its input ends the loop before the writer has noticed.
+    fn finish(&mut self) -> Option<String> {
+        give_a_moment_to_finish(self.writer.take());
+        self.failure()
+    }
 }
 
 /// What a command wrote last is what explains a failure, so its copying is given a moment to
@@ -609,5 +807,200 @@ fn code_when_not_started(error: &std::io::Error) -> i32 {
         NOT_FOUND
     } else {
         NOT_EXECUTABLE
+    }
+}
+
+/// A process found running with its working directory under a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub pid: i32,
+    /// Its working directory, with symbolic links resolved.
+    pub directory: PathBuf,
+}
+
+/// The processes, other than this one, whose working directory is under `directory`.
+///
+/// A process that left its command's process group, as a shell with job control or `setsid`
+/// does, is not reached by stopping the group, but it still works in the directory it was
+/// started in. On Linux this reads `/proc`; elsewhere it asks `lsof`. When neither can be read
+/// nothing is found, which is the same as nothing being running, so a caller must not take
+/// an empty answer as proof.
+#[must_use]
+pub fn processes_under(directory: &Path) -> Vec<Found> {
+    let Ok(root) = directory.canonicalize() else {
+        return Vec::new();
+    };
+    let own = i32::try_from(std::process::id()).unwrap_or(0);
+    let mut found: Vec<Found> = working_directories()
+        .into_iter()
+        .filter(|found| found.pid != own && found.directory.starts_with(&root))
+        .collect();
+    found.sort_by_key(|found| found.pid);
+    found
+}
+
+fn working_directories() -> Vec<Found> {
+    if Path::new("/proc/self/cwd").exists() {
+        return proc_working_directories(Path::new("/proc"));
+    }
+    let Ok(output) = Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-F", "pn"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_lsof(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Read each numbered entry of a `/proc`-shaped directory for the link to its working directory.
+fn proc_working_directories(proc: &Path) -> Vec<Found> {
+    let Ok(entries) = std::fs::read_dir(proc) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
+            let directory = std::fs::read_link(entry.path().join("cwd")).ok()?;
+            Some(Found { pid, directory })
+        })
+        .collect()
+}
+
+/// Read the output of `lsof -F pn`: a `p` line names a process, and the `n` lines after it
+/// name its working directory.
+fn parse_lsof(text: &str) -> Vec<Found> {
+    let mut found = Vec::new();
+    let mut pid = None;
+    for line in text.lines() {
+        if let Some(number) = line.strip_prefix('p') {
+            pid = number.parse::<i32>().ok();
+        } else if let (Some(name), Some(pid)) = (line.strip_prefix('n'), pid) {
+            found.push(Found {
+                pid,
+                directory: PathBuf::from(name),
+            });
+        }
+    }
+    found
+}
+
+/// Kill one process. Failure means it is already gone, which is what was wanted.
+pub fn kill_found(found: &Found) {
+    if let Some(pid) = Pid::from_raw(found.pid) {
+        let _ = rustix::process::kill_process(pid, Signal::KILL);
+    }
+}
+
+/// Kill every process working under `directory`, and look again until none is left, since a
+/// loop that was killed may have started another a moment before. Returns every process killed.
+#[must_use]
+pub fn stop_processes_under(directory: &Path) -> Vec<Found> {
+    let mut stopped = Vec::new();
+    for _ in 0..10 {
+        let found = processes_under(directory);
+        if found.is_empty() {
+            break;
+        }
+        for process in &found {
+            kill_found(process);
+        }
+        stopped.extend(found);
+        std::thread::sleep(POLL * 5);
+    }
+    stopped
+}
+
+/// The machine's load average over one, five and fifteen minutes, as it prints them, so that a
+/// timeout can say whether the machine was busy.
+#[must_use]
+pub fn load_average() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/loadavg").ok().or_else(|| {
+        let output = Command::new("sysctl")
+            .args(["-n", "vm.loadavg"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout).ok()
+    })?;
+    parse_load_average(&text)
+}
+
+/// The first three numbers of `/proc/loadavg` (`0.52 0.58 0.59 1/467 12345`) or of macOS's
+/// `vm.loadavg` (`{ 1.52 1.40 1.37 }`).
+fn parse_load_average(text: &str) -> Option<String> {
+    let numbers: Vec<&str> = text
+        .split_whitespace()
+        .filter(|word| word.parse::<f64>().is_ok())
+        .take(3)
+        .collect();
+    (numbers.len() == 3).then(|| numbers.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_linux_load_average_is_read() {
+        assert_eq!(
+            parse_load_average("274.10 120.00 40.5 3/467 12345\n").as_deref(),
+            Some("274.10 120.00 40.5")
+        );
+    }
+
+    #[test]
+    fn a_macos_load_average_is_read() {
+        assert_eq!(
+            parse_load_average("{ 1.52 1.40 1.37 }\n").as_deref(),
+            Some("1.52 1.40 1.37")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_load_average_is_none() {
+        assert_eq!(parse_load_average("nonsense"), None);
+        assert_eq!(parse_load_average("1.0 2.0"), None);
+    }
+
+    #[test]
+    fn lsof_output_gives_each_process_its_directory() {
+        let found = parse_lsof("p12\nfcwd\nn/work/a\np34\nfcwd\nn/work/b c\n");
+        assert_eq!(
+            found,
+            vec![
+                Found {
+                    pid: 12,
+                    directory: PathBuf::from("/work/a")
+                },
+                Found {
+                    pid: 34,
+                    directory: PathBuf::from("/work/b c")
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_proc_directory_gives_each_numbered_entry_its_working_directory() {
+        let base = std::env::temp_dir().join(format!("heph-proc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("42")).unwrap();
+        std::fs::create_dir_all(base.join("self")).unwrap();
+        std::fs::create_dir_all(base.join("7")).unwrap();
+        std::os::unix::fs::symlink("/work/run", base.join("42/cwd")).unwrap();
+        let found = proc_working_directories(&base);
+        std::fs::remove_dir_all(&base).unwrap();
+        // "self" is not a number and "7" has no readable cwd link.
+        assert_eq!(
+            found,
+            vec![Found {
+                pid: 42,
+                directory: PathBuf::from("/work/run")
+            }]
+        );
     }
 }
