@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use contracts::v1alpha1::event::Kind;
 use contracts::v1alpha1::{Heartbeat, Workload};
-use heph::process::{Go, Streamed, stream};
+use heph::process::{Go, Streamed, stream_with_input};
 
 use crate::adapter::Adapter;
 use crate::run::{Refused, say};
@@ -119,10 +119,11 @@ pub fn run<W: Write>(
         }
     };
 
-    let ended = stream(
+    let ended = stream_with_input(
         &plan.command,
         Path::new(&plan.working_directory),
         &environment,
+        &plan.stdin,
         timeout,
         heartbeat,
         |line| {
@@ -175,22 +176,35 @@ pub fn run<W: Write>(
     if let Some(error) = write_failed.into_inner() {
         return Err(error.into());
     }
-    Ok(match ended {
+    Ok(end_of(
+        ended,
+        stopped_because.into_inner(),
+        timeout,
+        plan.command.first().map_or("", String::as_str),
+    ))
+}
+
+/// How the agent's part of the run ended, from how its process did.
+fn end_of(
+    ended: Streamed,
+    stopped_because: Option<String>,
+    timeout: Duration,
+    program: &str,
+) -> End {
+    match ended {
         Streamed::Exited(0) => End::Done,
         Streamed::Exited(code) => End::Failed(format!("the agent exited with code {code}")),
         Streamed::TimedOut => End::TimedOut(format!(
             "the agent ran past the workload's timeout of {timeout:?} and was stopped; the load average on this machine, over one, five and fifteen minutes, was {}",
             heph::process::load_average().unwrap_or_else(|| "not readable".to_owned())
         )),
-        Streamed::Stopped => End::Failed(
-            stopped_because
-                .into_inner()
-                .unwrap_or_else(|| "the agent was stopped".to_owned()),
-        ),
+        Streamed::Stopped => {
+            End::Failed(stopped_because.unwrap_or_else(|| "the agent was stopped".to_owned()))
+        }
         Streamed::Cancelled => End::Cancelled,
-        Streamed::NotRun(_) => End::Failed(format!(
-            "the agent could not be started: {}",
-            plan.command.first().map_or("", String::as_str)
+        Streamed::InputFailed(reason) => End::Failed(format!(
+            "the agent could not be given its instructions on standard input: {reason}"
         )),
-    })
+        Streamed::NotRun(_) => End::Failed(format!("the agent could not be started: {program}")),
+    }
 }

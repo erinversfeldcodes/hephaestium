@@ -263,12 +263,7 @@ fn first_run_prompt(conflicts: &[&str]) -> String {
     });
     let workload: Workload = serde_json::from_value(value).expect("a workload");
     let plan = ClaudeCode.plan(&workload, Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 #[test]
