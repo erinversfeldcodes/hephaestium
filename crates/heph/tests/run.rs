@@ -573,6 +573,7 @@ impl Rig {
         let executor = self.executor().to_string_lossy().into_owned();
         let runs = self.runs_dir().to_string_lossy().into_owned();
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_heph"));
+        common::without_heph_variables(&mut command);
         command
             .current_dir(&self.home.0)
             .arg("run")

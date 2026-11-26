@@ -182,26 +182,30 @@ echo "$$" > "$d/pid-$id"
         let claude = self.secret_file();
         let out = self.home.0.join("worker.out");
         let err = self.home.0.join("worker.err");
-        let child = Command::new(env!("CARGO_BIN_EXE_heph"))
-            .current_dir(&self.home.0)
-            .args(["worker", "--control-plane", address, "--executor"])
-            .arg(executor)
-            .arg("--runs-dir")
-            .arg(self.home.0.join("runs"))
-            .args(extra_args)
-            .env("HOME", &self.home.0)
-            .env("XDG_CONFIG_HOME", self.home.0.join("config"))
-            .env("HEPH_WORKER_TOKEN", TOKEN)
-            .env_remove("HEPH_WORKER_TOKEN_FILE")
-            .env("HEPH_GITHUB_TOKEN", GITHUB_SECRET)
-            .env_remove("HEPH_GITHUB_TOKEN_FILE")
-            .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
-            .env("CLAUDE_CODE_OAUTH_TOKEN_FILE", claude)
-            .stdin(Stdio::null())
-            .stdout(std::fs::File::create(&out).expect("a file"))
-            .stderr(std::fs::File::create(&err).expect("a file"))
-            .spawn()
-            .expect("the heph binary to run");
+        let child = {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_heph"));
+            common::without_heph_variables(&mut command);
+            command
+        }
+        .current_dir(&self.home.0)
+        .args(["worker", "--control-plane", address, "--executor"])
+        .arg(executor)
+        .arg("--runs-dir")
+        .arg(self.home.0.join("runs"))
+        .args(extra_args)
+        .env("HOME", &self.home.0)
+        .env("XDG_CONFIG_HOME", self.home.0.join("config"))
+        .env("HEPH_WORKER_TOKEN", TOKEN)
+        .env_remove("HEPH_WORKER_TOKEN_FILE")
+        .env("HEPH_GITHUB_TOKEN", GITHUB_SECRET)
+        .env_remove("HEPH_GITHUB_TOKEN_FILE")
+        .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+        .env("CLAUDE_CODE_OAUTH_TOKEN_FILE", claude)
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&out).expect("a file"))
+        .stderr(std::fs::File::create(&err).expect("a file"))
+        .spawn()
+        .expect("the heph binary to run");
         Worker { child, out, err }
     }
 }
@@ -692,6 +696,7 @@ fn what_cannot_be_used_is_refused_before_anything_is_claimed() {
     let rig = Rig::new("usage");
     let run = |args: &[&str], token: Option<&str>| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_heph"));
+        common::without_heph_variables(&mut command);
         command
             .current_dir(&rig.home.0)
             .arg("worker")

@@ -273,6 +273,13 @@ pub fn execute_with_tail(
     }
 
     let mut command = Command::new(program);
+    // The worker's own settings are not the command's: a gate that read one would pass or fail
+    // by how the worker was started. Only what the caller names is passed on.
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("HEPH_") {
+            command.env_remove(name);
+        }
+    }
     command
         .args(arguments)
         .current_dir(directory)
