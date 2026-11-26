@@ -7,7 +7,8 @@ mod common;
 use std::path::PathBuf;
 
 use common::{
-    IDENTITY, Rig, agent_script, finished, git, manifest, rig, run_with_env, stand_in_gh, workload,
+    IDENTITY, Rig, agent_script, finished, gh_was_called, git, manifest, rig, run_with_env,
+    stand_in_gh, workload,
 };
 use contracts::v1alpha1::finished::Outcome;
 use serde_json::{Value, json};
@@ -93,6 +94,10 @@ fn a_revision_that_only_merges_the_base_is_delivered_without_a_commit_message() 
         git(&source, &["rev-parse", &format!("{PR_BRANCH}^2")]),
         main,
         "the merge commit is what was pushed"
+    );
+    assert!(
+        !gh_was_called(&ran),
+        "the pull request's title and description are left as they are"
     );
 }
 
