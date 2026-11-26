@@ -244,7 +244,7 @@ fn nothing_is_said_on_the_pull_request_when_nothing_was_delivered() {
     let (rig, head) = rig_with_branch("description-refused");
     git(&rig.source, &["switch", "-q", PR_BRANCH]);
     rig.scratch
-        .write("source/web/second.txt", "a person's commit\n");
+        .write("source/web/changed.txt", "a person's commit\n");
     git(&rig.source, &["add", "."]);
     git(
         &rig.source,

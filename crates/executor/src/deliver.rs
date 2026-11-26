@@ -294,6 +294,22 @@ pub struct Committed {
     /// Whether there is a commit to push. A revision that changed only the pull request's
     /// description has none: the branch is as the pull request already has it.
     pub made: std::cell::Cell<bool>,
+    /// What kind of delivery this is.
+    pub kind: Kind,
+}
+
+/// What a local commit amounts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The agent's change, with a message the agent wrote.
+    Work,
+    /// A revision whose only job was to bring the base branch in: the merge commit made
+    /// before the agent started is the commit, there is no message, and the pull request's
+    /// description is left as it is.
+    MergeOnly,
+    /// A revision that only had to bring the base branch in, and the branch already holds it:
+    /// there is nothing to push.
+    NothingToBringIn,
 }
 
 /// The commit message the agent left, if it is one the repository's rule allows.
@@ -397,6 +413,27 @@ pub fn settle_message(workload: &Workload, workspace: &Path) -> Result<(), Strin
 /// If the workload has no ticket. Reading a workload refuses one without it.
 pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed, String> {
     let ticket = workload.ticket.clone().unwrap_or_default();
+    if let Some(kind) = base_only(workload, workspace)? {
+        let branch = workload
+            .revision
+            .as_ref()
+            .map(|revision| revision.branch.clone())
+            .unwrap_or_default();
+        if kind == Kind::MergeOnly {
+            // The merge was made on the commit the run began at, which is detached.
+            run(
+                &["git", "switch", "-c", &branch],
+                workspace,
+                "",
+                "git switch",
+            )?;
+        }
+        return Ok(Committed {
+            branch,
+            made: std::cell::Cell::new(kind == Kind::MergeOnly),
+            kind,
+        });
+    }
     settle_message(workload, workspace)?;
     let message = read_message(workspace)?;
 
@@ -443,6 +480,7 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
         return Ok(Committed {
             branch,
             made: std::cell::Cell::new(false),
+            kind: Kind::Work,
         });
     }
     run(
@@ -460,7 +498,48 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
     Ok(Committed {
         branch,
         made: std::cell::Cell::new(true),
+        kind: Kind::Work,
     })
+}
+
+/// Whether the workload is a revision that only had to bring the base branch in and the agent
+/// left it at that: no failing check to fix, no commit message and no change to the files. The
+/// merge commit made before the agent started is then the whole delivery, if there is one.
+fn base_only(workload: &Workload, workspace: &Path) -> Result<Option<Kind>, String> {
+    let Some(revision) = workload.revision.as_ref() else {
+        return Ok(None);
+    };
+    if !revision.failures.is_empty()
+        || workspace.join(MESSAGE_FILE).exists()
+        || !run(
+            &["git", "status", "--porcelain"],
+            workspace,
+            "",
+            "git status",
+        )?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    let began_at = &workload
+        .repository
+        .as_ref()
+        .expect("checked when read")
+        .base_commit;
+    let head = run(
+        &["git", "rev-parse", "HEAD"],
+        workspace,
+        "",
+        "git rev-parse",
+    )?
+    .join("")
+    .trim()
+    .to_owned();
+    Ok(Some(if head == *began_at {
+        Kind::NothingToBringIn
+    } else {
+        Kind::MergeOnly
+    }))
 }
 
 /// What the agent wrote in [`DESCRIPTION_FILE`], if it wrote anything.
@@ -712,28 +791,32 @@ pub fn push_and_open(
     committed: &Committed,
     tick: &mut Tick<'_>,
 ) -> Result<PullRequestOpened, String> {
-    let message = read_message(workspace)?;
     let branch = committed.branch.clone();
 
     if committed.made.get() {
-        let helper = format!("credential.helper=!{gh} auth git-credential");
-        run_ticking(
-            &[
-                "git",
-                "-c",
-                "credential.helper=",
-                "-c",
-                &helper,
-                "push",
-                "origin",
-                &branch,
-            ],
+        // Only a revision goes on a branch that is already the pull request's, and so one that
+        // another run may have added to; a first run's branch is its own, and one that exists
+        // already is not something to merge into.
+        push_branch(
             workspace,
+            gh,
             token,
-            &format!("could not push {branch}"),
+            &branch,
+            workload.revision.is_some(),
             tick,
         )?;
     }
+    if committed.kind != Kind::Work {
+        // The pull request is as it was, with the merge on it.
+        let revision = workload.revision.as_ref().expect("a revision made it");
+        return Ok(PullRequestOpened {
+            url: revision.pull_request_url.clone(),
+            number: revision.pull_request_number,
+            head_branch: branch,
+            nothing_pushed: false,
+        });
+    }
+    let message = read_message(workspace)?;
 
     let resolution = read_resolution(workspace);
     let written = written_description(workspace);
@@ -761,6 +844,113 @@ pub fn push_and_open(
     }
 
     open_pull_request(workload, workspace, gh, token, &branch, &description, tick)
+}
+
+/// Whether a refused push said that the branch has commits this one lacks.
+fn is_non_fast_forward(reason: &str) -> bool {
+    reason.contains("non-fast-forward")
+        || reason.contains("fetch first")
+        || reason.contains("[rejected]")
+}
+
+fn words(command: &[String]) -> Vec<&str> {
+    command.iter().map(String::as_str).collect()
+}
+
+/// Push the branch. A push the host refuses because the branch gained commits is not the end:
+/// the branch is fetched, and the commits it gained are merged in and the push tried once more.
+/// A push is never forced. Where the new commits cannot be merged, the reason says so, and
+/// that the branch is untouched.
+fn push_branch(
+    workspace: &Path,
+    gh: &str,
+    token: &str,
+    branch: &str,
+    merge_what_it_gained: bool,
+    tick: &mut Tick<'_>,
+) -> Result<(), String> {
+    let helper = format!("credential.helper=!{gh} auth git-credential");
+    let with_credential = |rest: &[&str]| -> Vec<String> {
+        ["git", "-c", "credential.helper=", "-c", &helper]
+            .iter()
+            .chain(rest)
+            .map(|word| (*word).to_owned())
+            .collect()
+    };
+    let push = with_credential(&["push", "origin", branch]);
+    let refused = match run_ticking(
+        &words(&push),
+        workspace,
+        token,
+        &format!("could not push {branch}"),
+        tick,
+    ) {
+        Ok(_) => return Ok(()),
+        Err(reason) if merge_what_it_gained && is_non_fast_forward(&reason) => reason,
+        Err(reason) => return Err(reason),
+    };
+    let remote = format!("refs/remotes/origin/{branch}");
+    let refspec = format!("+refs/heads/{branch}:{remote}");
+    let fetch = with_credential(&["fetch", "origin", &refspec]);
+    run_ticking(
+        &words(&fetch),
+        workspace,
+        token,
+        &format!("{branch} moved while the run worked, and it could not be fetched to merge in"),
+        tick,
+    )?;
+    let message = format!("Merge branch '{branch}' of origin into {branch}");
+    let merged = run_ticking(
+        &[
+            "git",
+            "-c",
+            "user.name=Hephaestium",
+            "-c",
+            "user.email=hephaestium@users.noreply.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "--no-edit",
+            "-m",
+            &message,
+            &remote,
+        ],
+        workspace,
+        token,
+        "git merge",
+        tick,
+    );
+    if let Err(cause) = merged {
+        let aborted = run(
+            &["git", "merge", "--abort"],
+            workspace,
+            token,
+            "git merge --abort",
+        );
+        let conflicted = cause.to_lowercase().contains("conflict");
+        let what = if conflicted {
+            "the commits it gained conflict with this run's".to_owned()
+        } else {
+            format!("the commits it gained could not be merged ({cause})")
+        };
+        let left = match aborted {
+            Ok(_) => String::new(),
+            Err(e) => format!(
+                "; the merge could not be abandoned either, so the workspace is left mid-merge ({e})"
+            ),
+        };
+        return Err(format!(
+            "{branch} moved while the run worked, and {what}, so nothing was pushed ({refused}){left}"
+        ));
+    }
+    run_ticking(
+        &words(&push),
+        workspace,
+        token,
+        &format!("{branch} moved while the run worked and was merged in, but could not be pushed"),
+        tick,
+    )
+    .map(|_| ())
 }
 
 /// Write the description of a pull request to a file beside the workspace, for `gh`.

@@ -689,6 +689,13 @@ fn deliver_if_asked<W: Write>(
         Ok(committed) => committed,
         Err(reason) => return Ok((Outcome::Failed, reason)),
     };
+    if committed.kind == deliver::Kind::NothingToBringIn {
+        // The branch already holds the base: the revision's job was done before it began.
+        return Ok((
+            Outcome::Completed,
+            "nothing to bring in: the branch already holds the base branch".to_owned(),
+        ));
+    }
     // Reading the pull request's description reaches the network, before anything is published.
     let worth_delivering = beating(options.heartbeat, stream, |tick| {
         deliver::refuse_unchanged_description(
@@ -1135,15 +1142,30 @@ fn read_before_push<W: Write>(
         Err(reason) => return Ok((Outcome::Failed, reason)),
     };
 
+    if committed.kind == deliver::Kind::NothingToBringIn {
+        return Ok((
+            Outcome::Completed,
+            "nothing to bring in: the branch already holds the base branch".to_owned(),
+        ));
+    }
+    // A merge of the base alone has no change of the agent's to read.
+    let merge_only = committed.kind == deliver::Kind::MergeOnly;
     let reading = Reading {
         adapter: asking.adapter,
         heartbeat: options.heartbeat,
         secrets,
         spent: asking.spent,
     };
-    let rounds = workload.prepush_rounds;
+    let rounds = if merge_only {
+        0
+    } else {
+        workload.prepush_rounds
+    };
     let mut round = 1;
     loop {
+        if merge_only {
+            break;
+        }
         if heph::process::cancelled() {
             return Ok((
                 Outcome::Failed,
