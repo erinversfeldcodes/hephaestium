@@ -81,8 +81,15 @@ defmodule ControlPlane.Events do
       })
 
     case advance(parsed) do
-      [] -> :ok
-      set -> Repo.update_all(from(w in Workload, where: w.id == ^workload_id), set: set)
+      [] ->
+        :ok
+
+      set ->
+        # update_all does not stamp updated_at as a changeset update does, and the
+        # settled-run windows read it.
+        Repo.update_all(from(w in Workload, where: w.id == ^workload_id),
+          set: [updated_at: DateTime.utc_now()] ++ set
+        )
     end
 
     kept
