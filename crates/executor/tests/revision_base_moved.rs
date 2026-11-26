@@ -52,12 +52,7 @@ fn one_failure() -> Value {
 fn prompt_of(value: &Value) -> String {
     let workload: Workload = serde_json::from_value(value.clone()).expect("a workload");
     let plan = ClaudeCode.plan(&workload, std::path::Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 fn rig_with_branch(name: &str) -> (Rig, String) {

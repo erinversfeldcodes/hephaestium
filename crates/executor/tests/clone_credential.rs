@@ -120,6 +120,7 @@ fn clone_from_private(name: &str, token: Option<&str>) -> Cloned {
     let workload = workload("0123456789abcdef0123456789abcdef01234567");
     scratch.write("workload.json", &workload.to_string());
     let mut command = Command::new(env!("CARGO_BIN_EXE_executor"));
+    common::without_heph_variables(&mut command);
     command
         .args(["run", "--workload"])
         .arg(scratch.path("workload.json"))
@@ -220,6 +221,7 @@ fn the_fetch_of_the_base_branch_gives_the_token_through_the_helper() {
     let workload = workload(&rig.commit);
     scratch.write("workload.json", &workload.to_string());
     let mut command = Command::new(env!("CARGO_BIN_EXE_executor"));
+    common::without_heph_variables(&mut command);
     command
         .args(["run", "--workload"])
         .arg(scratch.path("workload.json"))

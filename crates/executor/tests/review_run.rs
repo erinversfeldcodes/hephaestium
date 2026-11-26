@@ -321,12 +321,7 @@ fn an_ordinary_workload_keeps_no_verdict() {
 fn prompt_of(value: &Value) -> String {
     let workload: Workload = serde_json::from_value(value.clone()).expect("a workload");
     let plan = ClaudeCode.plan(&workload, Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 #[test]
@@ -419,12 +414,7 @@ fn prompt_with_description(description: Option<&str>) -> String {
             .expect("a workload");
     let plan = ClaudeCode.plan(&workload, &workspace);
     let _ = std::fs::remove_dir_all(&workspace);
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 const ACCOUNT: &str = "## What this changes\n\nA reset that waits. Shown by `the_reset_waits`: failed with `timed out`, then passed.";
