@@ -105,6 +105,13 @@ defmodule ControlPlane.BoardColumnsTest do
     assert bytes < @document_bytes, "the lookup returned #{bytes} bytes"
   end
 
+  test "the poll's lookup of pull requests workloads opened selects no whole document" do
+    bytes = returned_bytes(fn -> PullRequests.refresh_due(DateTime.utc_now()) end)
+
+    # Only the small rows of the pull request table and the address may come back.
+    assert bytes < @document_bytes, "the poll returned #{bytes} bytes"
+  end
+
   describe "kind, lens and failed gate computed in the database" do
     @gate_cases [
       {"timed out", [%{"name" => "a", "result" => %{"outcome" => "timed out"}}], "a"},

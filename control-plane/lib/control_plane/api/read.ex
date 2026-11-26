@@ -21,6 +21,10 @@ defmodule ControlPlane.Api.Read do
 
   @max_page 500
 
+  # The kinds a run's document can ask for, in the order they take precedence; the board's SQL
+  # and `kind/1` both read this list.
+  @kinds ~w(revision review completeness gap)
+
   @doc "The largest page of events one request may ask for."
   def max_page, do: @max_page
 
@@ -161,7 +165,8 @@ defmodule ControlPlane.Api.Read do
           at: w.inserted_at,
           kind:
             fragment(
-              "(select k from unnest(array['revision', 'review', 'completeness', 'gap']) with ordinality as t(k, n) where jsonb_exists(?, k) order by n limit 1)",
+              "(select k from unnest(?::text[]) with ordinality as t(k, n) where jsonb_exists(?, k) order by n limit 1)",
+              type(^@kinds, {:array, :string}),
               w.workload
             ),
           lens: fragment("?->'review'->>'lens'", w.workload),
@@ -242,7 +247,8 @@ defmodule ControlPlane.Api.Read do
           title: fragment("?->'ticket'->>'title'", w.workload),
           kind:
             fragment(
-              "(select k from jsonb_object_keys(?) k where k in ('revision', 'review', 'completeness', 'gap') limit 1)",
+              "(select k from unnest(?::text[]) with ordinality as t(k, n) where jsonb_exists(?, k) order by n limit 1)",
+              type(^@kinds, {:array, :string}),
               w.workload
             ),
           settled_at: w.settled_at,
@@ -528,7 +534,7 @@ defmodule ControlPlane.Api.Read do
   @spec kind(map() | nil) :: String.t()
   def kind(document) do
     document = document || %{}
-    Enum.find(~w(revision review completeness gap), "implementation", &Map.has_key?(document, &1))
+    Enum.find(@kinds, "implementation", &Map.has_key?(document, &1))
   end
 
   @doc """
