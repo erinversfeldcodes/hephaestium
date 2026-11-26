@@ -50,6 +50,12 @@ function Answering({ client, question }: { readonly client: Client; readonly que
       <h3 id="question-heading">Question</h3>
       <p>Asked {when(question.askedAt)}.</p>
       <blockquote style={{ whiteSpace: "pre-wrap" }}>{question.question}</blockquote>
+      {question.earlierAnswer !== null && (
+        <>
+          <p>This was answered before, and the agent asked it again. The answer given then:</p>
+          <blockquote style={{ whiteSpace: "pre-wrap" }}>{question.earlierAnswer}</blockquote>
+        </>
+      )}
 
       {state.kind === "sent" ? (
         <p role="status">Your answer was posted on the ticket, and you approved it again as yourself.</p>

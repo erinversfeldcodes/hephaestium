@@ -137,6 +137,8 @@ defmodule ControlPlane.TicketsTest do
       assert body =~ "blocked"
       assert body =~ "Once or until it expires?"
       assert body =~ "ready"
+      assert body =~ "form on the dashboard"
+      refute body =~ "Answer it here"
     end
 
     test "a first run that asks is blocked, not failed, and its question is quoted as data", %{

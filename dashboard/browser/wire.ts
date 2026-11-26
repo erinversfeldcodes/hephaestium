@@ -121,6 +121,7 @@ export function wireQuestions(questions: readonly Question[]) {
       title: q.title,
       question: q.question,
       asked_at: q.askedAt,
+      earlier_answer: q.earlierAnswer,
     })),
   };
 }

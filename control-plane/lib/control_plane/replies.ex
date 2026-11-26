@@ -4,8 +4,9 @@ defmodule ControlPlane.Replies do
   and the ready label applied again, both made with the person's own user token, so
   the label in the ticket's history names the person and intake reads them as the approver and
   checks, as it does for any approval, that they hold write access. Intake then
-  starts the new run, whose workload is built from the ticket and its comments, which is how the
-  answer reaches the agent: nothing here talks to a run.
+  starts the new run. The answer is also kept on the workload that asked, before anything is sent,
+  and intake puts it in the request of every later workload on the ticket, which is how it reaches
+  the agent: nothing here talks to a run.
 
   A ticket is answered only while its latest run is the one that asked, and only by a person who
   holds write access to the repository: that is checked before anything is sent, because a
@@ -14,7 +15,7 @@ defmodule ControlPlane.Replies do
   answer.
   """
 
-  alias ControlPlane.{CodeHost, TicketLabels, Tracker}
+  alias ControlPlane.{Answers, CodeHost, TicketLabels, Tracker}
   alias ControlPlane.Api.Read
 
   @max_length 8_000
@@ -32,17 +33,19 @@ defmodule ControlPlane.Replies do
   @spec answer(String.t(), pos_integer(), String.t(), String.t(), String.t()) ::
           :ok | {:error, failure()}
   def answer(repository, number, login, token, body) do
-    with :ok <- waiting(repository, number),
+    with {:ok, asked} <- waiting(repository, number),
          :ok <- supported(repository),
-         :ok <- may_write(repository, login) do
+         :ok <- may_write(repository, login),
+         :ok <- Answers.keep(asked.workload, body) do
       send_as(repository, number, token, body)
     end
   end
 
   defp waiting(repository, number) do
-    if Enum.any?(Read.questions(), &(&1.repository == repository and &1.ticket == number)),
-      do: :ok,
-      else: {:error, :not_waiting}
+    case Enum.find(Read.questions(), &(&1.repository == repository and &1.ticket == number)) do
+      nil -> {:error, :not_waiting}
+      asked -> {:ok, asked}
+    end
   end
 
   defp supported(repository) do

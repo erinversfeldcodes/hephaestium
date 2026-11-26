@@ -181,6 +181,8 @@ export interface Question {
   readonly title: string | null;
   readonly question: string;
   readonly askedAt: string | null;
+  /** What a person already answered to this same question on this ticket, or null. */
+  readonly earlierAnswer: string | null;
 }
 
 /**
@@ -561,6 +563,7 @@ function parseQuestions(body: unknown): readonly Question[] {
       title: maybeText(row["title"]),
       question: text(row["question"]),
       askedAt: maybeText(row["asked_at"]),
+      earlierAnswer: maybeText(row["earlier_answer"]),
     };
   });
 }

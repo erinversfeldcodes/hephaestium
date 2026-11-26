@@ -61,6 +61,7 @@ describe("the API client", () => {
       title: "T",
       question: "Which database?",
       asked_at: "2026-11-20T11:00:00Z",
+      earlier_answer: "Use Postgres.",
     };
 
     it("is the one waiting for this ticket, read from the list of questions", async () => {
@@ -73,6 +74,7 @@ describe("the API client", () => {
         title: "T",
         question: "Which database?",
         askedAt: "2026-11-20T11:00:00Z",
+        earlierAnswer: "Use Postgres.",
       });
       expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe("/api/questions");
     });

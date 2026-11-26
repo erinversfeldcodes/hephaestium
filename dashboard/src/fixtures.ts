@@ -56,6 +56,7 @@ export const question: Question = {
   title: "Teach the parser about guards",
   question: "Which database should the guards be stored in?",
   askedAt: "2026-11-20T11:00:00Z",
+  earlierAnswer: null,
 };
 
 export const runDetail: RunDetail = {

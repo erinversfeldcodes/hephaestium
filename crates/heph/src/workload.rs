@@ -284,6 +284,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         // control plane puts the lenses and the rounds in the workloads it hands on.
         lenses: Vec::new(),
         prepush_rounds: 0,
+        answers: Vec::new(),
     };
     Ok(Built { workload, warnings })
 }

@@ -22,6 +22,7 @@ defmodule ControlPlane.Workload do
     field :reruns, :map, default: %{}
     field :unread_logs, :map, default: %{}
     field :parent_id, :binary_id
+    field :answer, :string
 
     timestamps()
   end
