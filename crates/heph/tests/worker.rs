@@ -60,6 +60,9 @@ enum Executor {
     Completes,
     /// One event, then nothing until it is stopped.
     Hangs,
+    /// As `Hangs`, with the process that waits working in its run's directory, where a sweep
+    /// for leftovers looks.
+    HangsInItsRunDirectory,
     /// The first workload hangs as `Hangs` does; any other completes as `Completes` does.
     HangsFirstCompletesOthers,
     /// One event, then nothing until it is told to stop, and then it says it was cancelled.
@@ -69,13 +72,24 @@ enum Executor {
 /// One test's own home, where the worker is run from and where its run directories are made.
 struct Rig {
     home: Scratch,
+    /// Where run directories are made: the home's own, unless another worker's is shared.
+    runs: PathBuf,
 }
 
 impl Rig {
     fn new(name: &str) -> Self {
         let home = Scratch::new(&format!("worker-{name}"));
-        let rig = Self { home };
+        let runs = home.0.join("runs");
+        let rig = Self { home, runs };
         std::fs::create_dir_all(rig.seen()).expect("a directory");
+        rig
+    }
+
+    /// A rig with a home of its own that makes its run directories where `other` does, as a
+    /// second worker on the same machine does.
+    fn sharing_runs_with(name: &str, other: &Self) -> Self {
+        let mut rig = Self::new(name);
+        rig.runs.clone_from(&other.runs);
         rig
     }
 
@@ -119,6 +133,11 @@ record OUTCOME_COMPLETED 3"#
             }
             Executor::Hangs => {
                 r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
+exec sleep 300"#
+            }
+            Executor::HangsInItsRunDirectory => {
+                r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
+cd "$(dirname "$wl")"
 exec sleep 300"#
             }
             Executor::HangsFirstCompletesOthers => {
@@ -191,7 +210,7 @@ echo "$$" > "$d/pid-$id"
         .args(["worker", "--control-plane", address, "--executor"])
         .arg(executor)
         .arg("--runs-dir")
-        .arg(self.home.0.join("runs"))
+        .arg(&self.runs)
         .args(extra_args)
         .env("HOME", &self.home.0)
         .env("XDG_CONFIG_HOME", self.home.0.join("config"))
@@ -898,6 +917,41 @@ fn a_number_of_workloads_that_is_zero_or_above_the_ceiling_is_refused_before_any
         );
     }
     assert!(server.requests().is_empty(), "something was claimed");
+}
+
+#[test]
+fn a_second_worker_on_the_same_runs_directory_does_not_stop_the_first_ones_live_run() {
+    let first_rig = Rig::new("sweep-first");
+    let first_server = gives_once(FIRST, 1);
+    let mut first = first_rig.start(&first_server.address, &Executor::HangsInItsRunDirectory);
+    let pid = waits_for_pid(&first_rig, FIRST);
+
+    // A second worker, a process of its own, sweeps the same runs directory before each claim.
+    let second_rig = Rig::sharing_runs_with("sweep-second", &first_rig);
+    let second_server = Server::start(|request| {
+        if is_claim(request) {
+            Answer::NoContent
+        } else {
+            ok()
+        }
+    });
+    let mut second = second_rig.start(&second_server.address, &Executor::Completes);
+    second_server.wait_for("the second worker's claim, which follows its sweep", |s| {
+        !s.to("/worker/claim").is_empty()
+    });
+    let live = alive(&pid);
+    let said = second.output();
+    second.stops();
+    first.stops();
+
+    assert!(
+        live,
+        "the second worker stopped the first one's live run: {said}"
+    );
+    assert!(
+        !said.contains("stopping process"),
+        "the second worker took the live run for a finished one: {said}"
+    );
 }
 
 /// A run directory a worker left behind: its small files and a checkout, last written `days`

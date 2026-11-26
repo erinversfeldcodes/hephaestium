@@ -183,6 +183,9 @@ pub fn run(options: &Options) -> Result<Ended, String> {
         .mode(0o700)
         .create(&directory)
         .map_err(|e| format!("could not make {}: {e}", directory.display()))?;
+    // Held until this run ends, so that a worker's sweep does not take its processes for a
+    // finished run's.
+    let _held = crate::run_lock::hold(&directory)?;
     let workload_file = directory.join("workload.json");
     let text = serde_json::to_string_pretty(&workload).map_err(|e| e.to_string())?;
     std::fs::write(&workload_file, text + "\n")
