@@ -616,15 +616,21 @@ defmodule ControlPlane.Settle do
        when not is_nil(sha) and not is_nil(base) do
     with {:ok, required} <- CodeHost.required_checks(workload.repository, base),
          {:ok, runs} <- CodeHost.checks(workload.repository, sha) do
-      judge(workload, required, newest(runs), cancelled_any?(runs), {pull, number})
+      judge(workload, required, newest(runs), cancelled_suites(runs), {pull, number})
     end
   end
 
   defp verdict(_workload, _pull, _number), do: {:error, "the pull request has no head and base"}
 
-  # Whether any run on the commit ended cancelled, under any name: the sign that GitHub
-  # cancelled a duplicate run.
-  defp cancelled_any?(runs), do: Enum.any?(runs, &(&1.conclusion == "cancelled"))
+  # The workflow runs on the commit that GitHub cancelled, as their check suite ids: a run
+  # is cancelled when any of its checks ended cancelled. A check with no suite belongs to
+  # no known run.
+  defp cancelled_suites(runs) do
+    for %{conclusion: "cancelled", suite: suite} <- runs,
+        suite != nil,
+        into: MapSet.new(),
+        do: suite
+  end
 
   # The newest run of each name.
   defp newest(runs) do
@@ -716,7 +722,7 @@ defmodule ControlPlane.Settle do
   # The job that fails when any job it needs did not succeed.
   @aggregate "ci"
 
-  defp judge(workload, required, runs, duplicate_cancelled?, pull_and_number) do
+  defp judge(workload, required, runs, cancelled_suites, pull_and_number) do
     # Every check on the commit counts, not only the ones the ruleset requires: a
     # failing check is investigated whether or not it blocks a merge (ADR 0024). The
     # required ones must also have appeared.
@@ -734,23 +740,21 @@ defmodule ControlPlane.Settle do
     # run of the same concurrency group, so while any is live a cancelled check is not a
     # result: it is waited on, not failed, revised or re-run. The cancelled run's aggregate
     # job does not end cancelled but failed, because it fails when a job it needs did not
-    # succeed, and it cannot be told from a real failure by its own record; so while a run
-    # is live and the commit has a cancelled run, a failed aggregate waits as well, and the
-    # live run's own result is read once it ends. Any other failure is judged at once.
+    # succeed, so while a run is live a failed aggregate that belongs to a cancelled run
+    # (the same check suite) waits as well, and the live run's own result is read once it
+    # ends. Any other failure, including a failed aggregate of a run that was not cancelled,
+    # is judged at once.
     live? = Enum.any?(looked_at, fn {_name, run} -> run != nil and run.state != :completed end)
 
     {superseded, ended} =
-      cond do
-        live? and duplicate_cancelled? ->
-          Enum.split_with(ended, fn {name, run} ->
-            run.conclusion == "cancelled" or (name == @aggregate and run.conclusion not in @good)
-          end)
-
-        live? ->
-          Enum.split_with(ended, fn {_name, run} -> run.conclusion == "cancelled" end)
-
-        true ->
-          {[], ended}
+      if live? do
+        Enum.split_with(ended, fn {name, run} ->
+          run.conclusion == "cancelled" or
+            (name == @aggregate and run.conclusion not in @good and
+               MapSet.member?(cancelled_suites, run.suite))
+        end)
+      else
+        {[], ended}
       end
 
     bad = for {name, run} <- ended, run.conclusion not in @good, do: {name, run}
