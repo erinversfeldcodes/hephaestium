@@ -315,8 +315,9 @@ defmodule ControlPlane.Leases do
 
   # --- the lease ------------------------------------------------------------------------
 
+  # Takes the row lock and reads nothing else: no caller uses the row, and its documents are large.
   defp lock!(workload_id) do
-    Repo.one(from w in Workload, where: w.id == ^workload_id, lock: "FOR UPDATE") ||
+    Repo.one(from w in Workload, where: w.id == ^workload_id, select: w.id, lock: "FOR UPDATE") ||
       Repo.rollback(:not_held)
   end
 
