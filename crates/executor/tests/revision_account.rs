@@ -281,3 +281,56 @@ fn a_description_that_cannot_be_set_fails_the_run_and_says_so() {
         "{reason}"
     );
 }
+
+#[test]
+fn a_revision_that_changed_files_and_left_no_message_is_asked_once_and_then_delivered() {
+    let (rig, head) = rig_with_branch("asked-for-message");
+    // The first time it runs it changes a file and leaves no message; asked again, it writes one.
+    let script = format!(
+        "if [ -f asked ]; then printf 'fix: the first attempt, now said\\n' > .heph-commit-message; else echo more > web/more.txt; touch asked; fi; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(
+        git(&source, &["log", "-1", "--format=%s", PR_BRANCH]),
+        "fix: the first attempt, now said"
+    );
+}
+
+#[test]
+fn a_revision_that_still_leaves_no_message_when_asked_is_delivered_under_the_pull_requests_title() {
+    let (rig, head) = rig_with_branch("never-writes-message");
+    let script = format!(
+        "echo more > web/more.txt; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+    assert!(message.contains("Revised after: spec."), "{message}");
+}
+
+#[test]
+fn a_revision_whose_ask_for_a_message_fails_is_still_delivered_under_the_pull_requests_title() {
+    let (rig, head) = rig_with_branch("ask-fails");
+    // The first run changes a file and leaves no message; when asked again, the agent fails.
+    let script = format!(
+        "if [ -f asked ]; then echo broke >&2; exit 1; else echo more > web/more.txt; touch asked; fi; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+}
