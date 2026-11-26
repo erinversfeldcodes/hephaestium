@@ -183,12 +183,7 @@ fn finding_of(title: &str, evidence: &str) -> Finding {
 
 fn prompt_of(workload: &Workload) -> String {
     let plan = ClaudeCode.plan(workload, std::path::Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 #[test]

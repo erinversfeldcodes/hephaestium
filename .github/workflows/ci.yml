@@ -85,6 +85,8 @@ jobs:
         run: cargo test --locked
       - name: The release installer
         run: scripts/test-install-release.sh
+      - name: The affected-test command selects what it should
+        run: scripts/test-test-changed.sh
       # The other half of the stamping rule: a build that was given no
       # version must not pass for a release.
       - name: A build with no version compiled in is not mistaken for a release

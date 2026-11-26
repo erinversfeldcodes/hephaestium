@@ -215,3 +215,61 @@ fn a_file_over_the_size_limit_stops_the_commit_and_is_named() {
     assert!(why.contains("web/huge.bin"), "{why}");
     assert_eq!(commits_past_main(&tree).len(), 0);
 }
+
+fn revising(value: &mut serde_json::Value) {
+    value["revision"] = json!({
+        "pullRequestNumber": "52",
+        "pullRequestUrl": "https://github.com/erinversfeldcodes/gazebolang/pull/52",
+        "branch": "heph/12-an-earlier-title",
+        "attempt": 1,
+        "failures": [{"name": "spec", "result": "failure", "excerpt": "x"}]
+    });
+}
+
+#[test]
+fn a_revision_with_changes_and_no_message_is_delivered_under_the_pull_requests_title() {
+    let tree = tree("local-no-message-revision", revising);
+    git(
+        &tree.workspace,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: the first attempt",
+        ],
+    );
+    std::fs::remove_file(tree.workspace.join(MESSAGE_FILE)).expect("to remove");
+
+    deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
+
+    let message = git(&tree.workspace, &["log", "-1", "--format=%B"]);
+    assert!(message.starts_with("fix: the first attempt\n"), "{message}");
+    assert!(message.contains("Revised after: spec."), "{message}");
+    assert_eq!(
+        git(&tree.workspace, &["show", "HEAD:web/change.txt"]),
+        "the change"
+    );
+}
+
+#[test]
+fn a_revision_whose_message_the_rule_refuses_is_delivered_the_same_way() {
+    let tree = tree("local-bad-message-revision", revising);
+    git(
+        &tree.workspace,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: the first attempt",
+        ],
+    );
+    tree.scratch
+        .write("source/.heph-commit-message", "made the change\n");
+
+    deliver::commit_locally(&tree.workload, &tree.workspace).expect("a commit");
+
+    let message = git(&tree.workspace, &["log", "-1", "--format=%B"]);
+    assert!(message.starts_with("fix: the first attempt\n"), "{message}");
+}

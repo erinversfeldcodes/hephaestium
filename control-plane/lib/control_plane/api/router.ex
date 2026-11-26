@@ -202,6 +202,13 @@ defmodule ControlPlane.Api.Router do
     },
     %{
       method: "POST",
+      path: ~w(worker workloads held),
+      access: :worker,
+      link: true,
+      handler: {Worker, :held}
+    },
+    %{
+      method: "POST",
       path: ~w(worker workloads :id release),
       access: :worker,
       link: true,

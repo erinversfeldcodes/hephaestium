@@ -182,6 +182,12 @@ session, so what bounds it in practice is the machine's memory and the model's r
 guards against a typing mistake; it is not a measured limit. Reviews are given out before new
 implementations, so an open pull request is not held up by new work.
 
+A worker removes the workspace of a run (its checkout and build output; the run's record and logs
+stay) once the run was last written more than `--keep-runs-for DAYS` ago (or
+`HEPH_WORKER_KEEP_RUNS`; seven if neither is set). It asks the control plane first and keeps the
+workspace of a workload that is still leased or whose pull request is open, and if it cannot ask it
+removes nothing. It logs what it removed and the space it freed.
+
 `executor run` runs one workload, which is a message the contracts under
 [`proto/`](./proto) define: it clones the repository at the workload's base commit,
 runs the manifest's `bootstrap` steps in it, plays what the agent did, and says all of
@@ -195,6 +201,12 @@ no timeout or no budget is refused. A Claude Code workload runs Claude Code, wit
 empty configuration directory of its own and a token made for it, so nothing of the
 maintainer's own setup reaches it; the other runtimes have no adapter yet, and a stub
 stands in for any of them (`--transcript` or `--agent-command`, for development).
+The bootstrap steps and the agent also get a home of their own, `.tool-home` in the work
+directory, which every workspace there shares, so `mix` and `npm` fetch a package once. When
+`HEPH_TEST_DATABASE_SERVER` holds a Postgres server (`postgres://user:password@host:port`, with
+no database) each workspace that changes code is given `DATABASE_URL` naming a database of its
+own on it, which the executor drops, with `psql`, when the run ends. A review or an evaluation
+is given none.
 With `--deliver`, a workload whose gates passed is committed on a branch of its own,
 pushed, and opened as a pull request; that step alone holds the token that can push
 (`HEPH_GITHUB_TOKEN`), which the bootstrap steps, the gates and the agent never see.

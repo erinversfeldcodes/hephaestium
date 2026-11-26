@@ -273,6 +273,13 @@ pub fn execute_with_tail(
     }
 
     let mut command = Command::new(program);
+    // The worker's own settings are not the command's: a gate that read one would pass or fail
+    // by how the worker was started. Only what the caller names is passed on.
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("HEPH_") {
+            command.env_remove(name);
+        }
+    }
     command
         .args(arguments)
         .current_dir(directory)
@@ -414,7 +421,7 @@ pub enum Go {
 }
 
 /// How a streamed command ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Streamed {
     /// It exited with this code, or the one a shell reports for a signal.
     Exited(i32),
@@ -424,6 +431,9 @@ pub enum Streamed {
     Stopped,
     /// It never started. The code is the one a shell would report.
     NotRun(i32),
+    /// The input it was to be given could not be written to it, and why. It was stopped, since
+    /// a command that never had its input is not running the work it was asked to.
+    InputFailed(String),
     /// The process was told to stop, and the command was killed with everything it
     /// started, or was not started.
     Cancelled,
@@ -476,6 +486,47 @@ pub fn stream(
     )
 }
 
+/// [`stream`], giving the command `input` on its standard input and then closing it. A caller
+/// uses this for text that must not be on the command line, where every process on the machine
+/// can read it and a pattern match on command lines finds it.
+///
+/// # Errors
+///
+/// As for [`stream`]. Input that could not be written ends the command and is reported as
+/// [`Streamed::InputFailed`].
+///
+/// # Panics
+///
+/// If `argv` is empty, as for [`stream`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each says one separate thing: what to run, where, with what, what to give it, for how long, how often to tick, and the three things the caller does"
+)]
+pub fn stream_with_input(
+    argv: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    input: &str,
+    deadline: Duration,
+    tick: Duration,
+    on_line: impl FnMut(&str) -> Go,
+    on_tick: impl FnMut() -> Go,
+    notify: impl Fn(&str),
+) -> Result<Streamed, std::io::Error> {
+    run_streaming(
+        argv,
+        directory,
+        environment,
+        Some(input),
+        deadline,
+        tick,
+        on_line,
+        on_tick,
+        notify,
+        None,
+    )
+}
+
 /// [`stream`], keeping the last lines the command wrote to standard error in `tail`. They still
 /// go to this process's standard error a line at a time, as they would have. A caller that
 /// ends a run on the command's failure uses them to say why, since the exit code alone does not.
@@ -497,6 +548,36 @@ pub fn stream_with_tail(
     environment: &[(String, String)],
     deadline: Duration,
     tick: Duration,
+    on_line: impl FnMut(&str) -> Go,
+    on_tick: impl FnMut() -> Go,
+    notify: impl Fn(&str),
+    tail: Option<&Tail>,
+) -> Result<Streamed, std::io::Error> {
+    run_streaming(
+        argv,
+        directory,
+        environment,
+        None,
+        deadline,
+        tick,
+        on_line,
+        on_tick,
+        notify,
+        tail,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the union of what the public forms say"
+)]
+fn run_streaming(
+    argv: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    input: Option<&str>,
+    deadline: Duration,
+    tick: Duration,
     mut on_line: impl FnMut(&str) -> Go,
     mut on_tick: impl FnMut() -> Go,
     notify: impl Fn(&str),
@@ -510,21 +591,14 @@ pub fn stream_with_tail(
         return Ok(Streamed::Cancelled);
     }
 
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .current_dir(directory)
-        .env_clear()
-        .envs(environment.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(if tail.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        })
-        .process_group(0);
-
+    let mut command = command_for(
+        program,
+        arguments,
+        directory,
+        environment,
+        input.is_some(),
+        tail.is_some(),
+    );
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -532,6 +606,8 @@ pub fn stream_with_tail(
             return Ok(Streamed::NotRun(code_when_not_started(&error)));
         }
     };
+
+    let mut given = Given::start(&mut child, input);
 
     let standard_output = child.stdout.take().expect("standard output was piped");
     let (lines, reader) = read_lines(standard_output);
@@ -560,6 +636,12 @@ pub fn stream_with_tail(
             stop_everything_started_by(&child);
             let _ = child.wait();
             break Streamed::Cancelled;
+        }
+
+        if let Some(reason) = given.failure() {
+            stop_everything_started_by(&child);
+            let _ = child.wait();
+            break Streamed::InputFailed(reason);
         }
 
         let now = Instant::now();
@@ -611,12 +693,100 @@ pub fn stream_with_tail(
     };
 
     stop_everything_started_by(&child);
+    // A command that exited before it read its input ends the loop before the writer has said
+    // so, and the input it never had is the reason it did not do its work.
+    let ended = with_input_failure(ended, given.finish());
     // The reader is not joined. It ends when the pipe closes, which killing the
     // group brings about, except when a process outside the group holds the pipe
     // open, and then waiting for it would wait for that process.
     drop(reader);
     give_a_moment_to_finish(tee);
     Ok(ended)
+}
+
+/// The command, in a process group of its own, with exactly the environment it was given.
+fn command_for(
+    program: &str,
+    arguments: &[String],
+    directory: &Path,
+    environment: &[(String, String)],
+    piped_input: bool,
+    piped_errors: bool,
+) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .current_dir(directory)
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .stdin(if piped_input {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(if piped_errors {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
+        .process_group(0);
+    command
+}
+
+/// A command that exited has not done its work if its input was never delivered.
+fn with_input_failure(ended: Streamed, failure: Option<String>) -> Streamed {
+    match (ended, failure) {
+        (Streamed::Exited(_), Some(reason)) => Streamed::InputFailed(reason),
+        (ended, _) => ended,
+    }
+}
+
+/// The input being written to a command's standard input, and why that failed if it did.
+struct Given {
+    error: Arc<Mutex<Option<String>>>,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Given {
+    /// Write `input`, if there is any, from a thread of its own, and close the command's
+    /// standard input after it. Input larger than the pipe holds is taken as the command reads
+    /// it, and a command that never reads must not hold the caller up past its deadline.
+    fn start(child: &mut std::process::Child, input: Option<&str>) -> Self {
+        let error = Arc::new(Mutex::new(None));
+        let writer = input.map(|input| {
+            let mut standard_input = child.stdin.take().expect("standard input was piped");
+            let input = input.to_owned();
+            let error = Arc::clone(&error);
+            std::thread::spawn(move || {
+                let written = standard_input
+                    .write_all(input.as_bytes())
+                    .and_then(|()| standard_input.flush());
+                if let Err(failure) = written {
+                    *error
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(failure.to_string());
+                }
+            })
+        });
+        Self { error, writer }
+    }
+
+    /// Why the input could not be written, if it could not.
+    fn failure(&self) -> Option<String> {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Why it failed, after giving the writer a moment to say so: a command that exited before it
+    /// read its input ends the loop before the writer has noticed.
+    fn finish(&mut self) -> Option<String> {
+        give_a_moment_to_finish(self.writer.take());
+        self.failure()
+    }
 }
 
 /// What a command wrote last is what explains a failure, so its copying is given a moment to

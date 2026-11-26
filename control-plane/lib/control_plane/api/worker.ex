@@ -15,7 +15,7 @@ defmodule ControlPlane.Api.Worker do
   | `POST /worker/workloads/:id/events` | `{"events": [...]}`: kept in order by the stream's rules. |
   | `POST /worker/workloads/:id/heartbeat` | Keeps the lease while nothing else is sent. |
   | `POST /worker/workloads/:id/record` | The run record, at the end. |
-
+  | `POST /worker/workloads/held` | `{"ids": [...]}`: which of those workloads still need the workspace the executor made for them, as `{"held": [...]}`. Those not ended, and those that completed with a pull request not yet settled. The executor clears the others' workspaces after its retention period. |
   | `POST /worker/workloads/:id/release` | The operator stopped the executor: the workload is given back, to be queued again or failed as a lapse would decide. |
 
   A request about a workload the token does not hold, because the lease lapsed, was let go or
@@ -24,7 +24,7 @@ defmodule ControlPlane.Api.Worker do
 
   import Plug.Conn
 
-  alias ControlPlane.{DeviceTokens, ExecutorLink, Leases}
+  alias ControlPlane.{DeviceTokens, ExecutorLink, Leases, Workloads}
 
   @max_body 32_000_000
 
@@ -119,6 +119,26 @@ defmodule ControlPlane.Api.Worker do
     else
       _ -> json(conn, 400, %{error: "the record must be a JSON object"})
     end
+  end
+
+  def held(conn, _params, _settings, token) do
+    DeviceTokens.seen(token)
+
+    with {:ok, %{"ids" => ids}, conn} when is_list(ids) <- body(conn),
+         {:ok, ids} <- cast_all(ids) do
+      json(conn, 200, %{held: Workloads.held(ids)})
+    else
+      _ -> json(conn, 400, %{error: ~s(a body of {"ids": [...]} of workload ids is needed)})
+    end
+  end
+
+  defp cast_all(ids) do
+    Enum.reduce_while(ids, {:ok, []}, fn id, {:ok, cast} ->
+      case cast(id) do
+        {:ok, id} -> {:cont, {:ok, [id | cast]}}
+        :error -> {:halt, :error}
+      end
+    end)
   end
 
   def release(conn, %{"id" => id}, _settings, token) do

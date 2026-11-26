@@ -9,14 +9,14 @@ defmodule ControlPlane.ConcurrencyTest do
 
   import ControlPlane.Fixtures
 
-  alias ControlPlane.{Events, Repo, Workloads}
+  alias ControlPlane.{DeviceTokens, Events, Leases, Repo, Workload, Workloads}
   alias Ecto.Adapters.SQL.Sandbox
 
   setup do
     Sandbox.mode(Repo, :auto)
 
     on_exit(fn ->
-      Repo.query!("TRUNCATE events, workloads")
+      Repo.query!("TRUNCATE events, workloads, workload_leases, device_tokens CASCADE")
       Sandbox.mode(Repo, :manual)
     end)
   end
@@ -36,5 +36,24 @@ defmodule ControlPlane.ConcurrencyTest do
     assert Enum.count(results, &match?({:ok, _}, &1)) == 1
     assert Enum.count(results, &(&1 == {:error, :repeated_sequence})) == 7
     assert length(Events.list(id)) == 2
+  end
+
+  test "two executors claiming at once for one ticket: only one is given a workload" do
+    {:ok, %{record: token}} = DeviceTokens.issue("erinversfeldcodes", "laptop")
+
+    for _ <- 1..2 do
+      {:ok, _} =
+        workload()
+        |> put_in(["approval", "approvedBy"], "erinversfeldcodes")
+        |> Workloads.create()
+    end
+
+    results =
+      1..8
+      |> Enum.map(fn _ -> Task.async(fn -> Leases.claim(token) end) end)
+      |> Task.await_many()
+
+    assert Enum.count(results, &match?({:ok, %Workload{}}, &1)) == 1
+    assert Enum.count(results, &(&1 == :none)) == 7
   end
 end

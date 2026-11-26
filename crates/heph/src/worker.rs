@@ -80,6 +80,76 @@ pub struct Options {
     pub executor: Option<PathBuf>,
     /// How many workloads may run at once, from 1 to [`MOST_WORKLOADS`].
     pub workloads: usize,
+    /// How long a run's workspace is kept after the run was last written.
+    pub keep_runs_for: Duration,
+}
+
+/// The variable that sets how many days a finished run keeps its workspace, when no flag does.
+pub const KEEP_RUNS_VARIABLE: &str = "HEPH_WORKER_KEEP_RUNS";
+
+/// How many days a finished run keeps its workspace when nothing says.
+pub const DEFAULT_KEEP_DAYS: u64 = 7;
+
+/// How often the worker looks for workspaces to clear.
+const CLEAR_EVERY: Duration = Duration::from_secs(3600);
+
+/// How long finished runs keep their workspaces: the flag's number of days, else the
+/// variable's, else seven.
+///
+/// # Errors
+///
+/// Returns why the setting is refused: it is not a whole number of days.
+pub fn keep_runs_for(flag: Option<&str>) -> Result<Duration, String> {
+    keep_runs_from(flag, run::environment(KEEP_RUNS_VARIABLE).as_deref())
+}
+
+fn keep_runs_from(flag: Option<&str>, variable: Option<&str>) -> Result<Duration, String> {
+    let (text, from) = match (flag, variable) {
+        (Some(text), _) => (text, "--keep-runs-for".to_owned()),
+        (None, Some(text)) => (text, KEEP_RUNS_VARIABLE.to_owned()),
+        (None, None) => return Ok(Duration::from_secs(DEFAULT_KEEP_DAYS * 86_400)),
+    };
+    let days: u64 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("{from}: {text:?} is not a whole number of days"))?;
+    Ok(Duration::from_secs(days.saturating_mul(86_400)))
+}
+
+/// Remove the workspaces of runs that were last written more than `keep` ago, except those
+/// the control plane says it still needs. When it cannot say, nothing is removed.
+fn clear_old_workspaces(client: &Client, runs: &Path, keep: Duration) {
+    let old = workspaces::old_checkouts(runs, keep, std::time::SystemTime::now());
+    if old.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = old.iter().map(|run| run.id.clone()).collect();
+    let held = match client.held(&ids) {
+        Ok(held) => held,
+        Err(failure) => {
+            eprintln!(
+                "heph: worker: could not ask which workspaces are still needed ({failure}); none was removed"
+            );
+            return;
+        }
+    };
+    let due: Vec<workspaces::Old> = old
+        .into_iter()
+        .filter(|run| !held.contains(&run.id))
+        .collect();
+    let cleared = workspaces::clear(&due);
+    for warning in &cleared.warnings {
+        eprintln!("heph: warning: {warning}");
+    }
+    if cleared.removed > 0 {
+        println!(
+            "heph: worker: removed {} workspace{} of runs finished more than {} days ago, and freed {}",
+            cleared.removed,
+            if cleared.removed == 1 { "" } else { "s" },
+            keep.as_secs() / 86_400,
+            workspaces::show_size(cleared.freed)
+        );
+    }
 }
 
 /// How many workloads to run at once: the flag's value, else the variable's, else one.
@@ -265,7 +335,18 @@ pub fn run(
     let halted = AtomicBool::new(false);
     let stopping = || halted.load(Ordering::Relaxed) || stop();
     let slots = options.workloads;
+    let runs = run::runs_dir(options.runs_dir.as_deref())?;
     let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        // Clearing never ends the worker: what it cannot do is said and tried again later.
+        let clearing = scope.spawn(|| {
+            loop {
+                clear_old_workspaces(&client, &runs, options.keep_runs_for);
+                if !pause(CLEAR_EVERY, &stopping) {
+                    break;
+                }
+            }
+            Ok(())
+        });
         let handles: Vec<_> = (0..slots)
             .map(|_| {
                 scope.spawn(|| {
@@ -277,6 +358,8 @@ pub fn run(
                 })
             })
             .collect();
+        let mut handles = handles;
+        handles.push(clearing);
         handles
             .into_iter()
             .map(|handle| {
@@ -819,6 +902,7 @@ mod tests {
             runs_dir: Some(runs.to_path_buf()),
             executor: None,
             workloads: 1,
+            keep_runs_for: Duration::from_hours(168),
         }
     }
 

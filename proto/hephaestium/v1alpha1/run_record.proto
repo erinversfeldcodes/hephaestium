@@ -67,6 +67,15 @@ message RunRecord {
   // Hephaestium that produced it. Absent from a record kept before the executor wrote it,
   // which is unknown and never guessed.
   Provenance provenance = 19;
+  // Where the run's time went, in milliseconds, so a run that ended on its timeout can be told
+  // from one that spent it waiting in a place it could have avoided. The agent is every start
+  // of the implementing agent, including one that resolved a merge or fixed what a gate or a
+  // reader found; the gates are every run of the gates; review is every reader. The three do
+  // not add up to the run's length: setup, delivery and waiting are in none of them. Zero for
+  // a record kept before the executor measured them, and for a part the run did not have.
+  uint64 agent_ms = 20;
+  uint64 gates_ms = 21;
+  uint64 review_ms = 22;
 }
 
 // What a run ran under. Each run carries its own, so a ticket whose steps ran under different
