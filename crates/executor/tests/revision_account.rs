@@ -281,3 +281,171 @@ fn a_description_that_cannot_be_set_fails_the_run_and_says_so() {
         "{reason}"
     );
 }
+
+#[test]
+fn a_revision_that_changed_files_and_left_no_message_is_asked_once_and_then_delivered() {
+    let (rig, head) = rig_with_branch("asked-for-message");
+    // The first time it runs it changes a file and leaves no message; asked again, it writes one.
+    let script = format!(
+        "if [ -f asked ]; then printf 'fix: the first attempt, now said\\n' > .heph-commit-message; else echo more > web/more.txt; touch asked; fi; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(
+        git(&source, &["log", "-1", "--format=%s", PR_BRANCH]),
+        "fix: the first attempt, now said"
+    );
+}
+
+#[test]
+fn a_revision_that_still_leaves_no_message_when_asked_is_delivered_under_the_pull_requests_title() {
+    let (rig, head) = rig_with_branch("never-writes-message");
+    let script = format!(
+        "echo more > web/more.txt; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+    assert!(message.contains("Revised after: spec."), "{message}");
+}
+
+#[test]
+fn a_revision_whose_ask_for_a_message_fails_is_still_delivered_under_the_pull_requests_title() {
+    let (rig, head) = rig_with_branch("ask-fails");
+    // The first run changes a file and leaves no message; when asked again, the agent fails.
+    let script = format!(
+        "if [ -f asked ]; then echo broke >&2; exit 1; else echo more > web/more.txt; touch asked; fi; echo '{}'",
+        json!({"agentMessage": {"text": "done"}})
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(ran.code(), 0, "{}", ran.stderr());
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+}
+
+const DONE: &str = r#"{"agentMessage": {"text": "done"}}"#;
+
+/// A script that counts each time the agent starts, in a file outside the workspace, then runs
+/// `body`.
+fn counting(rig: &Rig, body: &str) -> (String, std::path::PathBuf) {
+    let calls = rig.scratch.path("calls");
+    (
+        format!("echo x >> {}; {body}; echo '{DONE}'", calls.display()),
+        calls,
+    )
+}
+
+fn starts(calls: &std::path::Path) -> usize {
+    std::fs::read_to_string(calls).map_or(0, |text| text.lines().count())
+}
+
+#[test]
+fn a_revision_with_no_message_is_asked_in_exactly_one_extra_agent_turn() {
+    let (rig, head) = rig_with_branch("asked-once");
+    let (script, calls) = counting(
+        &rig,
+        "if [ -f asked ]; then printf 'fix: said when asked\\n' > .heph-commit-message; else echo more > web/more.txt; touch asked; fi",
+    );
+
+    let (ran, _) = run(rig, &revising(&head), &script);
+
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(starts(&calls), 2, "one turn for the work, one for the ask");
+}
+
+#[test]
+fn a_revision_that_is_asked_and_still_writes_none_is_not_asked_again() {
+    let (rig, head) = rig_with_branch("asked-once-still-none");
+    let (script, calls) = counting(&rig, "echo more >> web/more.txt");
+
+    let (ran, _) = run(rig, &revising(&head), &script);
+
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(starts(&calls), 2);
+}
+
+#[test]
+fn a_message_the_rule_refuses_is_asked_for_again_and_the_valid_one_is_used() {
+    let (rig, head) = rig_with_branch("refused-then-valid");
+    let (script, calls) = counting(
+        &rig,
+        "if [ -f asked ]; then printf 'fix: now conventional\\n' > .heph-commit-message; else echo more > web/more.txt; printf 'not conventional\\n' > .heph-commit-message; touch asked; fi",
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(starts(&calls), 2);
+    assert_eq!(
+        git(&source, &["log", "-1", "--format=%s", PR_BRANCH]),
+        "fix: now conventional"
+    );
+}
+
+#[test]
+fn a_message_the_rule_refuses_twice_is_delivered_under_the_pull_requests_title() {
+    let (rig, head) = rig_with_branch("refused-twice");
+    let (script, calls) = counting(
+        &rig,
+        "echo more >> web/more.txt; printf 'not conventional\\n' > .heph-commit-message",
+    );
+
+    let (ran, source) = run(rig, &revising(&head), &script);
+
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(starts(&calls), 2);
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+}
+
+#[test]
+fn the_ask_is_not_made_when_the_budget_is_already_spent() {
+    let (rig, head) = rig_with_branch("budget-spent");
+    let cost = json!({"cost": {"unit": "COST_UNIT_USD", "amount": 1.0, "source": "SOURCE_REPORTED_BY_RUNTIME"}});
+    let (script, calls) = counting(&rig, &format!("echo more > web/more.txt; echo '{cost}'"));
+    let mut value = revising(&head);
+    value["limits"]["budget"]["amount"] = json!(1.0);
+
+    let (ran, source) = run(rig, &value, &script);
+
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert_eq!(starts(&calls), 1, "no turn is bought with a spent budget");
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+}
+
+#[test]
+fn the_ask_gets_only_the_time_the_run_has_left() {
+    let (rig, head) = rig_with_branch("time-left");
+    let done = rig.scratch.path("ask-finished");
+    // The work takes 1.5 of the 2 seconds allowed; the ask would take 1.5 more if it were
+    // given the whole timeout, and is stopped at what is left.
+    let (script, _) = counting(
+        &rig,
+        &format!(
+            "if [ -f asked ]; then sleep 1.5; touch {}; else sleep 1.5; echo more > web/more.txt; touch asked; fi",
+            done.display()
+        ),
+    );
+    let mut value = revising(&head);
+    value["limits"]["timeout"] = json!("2s");
+
+    let (ran, source) = run(rig, &value, &script);
+
+    assert_eq!(finished(&ran.events()).0, Outcome::Completed);
+    assert!(!done.exists(), "the ask ran past the time the run had left");
+    let message = git(&source, &["log", "-1", "--format=%B", PR_BRANCH]);
+    assert!(message.starts_with(HEAD_MESSAGE), "{message}");
+}

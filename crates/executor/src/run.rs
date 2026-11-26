@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use contracts::v1alpha1::agent_runtime::Kind as AgentKind;
 use contracts::v1alpha1::event::Kind;
@@ -96,6 +96,8 @@ pub fn run(
     // What the workload has spent on every agent it has run, so that asking the agent a
     // second time spends from the budget the first left and not from a new one.
     let spent = Cell::new(0.0_f64);
+    // When the run began, so that asking the agent again is held to the time the run has left.
+    let started = Instant::now();
     // Which agents the run started and what each spent, when it reads its own change.
     let steps = RefCell::new(Vec::<Step>::new());
     let (outcome, reason) = match prepare(options, &workload, &workspace, secrets, &mut stream) {
@@ -148,6 +150,8 @@ pub fn run(
                         secrets,
                         spent: &spent,
                         steps: &steps,
+                        started,
+                        asked: Cell::new(false),
                     };
                     finish_first_run(
                         &asking,
@@ -573,19 +577,114 @@ fn conclude_conflict(workspace: &Path, merge: &Merge) -> Result<String, String> 
         .to_owned())
 }
 
+/// Ask the agent, once, for the commit message it left out or wrote wrongly, when its work
+/// changed the tree. It is asked in this run, within what the run has left of its budget, and
+/// whatever it writes is judged afterwards by the caller: a message that is still unusable is
+/// then dealt with there. An ask that fails or runs out of time changes nothing about that: the
+/// work is kept and the caller settles the message it finds. The ask gets only the time the run
+/// has left of the workload's timeout, and is not made when none is left.
+fn ask_for_message<W: Write>(
+    asking: &Asking<'_>,
+    workload: &Workload,
+    workspace: &Path,
+    stream: &mut Stream<'_, W>,
+) -> Result<(), Refused> {
+    let Some(problem) = deliver::message_problem(workspace) else {
+        return Ok(());
+    };
+    if asking.asked.get() {
+        return Ok(());
+    }
+    if !deliver::tree_changed(workspace).unwrap_or(false) || heph::process::cancelled() {
+        return Ok(());
+    }
+    let mut asked = workload.clone();
+    let limits = asked.limits.get_or_insert_with(Default::default);
+    let allowed = limits.timeout.as_ref().map_or(Duration::ZERO, |timeout| {
+        Duration::new(
+            u64::try_from(timeout.seconds).unwrap_or(0),
+            u32::try_from(timeout.nanos).unwrap_or(0),
+        )
+    });
+    let left = allowed.saturating_sub(asking.started.elapsed());
+    let budget_spent = limits
+        .budget
+        .as_ref()
+        .is_some_and(|budget| asking.spent.get() >= budget.amount);
+    if left.is_zero() || budget_spent {
+        return Ok(());
+    }
+    asking.asked.set(true);
+    if let Some(timeout) = limits.timeout.as_mut() {
+        timeout.seconds = i64::try_from(left.as_secs()).unwrap_or(i64::MAX);
+        timeout.nanos = i32::try_from(left.subsec_nanos()).unwrap_or(0);
+    }
+    let revision = asked.revision.get_or_insert_with(|| Revision {
+        attempt: 1,
+        ..Revision::default()
+    });
+    revision.base_moved = None;
+    revision.failures = vec![contracts::v1alpha1::FailedCheck {
+        name: "commit message".to_owned(),
+        result: "failure".to_owned(),
+        excerpt: format!(
+            "{problem}. Change no file. Write a conventional commit subject to {}.",
+            deliver::MESSAGE_FILE
+        ),
+    }];
+    asked.review = None;
+    asked.completeness = None;
+    asked.gap = None;
+    asked.judged_after_merge = false;
+    asked.lenses.clear();
+    asked.prepush_rounds = 0;
+
+    let told = reads_before_push(workload);
+    let round = workload.prepush_rounds + 1;
+    let marked = stream.costs().clone();
+    if told {
+        step_started(stream, StepKind::Revision, round, "")?;
+    }
+    let ended = agent::run(
+        asking.adapter,
+        &asked,
+        workspace,
+        asking.options.heartbeat,
+        asking.secrets,
+        asking.spent,
+        stream,
+    )?;
+    if told {
+        step_finished(stream, StepKind::Revision, round, "", "")?;
+        let now = stream.costs().clone();
+        note_step(
+            asking,
+            StepKind::Revision,
+            "",
+            round,
+            "",
+            spent_between(&marked, &now),
+        );
+    }
+    // Whatever way the ask ended, the tree it leaves is judged by the caller.
+    drop(ended);
+    Ok(())
+}
+
 /// Open the pull request when the run was asked to and holds the token to, and say how
 /// the workload ended. The outer error is a failure to write an event.
 fn deliver_if_asked<W: Write>(
-    options: &Options,
-    secrets: &Secrets,
+    asking: &Asking<'_>,
     workload: &Workload,
     workspace: &Path,
     deferred: &[deliver::Deferred],
     stream: &mut Stream<'_, W>,
 ) -> Result<(Outcome, String), Refused> {
+    let (options, secrets) = (asking.options, asking.secrets);
     let (true, Some(token)) = (options.deliver, secrets.get(secrets::GITHUB_TOKEN)) else {
         return Ok((Outcome::Completed, String::new()));
     };
+    ask_for_message(asking, workload, workspace, stream)?;
     let committed = match deliver::commit_locally(workload, workspace) {
         Ok(committed) => committed,
         Err(reason) => return Ok((Outcome::Failed, reason)),
@@ -685,6 +784,11 @@ struct Asking<'a> {
     spent: &'a Cell<f64>,
     /// The agents the run started, in order, as the run record lists them.
     steps: &'a RefCell<Vec<Step>>,
+    /// When the run began.
+    started: Instant,
+    /// Whether the agent has already been asked for a commit message in this run: it is asked
+    /// once, however many times the message is read afterwards.
+    asked: Cell<bool>,
 }
 
 /// What a first run or a revision does once its agent is done: carry the work onto the base
@@ -747,7 +851,7 @@ fn finish_first_run<W: Write>(
         options.heartbeat,
         stream,
     )? {
-        Ok(deferred) => deliver_if_asked(options, secrets, workload, workspace, &deferred, stream),
+        Ok(deferred) => deliver_if_asked(asking, workload, workspace, &deferred, stream),
         Err(failed) => Ok((Outcome::Failed, failed.summary)),
     }
 }
@@ -1032,6 +1136,7 @@ fn read_before_push<W: Write>(
         }
     };
 
+    ask_for_message(asking, workload, workspace, stream)?;
     let committed = match deliver::commit_locally(workload, workspace) {
         Ok(committed) => committed,
         Err(reason) => return Ok((Outcome::Failed, reason)),
@@ -1178,7 +1283,10 @@ fn read_before_push<W: Write>(
                 Ok(still_deferred) => deferred = still_deferred,
                 Err(failed) => return Ok((Outcome::Failed, failed.with_output())),
             }
-            if let Err(reason) = deliver::amend_locally(&committed, workspace) {
+            ask_for_message(asking, workload, workspace, stream)?;
+            if let Err(reason) = deliver::settle_message(workload, workspace)
+                .and_then(|()| deliver::amend_locally(&committed, workspace))
+            {
                 return Ok((Outcome::Failed, reason));
             }
         }

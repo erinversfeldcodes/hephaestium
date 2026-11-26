@@ -328,6 +328,77 @@ fn read_message(workspace: &Path) -> Result<String, String> {
     Ok(message)
 }
 
+/// Why the agent's commit message cannot be used, if it cannot: none was left, or the
+/// repository's rule refuses it.
+#[must_use]
+pub fn message_problem(workspace: &Path) -> Option<String> {
+    read_message(workspace).err()
+}
+
+/// Whether the working tree differs from the head.
+///
+/// # Errors
+///
+/// Returns why git could not say.
+pub fn tree_changed(workspace: &Path) -> Result<bool, String> {
+    Ok(!run(
+        &["git", "status", "--porcelain"],
+        workspace,
+        "",
+        "git status",
+    )?
+    .is_empty())
+}
+
+/// What a revision was for, as a line a commit message can carry.
+fn revision_purpose(revision: &contracts::v1alpha1::Revision) -> String {
+    if !revision.failures.is_empty() {
+        let names: Vec<&str> = revision
+            .failures
+            .iter()
+            .map(|failure| failure.name.as_str())
+            .collect();
+        format!("Revised after: {}.", names.join(", "))
+    } else if revision.base_moved.is_some() {
+        "Revised to confirm the change still stands on the base branch.".to_owned()
+    } else {
+        "Revised after a request for changes.".to_owned()
+    }
+}
+
+/// Make sure a message the commit can use is in [`MESSAGE_FILE`]. A revision whose tree
+/// changed and whose message is missing or refused is not thrown away: the pull request's own
+/// title, which is the subject of its head commit, is used, with a line saying what the
+/// revision was for. Any other workload's message is left as it is, for the caller to refuse.
+///
+/// # Errors
+///
+/// Returns why the fallback could not be written or the tree read.
+pub fn settle_message(workload: &Workload, workspace: &Path) -> Result<(), String> {
+    let Some(revision) = workload.revision.as_ref() else {
+        return Ok(());
+    };
+    if read_message(workspace).is_ok() || !tree_changed(workspace)? {
+        return Ok(());
+    }
+    let title = run(
+        &["git", "log", "-1", "--format=%s"],
+        workspace,
+        "",
+        "git log",
+    )?
+    .join(" ");
+    let title = title.trim();
+    let title = if is_conventional(title) {
+        title
+    } else {
+        "fix: revise the change"
+    };
+    let message = format!("{title}\n\n{}\n", revision_purpose(revision));
+    std::fs::write(workspace.join(MESSAGE_FILE), message)
+        .map_err(|error| format!("could not write {MESSAGE_FILE}: {error}"))
+}
+
 /// Commit what the agent did, on the branch it will be pushed to. Nothing is pushed and no
 /// token is held: this is the part of delivery that can be done, and read, before anything
 /// leaves the machine.
@@ -363,6 +434,7 @@ pub fn commit_locally(workload: &Workload, workspace: &Path) -> Result<Committed
             kind,
         });
     }
+    settle_message(workload, workspace)?;
     let message = read_message(workspace)?;
 
     let tree_unchanged = run(
