@@ -109,12 +109,25 @@ defmodule ControlPlane.Workloads do
 
   @doc "The number of a workload's pull request, from the address its record holds."
   @spec pull_request_number(%Workload{}) :: {:ok, String.t()} | {:error, String.t()}
-  def pull_request_number(%Workload{} = workload) do
-    url = get_in(workload.record || %{}, ["pullRequest", "url"]) || ""
+  def pull_request_number(%Workload{} = workload),
+    do:
+      pull_request_number(
+        workload.repository,
+        get_in(workload.record || %{}, ["pullRequest", "url"])
+      )
+
+  @doc """
+  `pull_request_number/1` for a pull request address read on its own, so a caller that selects
+  only that address from the record need not load the whole record to find the number.
+  """
+  @spec pull_request_number(String.t(), String.t() | nil) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def pull_request_number(repository, url) do
+    url = url || ""
 
     case Regex.run(~r{^https://github\.com/([^/]+/[^/]+)/pull/(\d+)$}, url) do
-      [_, repository, number] when repository == workload.repository -> {:ok, number}
-      _ -> {:error, "the pull request #{inspect(url)} is not one of #{workload.repository}"}
+      [_, ^repository, number] -> {:ok, number}
+      _ -> {:error, "the pull request #{inspect(url)} is not one of #{repository}"}
     end
   end
 
@@ -391,6 +404,25 @@ defmodule ControlPlane.Workloads do
         w.state == "completed" and is_nil(w.settled_at) and
           fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
       order_by: [asc: w.inserted_at]
+    )
+  end
+
+  @doc """
+  Which of these workloads still need the workspace a worker made for them: those not yet
+  ended, which a lease may be held on or a queue may give again, and those that completed with
+  a pull request that is not settled, which a revision may resume. Ids that are not workloads
+  are not held.
+  """
+  @spec held([String.t()]) :: [Ecto.UUID.t()]
+  def held(ids) do
+    Repo.all(
+      from w in Workload,
+        where:
+          w.id in ^ids and
+            (w.state not in ^@terminal or
+               (w.state == "completed" and is_nil(w.settled_at) and
+                  fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record))),
+        select: w.id
     )
   end
 

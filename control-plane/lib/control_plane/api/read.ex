@@ -21,6 +21,10 @@ defmodule ControlPlane.Api.Read do
 
   @max_page 500
 
+  # The kinds a run's document can ask for, in the order they take precedence; the board's SQL
+  # and `kind/1` both read this list.
+  @kinds ~w(revision review completeness gap)
+
   @doc "The largest page of events one request may ask for."
   def max_page, do: @max_page
 
@@ -159,36 +163,39 @@ defmodule ControlPlane.Api.Read do
           number: w.ticket_number,
           state: w.state,
           at: w.inserted_at,
-          document: w.workload,
-          gates: fragment("?->'gates'", w.record)
+          kind:
+            fragment(
+              "(select k from unnest(?::text[]) with ordinality as t(k, n) where jsonb_exists(?, k) order by n limit 1)",
+              type(^@kinds, {:array, :string}),
+              w.workload
+            ),
+          lens: fragment("?->'review'->>'lens'", w.workload),
+          failed_gate:
+            fragment(
+              """
+              (select g->>'name'
+                 from jsonb_array_elements(case when jsonb_typeof(? -> 'gates') = 'array' then ? -> 'gates' else '[]'::jsonb end)
+                      with ordinality as e(g, n)
+                where g->>'name' is not null
+                  and g->'result'->>'outcome' in ('failed', 'timed out', 'timed_out')
+                order by n limit 1)
+              """,
+              w.record,
+              w.record
+            )
         }
     )
     |> Enum.filter(&MapSet.member?(wanted, {&1.repository, &1.number}))
     |> Enum.group_by(&{&1.repository, &1.number}, fn w ->
-      kind = kind(w.document)
-
       %{
-        kind: kind,
+        kind: w.kind || "implementation",
         state: w.state,
-        lens: get_in(w.document || %{}, ["review", "lens"]),
+        lens: w.lens,
         at: utc(w.at),
-        failed_gate: failed_gate(w.gates)
+        failed_gate: w.failed_gate
       }
     end)
   end
-
-  defp failed_gate(gates) when is_list(gates) do
-    Enum.find_value(gates, fn
-      %{"name" => name, "result" => %{"outcome" => outcome}}
-      when outcome in ["failed", "timed out", "timed_out"] ->
-        name
-
-      _ ->
-        nil
-    end)
-  end
-
-  defp failed_gate(_), do: nil
 
   defp spent_usd([]), do: %{}
 
@@ -240,7 +247,8 @@ defmodule ControlPlane.Api.Read do
           title: fragment("?->'ticket'->>'title'", w.workload),
           kind:
             fragment(
-              "(select k from jsonb_object_keys(?) k where k in ('revision', 'review', 'completeness', 'gap') limit 1)",
+              "(select k from unnest(?::text[]) with ordinality as t(k, n) where jsonb_exists(?, k) order by n limit 1)",
+              type(^@kinds, {:array, :string}),
               w.workload
             ),
           settled_at: w.settled_at,
@@ -526,7 +534,7 @@ defmodule ControlPlane.Api.Read do
   @spec kind(map() | nil) :: String.t()
   def kind(document) do
     document = document || %{}
-    Enum.find(~w(revision review completeness gap), "implementation", &Map.has_key?(document, &1))
+    Enum.find(@kinds, "implementation", &Map.has_key?(document, &1))
   end
 
   @doc """
