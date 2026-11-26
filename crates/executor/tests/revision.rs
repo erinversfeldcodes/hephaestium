@@ -239,12 +239,7 @@ fn a_revision_that_is_not_safe_is_refused_before_anything_is_created() {
 fn prompt_of(value: &Value) -> String {
     let workload: Workload = serde_json::from_value(value.clone()).expect("a workload");
     let plan = ClaudeCode.plan(&workload, std::path::Path::new("/work/w"));
-    let at = plan
-        .command
-        .iter()
-        .position(|word| word == "-p")
-        .expect("-p");
-    plan.command[at + 1].clone()
+    plan.stdin
 }
 
 #[test]

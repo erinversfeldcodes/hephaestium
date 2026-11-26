@@ -67,8 +67,21 @@ pub fn heph_in(directory: &Path, args: &[&str]) -> Output {
     heph_with_env(directory, args, &[])
 }
 
+/// Take every `HEPH_*` variable this test process inherited out of a child's environment, so that
+/// what the child does is settled by what the test sets and not by how the worker was started.
+pub fn without_heph_variables(command: &mut Command) -> &mut Command {
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("HEPH_") {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
 pub fn heph_with_env(directory: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_heph"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_heph"));
+    without_heph_variables(&mut command);
+    command
         .current_dir(directory)
         .args(args)
         .envs(env.iter().copied())

@@ -246,7 +246,12 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
     );
     assert_eq!(command[2], "claude");
     assert_eq!(command[3], "-p");
-    let prompt = &command[4];
+    assert!(
+        command[4].starts_with("--"),
+        "-p is followed by a flag and not a prompt: the prompt is on standard input: {:?}",
+        command[4]
+    );
+    let prompt = &plan.stdin;
     assert!(
         prompt.contains("Make the reset spec wait for hydration"),
         "{prompt}"
@@ -301,6 +306,67 @@ fn the_launch_carries_the_prompt_the_model_the_permissions_and_the_tools() {
         "/work/run-1.claude-config/settings.json"
     );
     assert_eq!(plan.working_directory, "/work/run-1");
+}
+
+#[test]
+fn the_started_command_line_holds_no_word_of_the_prompt() {
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/work/run-1"));
+    let line = plan.command.join(" ");
+
+    assert!(
+        plan.stdin
+            .contains("Make the reset spec wait for hydration"),
+        "the prompt is the plan's standard input"
+    );
+    for phrase in [
+        "Make the reset spec wait for hydration",
+        "mix ecto.gen.migration",
+        "No person will answer",
+        "pkill",
+    ] {
+        assert!(
+            !line.contains(phrase),
+            "{phrase:?} is on the command line: {line}"
+        );
+    }
+}
+
+#[test]
+fn pkill_and_killall_are_refused_and_the_agent_is_told_why() {
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/work/run-1"));
+    let directory = std::env::temp_dir().join(format!("executor-cc-refuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("a directory");
+    let workspace = directory.join("run-1");
+    ClaudeCode
+        .prepare(&a_workload(|_| {}), &workspace)
+        .expect("to prepare");
+    let settings: Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.join("run-1.claude-config/settings.json"))
+            .expect("settings"),
+    )
+    .expect("JSON");
+    assert_eq!(
+        settings["permissions"]["deny"],
+        json!(["Bash(pkill:*)", "Bash(killall:*)"])
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        !plan
+            .command
+            .iter()
+            .any(|a| a.contains("pkill") || a.contains("killall")),
+        "the refused names are on the command line: {:?}",
+        plan.command
+    );
+
+    let prompt = &plan.stdin;
+    assert!(
+        prompt.contains("Never run `pkill`, `killall` or `kill` by name or pattern")
+            && prompt.contains("stop only a process id you started")
+            && prompt.contains("stops their work"),
+        "the agent must be told never to stop a process by name, and why: {prompt}"
+    );
 }
 
 #[test]

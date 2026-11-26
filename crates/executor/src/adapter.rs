@@ -47,6 +47,7 @@ impl Adapter for Stub {
             command: self.command.clone(),
             env_names: self.env_names.clone(),
             working_directory: workspace.display().to_string(),
+            stdin: String::new(),
         }
     }
 
