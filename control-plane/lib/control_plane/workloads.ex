@@ -408,6 +408,25 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc """
+  Which of these workloads still need the workspace a worker made for them: those not yet
+  ended, which a lease may be held on or a queue may give again, and those that completed with
+  a pull request that is not settled, which a revision may resume. Ids that are not workloads
+  are not held.
+  """
+  @spec held([String.t()]) :: [Ecto.UUID.t()]
+  def held(ids) do
+    Repo.all(
+      from w in Workload,
+        where:
+          w.id in ^ids and
+            (w.state not in ^@terminal or
+               (w.state == "completed" and is_nil(w.settled_at) and
+                  fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record))),
+        select: w.id
+    )
+  end
+
+  @doc """
   The tickets of these repositories whose newest workload failed or timed out and has not been
   settled: the ones a board lists as needing a person.
   """

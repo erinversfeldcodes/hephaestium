@@ -107,6 +107,14 @@ defmodule ControlPlane.ExecutorLinkTest do
 
   defp beginning(id), do: stream(id, 1, [started(), workspace_ready()])
 
+  defp drain_queries(acc) do
+    receive do
+      {:query, query} -> drain_queries([query | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   defp lease(id), do: Repo.get(WorkloadLease, id)
 
   # The lease ended a minute ago, as a laptop that closed would leave it.
@@ -116,6 +124,55 @@ defmodule ControlPlane.ExecutorLinkTest do
     Repo.update_all(from(l in WorkloadLease, where: l.workload_id == ^id),
       set: [expires_at: past]
     )
+  end
+
+  describe "which workspaces a worker may clear" do
+    defp set(id, changes),
+      do: Repo.update_all(from(w in Workload, where: w.id == ^id), set: changes)
+
+    test "a workload that is leased or still going is held", ctx do
+      id = queued()
+      StandInWorker.claim(ctx.port, ctx.mine)
+      queued_only = queued()
+
+      assert %{status: 200, body: %{"held" => held}} =
+               StandInWorker.held(ctx.port, ctx.mine, [id, queued_only])
+
+      assert Enum.sort(held) == Enum.sort([id, queued_only])
+    end
+
+    test "a completed workload with a pull request that is not settled is held, and is not once settled",
+         ctx do
+      id = queued()
+      pull = %{"pullRequest" => %{"url" => "https://github.com/acme/widgets/pull/9"}}
+      set(id, state: "completed", record: pull)
+
+      assert %{body: %{"held" => [^id]}} = StandInWorker.held(ctx.port, ctx.mine, [id])
+
+      set(id, settled_at: DateTime.utc_now())
+      assert %{body: %{"held" => []}} = StandInWorker.held(ctx.port, ctx.mine, [id])
+    end
+
+    test "a workload that failed, was cancelled or is not known is not held", ctx do
+      failed = queued()
+      cancelled = queued()
+      set(failed, state: "failed")
+      set(cancelled, state: "cancelled")
+      unknown = Ecto.UUID.generate()
+
+      assert %{status: 200, body: %{"held" => []}} =
+               StandInWorker.held(ctx.port, ctx.mine, [failed, cancelled, unknown])
+    end
+
+    test "is refused without a device token, and a body without ids is a mistake", ctx do
+      assert %{status: 401} = StandInWorker.held(ctx.port, nil, [])
+
+      assert %{status: 400} =
+               StandInWorker.request(ctx.port, :post, "/worker/workloads/held",
+                 token: ctx.mine,
+                 body: %{}
+               )
+    end
   end
 
   describe "a worker with a valid token" do
@@ -144,6 +201,40 @@ defmodule ControlPlane.ExecutorLinkTest do
       assert %{status: 200} = StandInWorker.record(ctx.port, ctx.mine, id, record)
       assert Workloads.get(id).record == record
       refute lease(id).active, "the lease is let go when the record is kept"
+    end
+
+    test "ingests an event without selecting a workload's documents", ctx do
+      id = queued()
+      assert %{status: 200} = StandInWorker.claim(ctx.port, ctx.mine)
+
+      test_pid = self()
+      handler = "lock-query-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler,
+        [:control_plane, :repo, :query],
+        fn _event, _measure, %{query: query}, _config ->
+          if self() == test_pid, do: send(test_pid, {:query, query})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      assert {:ok, 1, _} = Leases.ingest(ctx.mine_record, id, [event(id, 1, started())])
+      :telemetry.detach(handler)
+
+      queries = drain_queries([])
+      assert Enum.any?(queries, &(&1 =~ ~r/FOR UPDATE/))
+
+      # Ingesting an event never reads a workload's documents, whichever query it runs.
+      for query <- queries do
+        refute query =~ ~r/\."workload"/, "selects the workload document: #{query}"
+        refute query =~ ~r/\."record"/, "selects the record document: #{query}"
+      end
+
+      for lock <- Enum.filter(queries, &(&1 =~ ~r/FOR UPDATE/)),
+          do: assert(lock =~ ~r/^SELECT w0\."id"/)
     end
 
     test "is given a queued review before an implementation that was queued earlier", ctx do

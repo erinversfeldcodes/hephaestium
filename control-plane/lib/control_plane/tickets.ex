@@ -263,6 +263,17 @@ defmodule ControlPlane.Tickets do
     ])
   end
 
+  def settled(workload, {:conflicted, extra}, _notes) do
+    first_error([
+      add_label(workload, @failed),
+      remove_label(workload, @running),
+      note(
+        workload,
+        "the pull request conflicts with its base branch, so GitHub runs no checks on it. #{extra}"
+      )
+    ])
+  end
+
   def settled(workload, :abandoned, _notes) do
     first_error([
       remove_label(workload, @running),
@@ -333,6 +344,20 @@ defmodule ControlPlane.Tickets do
     note(
       workload,
       "the base branch has moved since the pull request was opened (#{commits} #{if commits == 1, do: "commit", else: "commits"} came in). Starting revision #{attempt} of #{max}: the agent will confirm the change still stands on it and push to the same branch."
+    )
+  end
+
+  @doc """
+  The pull request conflicts with its base, so GitHub runs no checks on it: a revision has
+  been started, and the ticket names the files both sides changed where the host gives them.
+  """
+  def revising_for_conflict(workload, files, attempt, max) do
+    where =
+      if files == [], do: "", else: " Both sides changed: #{Enum.join(files, ", ")}."
+
+    note(
+      workload,
+      "the pull request conflicts with its base branch, so GitHub runs no checks on it.#{where} Starting revision #{attempt} of #{max}: the agent will bring the base in, resolve the conflicts and push to the same branch."
     )
   end
 

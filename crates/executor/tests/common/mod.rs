@@ -187,6 +187,17 @@ pub fn run_with_env(
     Ran { output, scratch }
 }
 
+/// Take every `HEPH_*` variable this test process inherited out of a child's environment, so that
+/// what the child does is settled by what the test sets and not by how the worker was started.
+pub fn without_heph_variables(command: &mut Command) -> &mut Command {
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("HEPH_") {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
 /// The executor's command line for a workload, not yet run.
 pub fn command_for(
     scratch: &Scratch,
@@ -197,6 +208,7 @@ pub fn command_for(
 ) -> Command {
     scratch.write("workload.json", &workload.to_string());
     let mut command = Command::new(env!("CARGO_BIN_EXE_executor"));
+    without_heph_variables(&mut command);
     command
         .args(["run", "--workload"])
         .arg(scratch.path("workload.json"))

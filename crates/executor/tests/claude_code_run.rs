@@ -23,7 +23,7 @@ fn stand_in(scratch: &Scratch) -> PathBuf {
     let out = scratch.path("seen");
     std::fs::create_dir_all(&out).expect("a directory");
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > {out}/args.txt\nenv > {out}/env.txt\ncat {recorded}\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > {out}/args.txt\nenv > {out}/env.txt\ncat > {out}/stdin.txt\ncat {recorded}\n",
         out = out.display(),
         recorded = RECORDED
     );
@@ -82,7 +82,10 @@ fn a_claude_code_workload_runs_the_adapter_with_an_empty_config_dir_the_token_an
             .any(|l| l.starts_with("CLAUDE_CONFIG_DIR=") && l.ends_with(".claude-config")),
         "{env}"
     );
-    for forbidden in ["HEPH_TEST_SECRET", "ANTHROPIC_API_KEY", "HOME="] {
+    // The home is the shared one for the workspace's tools, never the maintainer's own.
+    let tool_home = format!("HOME={}", ran.scratch.path("work/.tool-home").display());
+    assert!(env.lines().any(|l| l == tool_home), "{env}");
+    for forbidden in ["HEPH_TEST_SECRET", "ANTHROPIC_API_KEY"] {
         assert!(
             !env.contains(forbidden),
             "{forbidden} reached the agent:\n{env}"
@@ -99,8 +102,13 @@ fn a_claude_code_workload_runs_the_adapter_with_an_empty_config_dir_the_token_an
 
     let args = std::fs::read_to_string(ran.scratch.path("seen/args.txt")).expect("the arguments");
     assert!(
-        args.contains("Make the reset spec wait for hydration"),
-        "{args}"
+        !args.contains("Make the reset spec wait for hydration"),
+        "the prompt was on the command line: {args}"
+    );
+    let prompt = std::fs::read_to_string(ran.scratch.path("seen/stdin.txt")).expect("the prompt");
+    assert!(
+        prompt.contains("Make the reset spec wait for hydration"),
+        "the prompt did not reach the agent's standard input: {prompt}"
     );
 
     let record = ran.record();
