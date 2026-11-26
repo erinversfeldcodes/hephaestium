@@ -66,6 +66,18 @@ fi
     )
 }
 
+/// The instant, in seconds since the epoch, at which the clock the agent asks says the run ends.
+/// The prompt reads it from the script, so the end it states and the end the script gives are one
+/// instant and not two read a moment apart.
+#[must_use]
+pub fn clock_end(workspace: &Path) -> Option<u64> {
+    let script = std::fs::read_to_string(clock_path(workspace)).ok()?;
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix("ends="))
+        .and_then(|value| value.parse().ok())
+}
+
 /// Write the clock the agent asks, for a run that has `timeout` from now.
 fn write_clock(workspace: &Path, timeout: Duration) -> std::io::Result<()> {
     let started = std::time::SystemTime::now()

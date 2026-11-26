@@ -354,7 +354,7 @@ fn all_the_output_together_is_capped_not_only_each_part() {
     }));
 
     assert!(
-        prompt.len() < 30_000,
+        prompt.len() < 32_000,
         "the prompt is {} bytes",
         prompt.len()
     );

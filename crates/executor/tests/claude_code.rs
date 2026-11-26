@@ -468,9 +468,7 @@ fn the_prompt_names_the_limit_the_executor_enforces_and_a_changed_limit_changes_
 
 #[test]
 fn the_prompt_says_when_the_time_ends_and_not_to_wait_on_processes_by_name() {
-    let prompt = ClaudeCode
-        .plan(&a_workload(|_| {}), Path::new("/w"))
-        .stdin;
+    let prompt = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/w")).stdin;
     assert!(prompt.contains(" UTC"), "{prompt}");
     assert!(prompt.contains("pgrep -f"), "{prompt}");
     assert!(prompt.contains("second copy"), "{prompt}");

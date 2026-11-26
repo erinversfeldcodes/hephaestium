@@ -128,13 +128,18 @@ fn time_section(workload: &Workload, workspace: &Path) -> String {
         .as_ref()
         .and_then(|l| l.timeout.as_ref())
         .map_or(0, |t| u64::try_from(t.seconds).unwrap_or(0));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    // The end is the one the clock script was written with; only when there is no script yet
+    // (a prompt built before the run starts) is it worked out from now.
+    let ends = crate::agent::clock_end(workspace).unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            + seconds
+    });
     format!(
         "You have {minutes} minutes for this run, and it ends at {ends}: then you are stopped, and what you had not finished is lost. Ask how long is left with `sh {clock}`; it also tells you when half and when three quarters of your time have gone, so ask before you start anything long and after each long command. When a quarter is left, stop verifying and deliver what you can, saying in the description what was not run: reviews still judge what you deliver. Run only the tests your change touches, and never a second copy of a suite that is already running. Do not wait on processes by name: `pgrep -f \"mix test\"` waits for every run's tests on this machine, not only yours. Wait only on a process you started and whose id you hold, and never sleep or poll for more than a minute.\n\n",
         minutes = seconds.div_ceil(60),
-        ends = utc_clock(now + seconds),
+        ends = utc_clock(ends),
         clock = crate::agent::clock_path(workspace).display(),
     )
 }
@@ -440,4 +445,34 @@ fn cost_of(unit: CostUnit, amount: f64, breakdown: Option<TokenBreakdown>) -> Ki
         source: cost::Source::ReportedByRuntime as i32,
         breakdown,
     })
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::{time_section, utc_clock};
+    use contracts::v1alpha1::Workload;
+
+    #[test]
+    fn the_end_is_the_hour_and_minute_in_utc() {
+        assert_eq!(utc_clock(0), "00:00 UTC");
+        // 14:07:59 on some day.
+        assert_eq!(utc_clock(1_795_702_079), "14:07 UTC");
+        assert_eq!(utc_clock(1_795_702_079 + 1_800), "14:37 UTC");
+        assert_eq!(utc_clock(86_399), "23:59 UTC");
+    }
+
+    #[test]
+    fn the_prompt_states_the_end_the_clock_script_gives() {
+        let dir = std::env::temp_dir().join(format!("prompt-end-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let workspace = dir.join("run-1");
+        std::fs::write(
+            crate::agent::clock_path(&workspace),
+            "#!/bin/sh\nstarted=1795700000\nends=1795702079\n",
+        )
+        .expect("write");
+        let text = time_section(&Workload::default(), &workspace);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(text.contains("it ends at 14:07 UTC"), "{text}");
+    }
 }
