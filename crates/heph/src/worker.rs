@@ -82,6 +82,96 @@ pub struct Options {
     pub workloads: usize,
     /// How long a run's workspace is kept after the run was last written.
     pub keep_runs_for: Duration,
+    /// The free space, in bytes, under the runs directory below which no claim is made.
+    pub min_free: u64,
+}
+
+/// The variable that sets the free-space floor in gigabytes, when no flag does.
+pub const MIN_FREE_VARIABLE: &str = "HEPH_WORKER_MIN_FREE_GB";
+
+/// The free-space floor, in gigabytes (10^9 bytes), when nothing says: 5.
+///
+/// Measured on 2026-11-25: the 95 kept workspaces of runs that had not completed held
+/// 92.5 GB, 0.97 GB each on average, so the floor is about five such runs. That is an
+/// average of what was left behind, not a run's peak, which has not been measured. A
+/// floor of 0 never refuses a claim.
+pub const DEFAULT_MIN_FREE_GB: u64 = 5;
+
+const BYTES_PER_GB: u64 = 1_000_000_000;
+
+/// The free-space floor in bytes: the flag's number of gigabytes, else the variable's,
+/// else [`DEFAULT_MIN_FREE_GB`].
+///
+/// # Errors
+///
+/// Returns why the setting is refused: it is not a whole number of gigabytes.
+pub fn min_free(flag: Option<&str>) -> Result<u64, String> {
+    min_free_from(flag, run::environment(MIN_FREE_VARIABLE).as_deref())
+}
+
+fn min_free_from(flag: Option<&str>, variable: Option<&str>) -> Result<u64, String> {
+    let (text, from) = match (flag, variable) {
+        (Some(text), _) => (text, "--min-free-gb"),
+        (None, Some(text)) => (text, MIN_FREE_VARIABLE),
+        (None, None) => return Ok(DEFAULT_MIN_FREE_GB * BYTES_PER_GB),
+    };
+    let gigabytes: u64 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("{from}: {text:?} is not a whole number of gigabytes"))?;
+    Ok(gigabytes.saturating_mul(BYTES_PER_GB))
+}
+
+/// The bytes a new run may use on the filesystem that holds `runs`, read from the nearest
+/// directory of it that exists, since the first run makes the runs directory.
+fn free_bytes(runs: &Path) -> Result<u64, String> {
+    let mut near = runs;
+    while !near.is_dir() {
+        near = near
+            .parent()
+            .ok_or_else(|| format!("no directory of {} exists", runs.display()))?;
+    }
+    let stat = rustix::fs::statvfs(near).map_err(|error| format!("{}: {error}", near.display()))?;
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+/// Whether a claim may be made now. `refusing` remembers that the last look found too little
+/// room, so that the refusal is said once and the return is said once, not every poll. A
+/// reading that fails does not stop work: it is said and the claim goes ahead.
+fn has_room(
+    reading: &dyn Fn() -> Result<u64, String>,
+    floor: u64,
+    refusing: &mut bool,
+    log: &mut dyn std::io::Write,
+) -> bool {
+    let free = match reading() {
+        Ok(free) => free,
+        Err(message) => {
+            let _ = writeln!(
+                log,
+                "heph: worker: could not read the free disk space ({message}); not checking it"
+            );
+            return true;
+        }
+    };
+    if free < floor {
+        if !*refusing {
+            let _ = writeln!(
+                log,
+                "heph: worker: not claiming: {free} bytes free under the runs directory is below the floor of {floor} bytes; a run could fail with no space left"
+            );
+        }
+        *refusing = true;
+        return false;
+    }
+    if *refusing {
+        let _ = writeln!(
+            log,
+            "heph: worker: claiming again: {free} bytes free is at or above the floor of {floor} bytes"
+        );
+    }
+    *refusing = false;
+    true
 }
 
 /// The variable that sets how many days a finished run keeps its workspace, when no flag does.
@@ -422,8 +512,20 @@ fn slot(
     stop: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let mut failures: u32 = 0;
+    let mut refusing = false;
     while !stop() {
         stop_what_finished_runs_left(options);
+        // Looked at when the worker would next ask for work, on the pace it already keeps.
+        let runs = run::runs_dir(options.runs_dir.as_deref())?;
+        if !has_room(
+            &|| free_bytes(&runs),
+            options.min_free,
+            &mut refusing,
+            &mut std::io::stderr(),
+        ) {
+            pause(SHORTEST_POLL, stop);
+            continue;
+        }
         let asked_at = Instant::now();
         let claim = match ask(client, slots, stop) {
             Asked::Stopped => break,
@@ -1006,7 +1108,69 @@ mod tests {
             executor: None,
             workloads: 1,
             keep_runs_for: Duration::from_hours(168),
+            min_free: 0,
         }
+    }
+
+    fn said(free: u64, floor: u64, refusing: &mut bool) -> (bool, String) {
+        let mut log = Vec::new();
+        let room = has_room(&|| Ok(free), floor, refusing, &mut log);
+        (room, String::from_utf8(log).expect("utf8"))
+    }
+
+    // The free-space reading is stubbed here: this shows the decision and the log line.
+    #[test]
+    fn a_claim_is_refused_under_the_floor_and_taken_at_or_above_it_and_the_line_names_both_numbers()
+    {
+        let mut refusing = false;
+        let (room, line) = said(4_999, 5_000, &mut refusing);
+        assert!(!room);
+        assert!(line.contains("4999") && line.contains("5000"), "{line}");
+        let (room, line) = said(4_999, 5_000, &mut refusing);
+        assert!(!room && line.is_empty(), "said once: {line}");
+        let (room, line) = said(5_000, 5_000, &mut refusing);
+        assert!(room);
+        assert!(line.contains("claiming again"), "{line}");
+        let (room, line) = said(9_000, 5_000, &mut refusing);
+        assert!(room && line.is_empty());
+    }
+
+    #[test]
+    fn a_free_space_reading_that_fails_does_not_stop_work() {
+        let mut refusing = false;
+        let mut log = Vec::new();
+        assert!(has_room(
+            &|| Err("boom".to_owned()),
+            5,
+            &mut refusing,
+            &mut log
+        ));
+        assert!(String::from_utf8(log).expect("utf8").contains("boom"));
+    }
+
+    // Not stubbed: reads this machine's filesystem.
+    #[test]
+    fn the_real_free_space_reading_is_above_zero_and_a_floor_above_it_refuses() {
+        let here = std::env::temp_dir().join("heph-not-made-yet").join("runs");
+        let free = free_bytes(&here).expect("read");
+        assert!(free > 0);
+        let mut refusing = false;
+        let mut log = Vec::new();
+        assert!(!has_room(
+            &|| free_bytes(&here),
+            u64::MAX,
+            &mut refusing,
+            &mut log
+        ));
+        assert!(has_room(&|| free_bytes(&here), 1, &mut refusing, &mut log));
+    }
+
+    #[test]
+    fn the_floor_is_the_flag_else_the_variable_else_five_gigabytes() {
+        assert_eq!(min_free_from(None, None), Ok(5_000_000_000));
+        assert_eq!(min_free_from(None, Some("2")), Ok(2_000_000_000));
+        assert_eq!(min_free_from(Some("1"), Some("2")), Ok(1_000_000_000));
+        assert!(min_free_from(Some("x"), None).is_err());
     }
 
     #[test]
