@@ -778,7 +778,7 @@ fn the_next_run_deletes_the_checkouts_that_are_due_and_no_others() {
 }
 
 #[test]
-fn a_run_that_may_still_be_going_or_is_not_a_run_is_not_touched() {
+fn a_run_that_cannot_be_told_to_have_ended_or_is_not_a_run_is_not_touched() {
     let rig = rig("cleanup-untouched");
     rig.token_file("github-token");
     let failed = record("OUTCOME_FAILED", "");
@@ -796,14 +796,11 @@ fn a_run_that_may_still_be_going_or_is_not_a_run_is_not_touched() {
     let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    for directory in [
-        no_record,
-        not_json,
-        unspecified,
-        no_outcome,
-        badly_named,
-        not_a_uuid,
-    ] {
+    assert!(
+        !no_record.join("work").exists(),
+        "a run with no record and nothing holding it ended without one"
+    );
+    for directory in [not_json, unspecified, no_outcome, badly_named, not_a_uuid] {
         assert!(
             directory.join("work/repo/file").exists(),
             "{} was touched",
