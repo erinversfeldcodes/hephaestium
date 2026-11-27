@@ -56,16 +56,44 @@ pub const BUILD_OUTPUT: [&str; 5] = ["target", "_build", "deps", "node_modules",
 
 /// Remove the build output from a run's checkout, wherever in it that sits, and say how
 /// many directories went. The source, and what the run said beside the checkout, stay.
-/// A link is removed and not followed, and `.git` is not entered.
+/// A link is removed and not followed, and `.git` is not entered. A directory with
+/// anything git tracks in it is source, so it stays and is searched for build output.
 ///
 /// # Errors
 ///
 /// What the file system said, naming the directory.
 pub fn discard_build_output(run: &Path) -> Result<usize, String> {
-    discard_in(&run.join("work"), true)
+    discard_in(&run.join("work"), true, None)
 }
 
-fn discard_in(directory: &Path, top: bool) -> Result<usize, String> {
+/// Whether git tracks anything under `path`, which lies in the checkout at `repo`. A
+/// directory that holds tracked files is source whatever it is called.
+fn tracks_anything(repo: &Path, path: &Path) -> Result<bool, String> {
+    let relative = path.strip_prefix(repo).unwrap_or(path);
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-files", "-z", "--"])
+        .arg(relative)
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .output()
+        .map_err(|error| format!("could not ask git about {}: {error}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git could not say whether it tracks {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(!output.stdout.is_empty())
+}
+
+fn discard_in(directory: &Path, top: bool, repo: Option<&Path>) -> Result<usize, String> {
+    let repo = if directory.join(".git").exists() {
+        Some(directory)
+    } else {
+        repo
+    };
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         // A run with no checkout has nothing to discard.
@@ -89,12 +117,15 @@ fn discard_in(directory: &Path, top: bool) -> Result<usize, String> {
             fs::remove_file(&path)
                 .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
             removed += 1;
-        } else if built && kind.is_dir() {
+        } else if built
+            && kind.is_dir()
+            && !repo.map_or(Ok(false), |r| tracks_anything(r, &path))?
+        {
             fs::remove_dir_all(&path)
                 .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
             removed += 1;
         } else if kind.is_dir() && name != ".git" {
-            removed += discard_in(&path, false)?;
+            removed += discard_in(&path, false, repo)?;
         }
     }
     Ok(removed)
@@ -330,7 +361,13 @@ mod tests {
             write(&root.join(kept), "kept");
         }
         write(&root.join("work/repo/src/main.rs"), "source");
-        write(&root.join("work/repo/.git/HEAD"), "ref");
+        // A real repository, because the discard asks git what is tracked.
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(root.join("work/repo"))
+            .status()
+            .expect("git");
+        assert!(status.success(), "git init");
         for built in BUILD_OUTPUT {
             write(
                 &root.join("work/repo").join(built).join("big/file"),

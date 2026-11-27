@@ -923,6 +923,36 @@ mod tests {
     }
 
     #[test]
+    fn a_tracked_directory_named_like_build_output_is_source_and_survives() {
+        let git = |run: &Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(run.join("work/repo"))
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        let run = run_with_build_output("tracked");
+        let repo = run.join("work/repo");
+        std::fs::create_dir_all(repo.join("src/deps/target")).expect("tracked directory");
+        std::fs::write(repo.join("src/deps/lib.rs"), "source").expect("tracked file");
+        std::fs::write(repo.join("src/deps/target/junk"), "built").expect("untracked");
+        git(&run, &["init", "-q"]);
+        git(&run, &["add", "src/deps/lib.rs"]);
+        git(&run, &["commit", "-q", "-m", "source"]);
+
+        discard_build_output_of_an_unfinished_run("failed", &run);
+
+        assert!(repo.join("src/deps/lib.rs").is_file(), "tracked deps");
+        assert!(!repo.join("src/deps/target").exists(), "untracked target");
+        assert!(!repo.join("target").exists(), "untracked top target");
+        assert!(!run.join("work/.tool-home").exists(), "tool home");
+        let _ = std::fs::remove_dir_all(&run);
+    }
+
+    #[test]
     fn a_run_that_completed_or_said_nothing_keeps_its_build_output() {
         for outcome in ["completed", "unspecified"] {
             let run = run_with_build_output(&format!("keep-{outcome}"));
