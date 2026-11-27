@@ -119,6 +119,7 @@ impl Rig {
              [ -n \"$work\" ] && mkdir -p \"$work/repo\" && echo checkout > \"$work/repo/file\"\n\
              [ -n \"$work\" ] && for b in target _build deps node_modules; do mkdir -p \"$work/repo/$b\" && echo built > \"$work/repo/$b/object\"; done\n\
              [ -n \"$work\" ] && mkdir -p \"$work/.tool-home\" && echo cache > \"$work/.tool-home/cache\"\n\
+             [ -f $d/undeletable ] && chmod 500 \"$work/repo\"\n\
              [ -n \"$rec\" ] && cp $d/record.canned \"$rec\"\n\
              cat $d/stderr.canned >&2\n\
              cat $d/events.canned\n\
@@ -1091,4 +1092,25 @@ fn a_run_that_failed_timed_out_or_was_blocked_loses_its_build_output_and_keeps_t
             assert!(directory.join(kept).exists(), "{outcome}: {kept}");
         }
     }
+}
+
+#[test]
+fn a_run_that_completed_is_not_asked_to_discard_its_build_output() {
+    // The checkout is made undeletable, so what a completed run does is left to be seen:
+    // it tries to delete the checkout and says so, and never goes to discard the build
+    // output, which would be a second complaint and would take what it could.
+    let rig = rig("build-output-completed");
+    rig.token_file("github-token");
+    std::fs::write(rig.home.0.join("executor-dir/undeletable"), "").expect("a marker");
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    let directory = rig.run_directory().expect("one run directory");
+    let inner = directory.join("work/repo");
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).expect("to restore");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let shown = stderr(&output);
+    assert!(shown.contains("could not delete the checkout"), "{shown}");
+    assert!(!shown.contains("could not remove"), "{shown}");
+    assert!(inner.join("target/object").is_file(), "{shown}");
 }
