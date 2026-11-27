@@ -24,6 +24,6 @@ defmodule ControlPlane.Workload do
     field :parent_id, :binary_id
     field :answer, :string
 
-    timestamps()
+    timestamps(type: :utc_datetime_usec)
   end
 end

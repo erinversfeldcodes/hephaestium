@@ -589,7 +589,7 @@ defmodule ControlPlane.VerdictsTest do
       Workloads.create(change.(%{real.workload | "id" => Ecto.UUID.generate()}), parent: id)
 
     Repo.update_all(from(w in Workload, where: w.id == ^copy.id),
-      set: [state: "failed", inserted_at: NaiveDateTime.add(real.inserted_at, 60)]
+      set: [state: "failed", inserted_at: DateTime.add(real.inserted_at, 60, :second)]
     )
   end
 

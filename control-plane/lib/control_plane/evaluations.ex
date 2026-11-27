@@ -256,7 +256,7 @@ defmodule ControlPlane.Evaluations do
       repository
       |> Workloads.for_ticket(number)
       |> Enum.filter(&evaluation?/1)
-      |> Enum.map(&DateTime.from_naive!(&1.inserted_at, "Etc/UTC"))
+      |> Enum.map(& &1.inserted_at)
 
     cond do
       closed == nil -> {:skip, :no_closure_seen}
@@ -367,14 +367,14 @@ defmodule ControlPlane.Evaluations do
   @daily_limit 6
 
   defp not_judged_too_often(repository, number, approved_at) do
-    since = NaiveDateTime.add(NaiveDateTime.utc_now(), -86_400, :second)
+    since = DateTime.add(DateTime.utc_now(), -86_400, :second)
 
     count =
       repository
       |> Workloads.for_ticket(number)
       |> Enum.count(
         &(evaluation?(&1) and approved?(&1, approved_at) and
-            NaiveDateTime.compare(&1.inserted_at, since) != :lt)
+            DateTime.compare(&1.inserted_at, since) != :lt)
       )
 
     if count >= @daily_limit, do: {:skip, :judged_too_often}, else: :ok

@@ -178,7 +178,7 @@ defmodule ControlPlane.Gaps do
     |> Workloads.for_ticket(number)
     |> Enum.any?(
       &(step?(&1) and
-          DateTime.compare(DateTime.from_naive!(&1.inserted_at, "Etc/UTC"), ended) != :lt)
+          DateTime.compare(&1.inserted_at, ended) != :lt)
     )
   end
 
@@ -343,12 +343,12 @@ defmodule ControlPlane.Gaps do
   end
 
   defp not_asked_too_often(repository, number) do
-    since = NaiveDateTime.add(NaiveDateTime.utc_now(), -86_400, :second)
+    since = DateTime.add(DateTime.utc_now(), -86_400, :second)
 
     count =
       repository
       |> Workloads.for_ticket(number)
-      |> Enum.count(&(step?(&1) and NaiveDateTime.compare(&1.inserted_at, since) != :lt))
+      |> Enum.count(&(step?(&1) and DateTime.compare(&1.inserted_at, since) != :lt))
 
     if count >= @daily_limit, do: {:skip, :asked_too_often}, else: :ok
   end
