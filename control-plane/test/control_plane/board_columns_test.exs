@@ -39,8 +39,8 @@ defmodule ControlPlane.BoardColumnsTest do
           ticket_number: ticket,
           state: "completed",
           started_at: now,
-          inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(:second), run, :second),
-          updated_at: NaiveDateTime.utc_now(:second),
+          inserted_at: DateTime.add(DateTime.utc_now(), run, :second),
+          updated_at: DateTime.utc_now(),
           workload: %{"ticket" => %{"title" => "t#{ticket}"}, "pad" => big},
           record: %{
             "pullRequest" => %{"url" => "https://github.com/#{@repo}/pull/#{ticket}"},
@@ -175,8 +175,8 @@ defmodule ControlPlane.BoardColumnsTest do
           ticket_number: ticket,
           state: "failed",
           started_at: DateTime.utc_now(),
-          inserted_at: NaiveDateTime.utc_now(:second),
-          updated_at: NaiveDateTime.utc_now(:second),
+          inserted_at: DateTime.utc_now(),
+          updated_at: DateTime.utc_now(),
           workload: workload,
           record: record
         }

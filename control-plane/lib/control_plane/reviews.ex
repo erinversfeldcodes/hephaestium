@@ -202,7 +202,7 @@ defmodule ControlPlane.Reviews do
           w.repository == ^repository and
             fragment("?->'review'->>'pullRequestNumber' = ?", w.workload, ^number) and
             fragment("?->'repository'->>'baseCommit' = ?", w.workload, ^sha),
-        order_by: [asc: w.inserted_at]
+        order_by: [asc: w.inserted_at, asc: w.id]
       )
     )
     |> Map.new(&{&1.workload["review"]["lens"], &1})

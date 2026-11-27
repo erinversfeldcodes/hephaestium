@@ -82,7 +82,8 @@ defmodule ControlPlane.Workloads do
             fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
         order_by: [
           desc: fragment("COALESCE((?->'revision'->>'attempt')::int, 0)", w.workload),
-          desc: w.inserted_at
+          desc: w.inserted_at,
+          desc: w.id
         ],
         limit: 1
     )
@@ -203,7 +204,7 @@ defmodule ControlPlane.Workloads do
             fragment("?->'review' IS NULL", w.workload) and
             fragment("?->'completeness' IS NULL", w.workload) and
             fragment("?->'pullRequest'->>'url' IS NOT NULL", w.record),
-        order_by: w.inserted_at
+        order_by: [w.inserted_at, w.id]
     )
     |> Enum.group_by(&{&1.repository, &1.ticket_number})
     |> Enum.map(fn {_ticket, workloads} -> List.last(workloads) end)
@@ -262,7 +263,7 @@ defmodule ControlPlane.Workloads do
             fragment("?->'review' IS NULL", w.workload) and
             fragment("?->'completeness' IS NULL", w.workload) and
             fragment("?->'pullRequest'->>'url' = ?", w.record, ^url),
-        order_by: w.inserted_at
+        order_by: [w.inserted_at, w.id]
     )
     |> Enum.group_by(& &1.ticket_number)
     |> Enum.map(fn {_ticket, workloads} -> List.last(workloads) end)
