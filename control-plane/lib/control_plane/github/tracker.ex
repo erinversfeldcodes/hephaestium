@@ -196,8 +196,17 @@ defmodule ControlPlane.GitHub.Tracker do
     do: logged("POST", issue(project, key) <> "/labels", ["labels[]=#{label}"])
 
   @impl true
-  def remove_label(project, key, label),
-    do: logged("DELETE", issue(project, key) <> "/labels/" <> URI.encode_www_form(label), [])
+  def remove_label(project, key, label) do
+    case logged("DELETE", issue(project, key) <> "/labels/" <> URI.encode_www_form(label), []) do
+      # A label the ticket does not have is already as asked. A 404 for a missing ticket or
+      # repository says something else, and stays an error.
+      {:error, message} = error when is_binary(message) ->
+        if message =~ "Label does not exist", do: :ok, else: error
+
+      result ->
+        result
+    end
+  end
 
   @impl true
   def comment_on_ticket(project, key, body),
