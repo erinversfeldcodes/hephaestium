@@ -640,7 +640,19 @@ fn serve_in(
     {
         eprintln!("heph: warning: {warning}");
     }
+    discard_build_output_of_an_unfinished_run(&outcome, directory);
     Ok(())
+}
+
+/// A run that ended without completing keeps its source to be looked at, and drops its
+/// build output, which is most of the disk and which nobody reads.
+fn discard_build_output_of_an_unfinished_run(outcome: &str, directory: &Path) {
+    if outcome != "completed"
+        && outcome != "unspecified"
+        && let Err(warning) = workspaces::discard_build_output(directory)
+    {
+        eprintln!("heph: warning: {warning}");
+    }
 }
 
 /// Whether a run record says the run ended by itself, as any outcome but a cancellation.
@@ -866,6 +878,67 @@ fn show(line: &str, started: Instant) {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    /// A run directory with a source file, a record and every kind of build output.
+    fn run_with_build_output(name: &str) -> PathBuf {
+        let run = std::env::temp_dir().join(format!("heph-worker-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(run.join("work/repo/src")).expect("directories");
+        std::fs::write(run.join("work/repo/src/main.rs"), "source").expect("source");
+        std::fs::write(run.join("record.json"), "{}").expect("record");
+        for built in [
+            "repo/target",
+            "repo/_build",
+            "repo/deps",
+            "repo/node_modules",
+            ".tool-home",
+        ] {
+            std::fs::create_dir_all(run.join("work").join(built)).expect("build output");
+            std::fs::write(run.join("work").join(built).join("object"), "built").expect("file");
+        }
+        run
+    }
+
+    #[test]
+    fn a_run_that_ended_without_completing_loses_its_build_output_and_keeps_the_rest() {
+        for outcome in ["failed", "timed_out", "blocked"] {
+            let run = run_with_build_output(&format!("discard-{outcome}"));
+            discard_build_output_of_an_unfinished_run(outcome, &run);
+            assert!(
+                run.join("work/repo/src/main.rs").is_file(),
+                "{outcome}: source"
+            );
+            assert!(run.join("record.json").is_file(), "{outcome}: record");
+            for built in [
+                "repo/target",
+                "repo/_build",
+                "repo/deps",
+                "repo/node_modules",
+                ".tool-home",
+            ] {
+                assert!(!run.join("work").join(built).exists(), "{outcome}: {built}");
+            }
+            let _ = std::fs::remove_dir_all(&run);
+        }
+    }
+
+    #[test]
+    fn a_run_that_completed_or_said_nothing_keeps_its_build_output() {
+        for outcome in ["completed", "unspecified"] {
+            let run = run_with_build_output(&format!("keep-{outcome}"));
+            discard_build_output_of_an_unfinished_run(outcome, &run);
+            for built in [
+                "repo/target",
+                "repo/_build",
+                "repo/deps",
+                "repo/node_modules",
+                ".tool-home",
+            ] {
+                assert!(run.join("work").join(built).is_dir(), "{outcome}: {built}");
+            }
+            let _ = std::fs::remove_dir_all(&run);
+        }
+    }
 
     fn file(name: &str, mode: u32, text: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("heph-worker-{name}-{}", std::process::id()));

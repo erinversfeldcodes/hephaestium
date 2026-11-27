@@ -51,6 +51,48 @@ pub fn delete_checkout(run: &Path) -> Result<bool, String> {
         .map_err(|error| format!("could not delete the checkout {}: {error}", work.display()))
 }
 
+/// The directories a build leaves in a checkout, named for what they hold.
+pub const BUILD_OUTPUT: [&str; 5] = ["target", "_build", "deps", "node_modules", ".tool-home"];
+
+/// Remove the build output from a run's checkout, wherever in it that sits, and say how
+/// many directories went. The source, and what the run said beside the checkout, stay.
+/// A link is removed and not followed, and `.git` is not entered.
+///
+/// # Errors
+///
+/// What the file system said, naming the directory.
+pub fn discard_build_output(run: &Path) -> Result<usize, String> {
+    discard_in(&run.join("work"))
+}
+
+fn discard_in(directory: &Path) -> Result<usize, String> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let built = BUILD_OUTPUT.contains(&name.as_ref());
+        if built && kind.is_symlink() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+            removed += 1;
+        } else if built && kind.is_dir() {
+            fs::remove_dir_all(&path)
+                .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+            removed += 1;
+        } else if kind.is_dir() && name != ".git" {
+            removed += discard_in(&path)?;
+        }
+    }
+    Ok(removed)
+}
+
 /// Delete every checkout under `runs` that is due: those of runs that completed, and
 /// those of runs that ended any other way more than `keep` ago.
 ///
@@ -242,5 +284,98 @@ pub fn show_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new empty directory of its own, under the system's temporary directory.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("heph-workspaces-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("a directory");
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().expect("a parent")).expect("directories");
+        fs::write(path, text).expect("a file");
+    }
+
+    fn run_with_output(root: &Path) {
+        for kept in ["record.json", "events.jsonl", "executor.log"] {
+            write(&root.join(kept), "kept");
+        }
+        write(&root.join("work/repo/src/main.rs"), "source");
+        write(&root.join("work/repo/.git/HEAD"), "ref");
+        for built in BUILD_OUTPUT {
+            write(
+                &root.join("work/repo").join(built).join("big/file"),
+                "built",
+            );
+        }
+        write(
+            &root.join("work/repo/control-plane/node_modules/a/b.js"),
+            "x",
+        );
+        write(&root.join("work/.tool-home/cache"), "x");
+    }
+
+    #[test]
+    fn build_output_goes_and_source_and_record_stay() {
+        let dir = Scratch::new("tree");
+        let run = dir.path();
+        run_with_output(run);
+
+        let removed = discard_build_output(run).expect("to discard");
+
+        assert_eq!(removed, 7);
+        for built in BUILD_OUTPUT {
+            assert!(!run.join("work/repo").join(built).exists(), "{built}");
+        }
+        assert!(!run.join("work/repo/control-plane/node_modules").exists());
+        assert!(!run.join("work/.tool-home").exists());
+        assert!(run.join("work/repo/src/main.rs").exists());
+        assert!(run.join("work/repo/.git/HEAD").exists());
+        for kept in ["record.json", "events.jsonl", "executor.log"] {
+            assert!(run.join(kept).exists(), "{kept}");
+        }
+    }
+
+    #[test]
+    fn a_link_named_like_build_output_is_removed_and_not_followed() {
+        let dir = Scratch::new("link-run");
+        let outside = Scratch::new("link-outside");
+        write(&outside.path().join("precious"), "x");
+        fs::create_dir_all(dir.path().join("work/repo")).expect("directories");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("work/repo/target"))
+            .expect("a link");
+
+        discard_build_output(dir.path()).expect("to discard");
+
+        assert!(!dir.path().join("work/repo/target").exists());
+        assert!(outside.path().join("precious").exists());
+    }
+
+    #[test]
+    fn a_run_with_no_checkout_has_nothing_to_discard() {
+        let dir = Scratch::new("empty");
+        assert_eq!(discard_build_output(dir.path()), Ok(0));
     }
 }

@@ -117,6 +117,8 @@ impl Rig {
              prev=''\n\
              for a in \"$@\"; do [ \"$prev\" = '--work-dir' ] && work=\"$a\"; prev=\"$a\"; done\n\
              [ -n \"$work\" ] && mkdir -p \"$work/repo\" && echo checkout > \"$work/repo/file\"\n\
+             [ -n \"$work\" ] && for b in target _build deps node_modules; do mkdir -p \"$work/repo/$b\" && echo built > \"$work/repo/$b/object\"; done\n\
+             [ -n \"$work\" ] && mkdir -p \"$work/.tool-home\" && echo cache > \"$work/.tool-home/cache\"\n\
              [ -n \"$rec\" ] && cp $d/record.canned \"$rec\"\n\
              cat $d/stderr.canned >&2\n\
              cat $d/events.canned\n\
@@ -1048,4 +1050,45 @@ fn a_record_with_no_steps_prints_no_step_lines() {
         shown.contains("cost: $0.125, 144096 tokens\npull request: "),
         "the summary changed:\n{shown}"
     );
+}
+
+#[test]
+fn a_run_that_failed_timed_out_or_was_blocked_loses_its_build_output_and_keeps_the_rest() {
+    for outcome in ["OUTCOME_FAILED", "OUTCOME_TIMED_OUT", "OUTCOME_BLOCKED"] {
+        let rig = rig(&format!("build-output-{}", outcome.to_lowercase()));
+        rig.token_file("github-token");
+        rig.write_executor(0, "", &events(), &record(outcome, "it did not complete"));
+
+        let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{outcome}: {}",
+            stderr(&output)
+        );
+        let directory = rig.run_directory().expect("one run directory");
+        assert!(
+            directory.join("work/repo/file").exists(),
+            "{outcome}: source"
+        );
+        for built in ["target", "_build", "deps", "node_modules"] {
+            assert!(
+                !directory.join("work/repo").join(built).exists(),
+                "{outcome}: {built}"
+            );
+        }
+        assert!(
+            !directory.join("work/.tool-home").exists(),
+            "{outcome}: .tool-home"
+        );
+        for kept in [
+            "workload.json",
+            "events.jsonl",
+            "executor.log",
+            "record.json",
+        ] {
+            assert!(directory.join(kept).exists(), "{outcome}: {kept}");
+        }
+    }
 }
