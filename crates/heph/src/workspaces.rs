@@ -8,7 +8,9 @@
 //! is cleaned up by the next `heph run`.
 //!
 //! There is no database here to ask whether a run has ended, so the run's own
-//! `record.json` says: a run with no record may still be going, and is never touched.
+//! `record.json` says. A run with no record may still be going, so its checkout is
+//! removed only when nothing holds the run's lock and no process works under its
+//! directory: then it ended without writing one.
 
 use std::fs;
 use std::path::Path;
@@ -24,6 +26,8 @@ pub const DEFAULT_KEEP_HOURS: u64 = 72;
 pub struct Swept {
     /// How many checkouts were deleted.
     pub deleted: usize,
+    /// The disk space those checkouts held, in bytes.
+    pub freed: u64,
     /// What could not be done, one line each.
     pub warnings: Vec<String>,
 }
@@ -136,7 +140,7 @@ fn discard_in(directory: &Path, top: bool, repo: Option<&Path>) -> Result<usize,
 ///
 /// Only a real directory named `<ticket>-<workload id>`, under a real directory of a
 /// repository, with a record that says how the run ended, is touched. A link is never
-/// entered.
+/// entered. A run with no record is also removed when nothing holds it.
 #[must_use]
 pub fn sweep(runs: &Path, keep: Duration, now: SystemTime) -> Swept {
     let mut swept = Swept::default();
@@ -146,9 +150,24 @@ pub fn sweep(runs: &Path, keep: Duration, now: SystemTime) -> Swept {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(is_run_name);
-            if named && due(&run, keep, now) {
+            if !named {
+                continue;
+            }
+            let abandoned = !has_record(&run) && !in_use(&run);
+            if abandoned || due(&run, keep, now) {
+                let size = disk_use(&run.join("work"));
                 match delete_checkout(&run) {
-                    Ok(true) => swept.deleted += 1,
+                    Ok(true) => {
+                        swept.deleted += 1;
+                        swept.freed += size;
+                        if abandoned {
+                            eprintln!(
+                                "heph: removed the checkout of {}, which ended without a record and is held by nothing, freeing {}",
+                                run.display(),
+                                show_size(size)
+                            );
+                        }
+                    }
                     Ok(false) => {}
                     Err(warning) => swept.warnings.push(warning),
                 }
@@ -156,6 +175,16 @@ pub fn sweep(runs: &Path, keep: Duration, now: SystemTime) -> Swept {
         }
     }
     swept
+}
+
+/// Whether the run has any `record.json` entry, valid or not.
+fn has_record(run: &Path) -> bool {
+    fs::symlink_metadata(run.join("record.json")).is_ok()
+}
+
+/// Whether the run may still be going: its lock is held, or a process works under it.
+fn in_use(run: &Path) -> bool {
+    crate::run_lock::is_held(run) || !crate::process::processes_under(run).is_empty()
 }
 
 /// The real directories in a directory. A link is not one, and a directory that is
@@ -435,5 +464,81 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("to unlock");
         let error = result.expect_err("an unreadable directory to be reported");
         assert!(error.contains("locked"), "{error}");
+    }
+
+    const RUN: &str = "455-0b0e8f5e-5b8a-4c53-9a0e-3f1f2f0d9a11";
+
+    /// A repository's runs directory with one run that has a checkout.
+    fn runs_with_checkout(dir: &Scratch) -> std::path::PathBuf {
+        let run = dir.path().join("owner-name").join(RUN);
+        write(&run.join("work/repo/file"), "checkout");
+        run
+    }
+
+    fn sweep_now(dir: &Scratch) -> Swept {
+        sweep(dir.path(), Duration::from_secs(3600), SystemTime::now())
+    }
+
+    #[test]
+    fn a_run_with_no_record_and_nothing_holding_it_loses_its_checkout() {
+        let dir = Scratch::new("abandoned");
+        let run = runs_with_checkout(&dir);
+        write(&run.join("events.jsonl"), "said");
+
+        let swept = sweep_now(&dir);
+
+        assert_eq!(swept.deleted, 1);
+        assert!(swept.freed > 0);
+        assert!(!run.join("work").exists());
+        assert!(run.join("events.jsonl").exists());
+    }
+
+    #[test]
+    fn a_run_whose_lock_is_held_keeps_its_checkout() {
+        let dir = Scratch::new("held");
+        let run = runs_with_checkout(&dir);
+        let _held = crate::run_lock::hold(&run).expect("to hold the run");
+
+        let swept = sweep_now(&dir);
+
+        assert_eq!(swept.deleted, 0);
+        assert!(run.join("work/repo/file").exists());
+    }
+
+    #[test]
+    fn a_run_with_a_process_under_it_keeps_its_checkout() {
+        let dir = Scratch::new("process");
+        let run = runs_with_checkout(&dir);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(run.join("work/repo"))
+            .spawn()
+            .expect("sleep");
+        // The working directory is read from the system, so wait until it shows.
+        let started = std::time::Instant::now();
+        while crate::process::processes_under(&run).is_empty()
+            && started.elapsed() < Duration::from_secs(10)
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let swept = sweep_now(&dir);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(swept.deleted, 0);
+        assert!(run.join("work/repo/file").exists());
+    }
+
+    #[test]
+    fn a_run_with_a_record_is_left_to_the_retention_rule() {
+        let dir = Scratch::new("recorded");
+        let run = runs_with_checkout(&dir);
+        write(&run.join("record.json"), r#"{"outcome":"OUTCOME_FAILED"}"#);
+
+        let swept = sweep_now(&dir);
+
+        assert_eq!(swept.deleted, 0);
+        assert!(run.join("work/repo/file").exists());
     }
 }
