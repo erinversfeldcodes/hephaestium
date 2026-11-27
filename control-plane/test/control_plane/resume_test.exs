@@ -441,7 +441,7 @@ defmodule ControlPlane.ResumeTest do
     Workloads.settle(record.id)
 
     Repo.update_all(from(w in ControlPlane.Workload, where: w.id == ^record.id),
-      set: [inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(), 3600, :second)]
+      set: [inserted_at: DateTime.add(DateTime.utc_now(), 3600, :second)]
     )
 
     assert [%{result: :resumed}] = Run.run(@repo)

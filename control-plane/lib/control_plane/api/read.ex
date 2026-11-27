@@ -612,7 +612,7 @@ defmodule ControlPlane.Api.Read do
                     l.inserted_at > parent_as(:asked).inserted_at,
                 select: 1
             ),
-          order_by: [desc: w.finished_at, desc: w.inserted_at]
+          order_by: [desc: w.finished_at, desc: w.inserted_at, desc: w.id]
       )
 
     answers =

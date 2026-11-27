@@ -331,7 +331,7 @@ defmodule ControlPlane.SettleTest do
 
     ControlPlane.Repo.update_all(
       from(w in ControlPlane.Workload, where: w.id == ^bad.id),
-      set: [inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(), -3600, :second)]
+      set: [inserted_at: DateTime.add(DateTime.utc_now(), -3600, :second)]
     )
 
     results = Settle.run()

@@ -108,6 +108,24 @@ defmodule ControlPlane.ApiReplyTest do
     )
   end
 
+  test "workloads made within one second are read back in the order they were made" do
+    ids = for _ <- 1..20, do: Ecto.UUID.generate()
+
+    for id <- ids do
+      {:ok, _} =
+        Fixtures.workload(id)
+        |> put_in(["ticket", "number"], "77")
+        |> Workloads.create()
+    end
+
+    workloads = Workloads.for_ticket(@repo, 77)
+    stamps = Enum.map(workloads, & &1.inserted_at)
+
+    assert Enum.map(workloads, & &1.id) == ids
+    assert %DateTime{microsecond: {_, 6}} = hd(stamps)
+    assert length(Enum.uniq(stamps)) == length(stamps)
+  end
+
   # A later workload on the ticket that ends blocked with a question.
   defp ask_again(number, question) do
     id = Ecto.UUID.generate()
@@ -116,17 +134,6 @@ defmodule ControlPlane.ApiReplyTest do
       Fixtures.workload(id)
       |> put_in(["ticket", "number"], Integer.to_string(number))
       |> Workloads.create()
-
-    # Workloads are stamped to the second, so one made in the same second as the one before it
-    # would not count as later: put it a minute on.
-    import Ecto.Query
-
-    later = NaiveDateTime.add(NaiveDateTime.utc_now(:second), 60)
-
-    ControlPlane.Repo.update_all(
-      from(w in ControlPlane.Workload, where: w.id == ^id),
-      set: [inserted_at: later]
-    )
 
     :ok = Workloads.keep_record(id, %{"outcome" => "OUTCOME_BLOCKED", "question" => question})
     {:ok, _} = ControlPlane.Events.append(id, Fixtures.event(id, 1, Fixtures.started()))

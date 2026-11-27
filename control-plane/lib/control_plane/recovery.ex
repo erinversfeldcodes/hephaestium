@@ -42,7 +42,7 @@ defmodule ControlPlane.Recovery do
             w.id not in subquery(
               from l in ControlPlane.WorkloadLease, where: l.active, select: l.workload_id
             ),
-          order_by: w.inserted_at
+          order_by: [w.inserted_at, w.id]
       )
 
     for workload <- lost do
