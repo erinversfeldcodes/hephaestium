@@ -238,6 +238,13 @@ pub fn run(options: &Options) -> Result<Ended, String> {
     {
         eprintln!("heph: warning: {warning}");
     }
+    // One that did not complete keeps its source to be looked at, but its build output
+    // is the bulk of the disk and nobody reads it.
+    if matches!(ended, Ended::Otherwise)
+        && let Err(warning) = workspaces::discard_build_output(&directory)
+    {
+        eprintln!("heph: warning: {warning}");
+    }
     Ok(ended)
 }
 

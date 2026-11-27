@@ -51,6 +51,86 @@ pub fn delete_checkout(run: &Path) -> Result<bool, String> {
         .map_err(|error| format!("could not delete the checkout {}: {error}", work.display()))
 }
 
+/// The directories a build leaves in a checkout, named for what they hold.
+pub const BUILD_OUTPUT: [&str; 5] = ["target", "_build", "deps", "node_modules", ".tool-home"];
+
+/// Remove the build output from a run's checkout, wherever in it that sits, and say how
+/// many directories went. The source, and what the run said beside the checkout, stay.
+/// A link is removed and not followed, and `.git` is not entered. A directory with
+/// anything git tracks in it is source, so it stays and is searched for build output.
+///
+/// # Errors
+///
+/// What the file system said, naming the directory.
+pub fn discard_build_output(run: &Path) -> Result<usize, String> {
+    discard_in(&run.join("work"), true, None)
+}
+
+/// Whether git tracks anything under `path`, which lies in the checkout at `repo`. A
+/// directory that holds tracked files is source whatever it is called.
+fn tracks_anything(repo: &Path, path: &Path) -> Result<bool, String> {
+    let relative = path.strip_prefix(repo).unwrap_or(path);
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-files", "-z", "--"])
+        .arg(relative)
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .output()
+        .map_err(|error| format!("could not ask git about {}: {error}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git could not say whether it tracks {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(!output.stdout.is_empty())
+}
+
+fn discard_in(directory: &Path, top: bool, repo: Option<&Path>) -> Result<usize, String> {
+    let repo = if directory.join(".git").exists() {
+        Some(directory)
+    } else {
+        repo
+    };
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        // A run with no checkout has nothing to discard.
+        Err(error) if top && error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(format!("could not read {}: {error}", directory.display()));
+        }
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("could not read in {}: {error}", directory.display()))?;
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let built = BUILD_OUTPUT.contains(&name.as_ref());
+        if built && kind.is_symlink() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+            removed += 1;
+        } else if built
+            && kind.is_dir()
+            && !repo.map_or(Ok(false), |r| tracks_anything(r, &path))?
+        {
+            fs::remove_dir_all(&path)
+                .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+            removed += 1;
+        } else if kind.is_dir() && name != ".git" {
+            removed += discard_in(&path, false, repo)?;
+        }
+    }
+    Ok(removed)
+}
+
 /// Delete every checkout under `runs` that is due: those of runs that completed, and
 /// those of runs that ended any other way more than `keep` ago.
 ///
@@ -242,5 +322,118 @@ pub fn show_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new empty directory of its own, under the system's temporary directory.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("heph-workspaces-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("a directory");
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().expect("a parent")).expect("directories");
+        fs::write(path, text).expect("a file");
+    }
+
+    fn run_with_output(root: &Path) {
+        for kept in ["record.json", "events.jsonl", "executor.log"] {
+            write(&root.join(kept), "kept");
+        }
+        write(&root.join("work/repo/src/main.rs"), "source");
+        // A real repository, because the discard asks git what is tracked.
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(root.join("work/repo"))
+            .status()
+            .expect("git");
+        assert!(status.success(), "git init");
+        for built in BUILD_OUTPUT {
+            write(
+                &root.join("work/repo").join(built).join("big/file"),
+                "built",
+            );
+        }
+        write(
+            &root.join("work/repo/control-plane/node_modules/a/b.js"),
+            "x",
+        );
+        write(&root.join("work/.tool-home/cache"), "x");
+    }
+
+    #[test]
+    fn build_output_goes_and_source_and_record_stay() {
+        let dir = Scratch::new("tree");
+        let run = dir.path();
+        run_with_output(run);
+
+        let removed = discard_build_output(run).expect("to discard");
+
+        assert_eq!(removed, 7);
+        for built in BUILD_OUTPUT {
+            assert!(!run.join("work/repo").join(built).exists(), "{built}");
+        }
+        assert!(!run.join("work/repo/control-plane/node_modules").exists());
+        assert!(!run.join("work/.tool-home").exists());
+        assert!(run.join("work/repo/src/main.rs").exists());
+        assert!(run.join("work/repo/.git/HEAD").exists());
+        for kept in ["record.json", "events.jsonl", "executor.log"] {
+            assert!(run.join(kept).exists(), "{kept}");
+        }
+    }
+
+    #[test]
+    fn a_link_named_like_build_output_is_removed_and_not_followed() {
+        let dir = Scratch::new("link-run");
+        let outside = Scratch::new("link-outside");
+        write(&outside.path().join("precious"), "x");
+        fs::create_dir_all(dir.path().join("work/repo")).expect("directories");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("work/repo/target"))
+            .expect("a link");
+
+        discard_build_output(dir.path()).expect("to discard");
+
+        assert!(!dir.path().join("work/repo/target").exists());
+        assert!(outside.path().join("precious").exists());
+    }
+
+    #[test]
+    fn a_run_with_no_checkout_has_nothing_to_discard() {
+        let dir = Scratch::new("empty");
+        assert_eq!(discard_build_output(dir.path()), Ok(0));
+    }
+
+    #[test]
+    fn a_subdirectory_that_cannot_be_read_is_reported() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = Scratch::new("unreadable");
+        let locked = dir.path().join("work/repo/locked");
+        fs::create_dir_all(&locked).expect("to create");
+        fs::create_dir_all(dir.path().join("work/repo/target")).expect("to create");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("to lock");
+        let result = discard_build_output(dir.path());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("to unlock");
+        let error = result.expect_err("an unreadable directory to be reported");
+        assert!(error.contains("locked"), "{error}");
     }
 }

@@ -67,6 +67,8 @@ enum Executor {
     HangsFirstCompletesOthers,
     /// One event, then nothing until it is told to stop, and then it says it was cancelled.
     SaysItWasCancelled,
+    /// Builds in its run's directory, then ends with the given outcome, as `OUTCOME_FAILED` is.
+    BuildsThenEnds(&'static str),
 }
 
 /// One test's own home, where the worker is run from and where its run directories are made.
@@ -124,7 +126,22 @@ impl Rig {
 ev() { printf '{"workloadId":"%s","sequence":"%s","time":"2026-11-22T10:00:0%sZ",%s}\n' "$id" "$1" "$1" "$2"; }
 record() { printf '{"workloadId":"%s","outcome":"%s","eventCount":"%s"}' "$id" "$1" "$2" > "$rec"; }
 "#;
+        let building;
         let body = match mode {
+            Executor::BuildsThenEnds(outcome) => {
+                building = format!(
+                    r#"ev 1 '"started":{{"executorVersion":"0.0.0"}}'
+run=$(dirname "$wl")
+mkdir -p "$run/work/repo/src" "$run/work/.tool-home"
+echo source > "$run/work/repo/src/main.rs"
+echo cache > "$run/work/.tool-home/cache"
+for b in target _build deps node_modules; do mkdir -p "$run/work/repo/$b"; echo built > "$run/work/repo/$b/object"; done
+[ "{outcome}" = OUTCOME_COMPLETED ] && chmod 500 "$run/work/repo"
+ev 2 '"finished":{{"outcome":"{outcome}"}}'
+record {outcome} 2"#
+                );
+                &building
+            }
             Executor::Completes => {
                 r#"ev 1 '"started":{"executorVersion":"0.0.0"}'
 ev 2 '"agentMessage":{"text":"working"}'
@@ -1099,4 +1116,78 @@ fn the_period_is_set_by_a_flag_and_a_bad_one_is_refused_before_anything_is_claim
         "{}",
         refused.output()
     );
+}
+
+#[test]
+fn a_run_that_failed_timed_out_or_was_blocked_loses_its_build_output_and_keeps_the_rest() {
+    for outcome in ["OUTCOME_FAILED", "OUTCOME_TIMED_OUT", "OUTCOME_BLOCKED"] {
+        let rig = Rig::new(&format!("build-output-{}", outcome.to_lowercase()));
+        let server = gives_once(FIRST, 1);
+        let mut worker = rig.start(&server.address, &Executor::BuildsThenEnds(outcome));
+        server.wait_for("the record", |s| {
+            !s.to(&format!("/worker/workloads/{FIRST}/record"))
+                .is_empty()
+        });
+        let run = rig.runs.join(format!("acme-widgets/12-{FIRST}"));
+        let until = Instant::now() + Duration::from_secs(20);
+        while (run.join("work/.tool-home").exists() || run.join("work/repo/target").exists())
+            && Instant::now() < until
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            run.join("work/repo/src/main.rs").is_file(),
+            "{outcome}: source\n{}",
+            worker.output()
+        );
+        for built in [
+            "repo/target",
+            "repo/_build",
+            "repo/deps",
+            "repo/node_modules",
+            ".tool-home",
+        ] {
+            assert!(
+                !run.join("work").join(built).exists(),
+                "{outcome}: {built}\n{}",
+                worker.output()
+            );
+        }
+        for kept in ["record.json", "workload.json", "executor.log"] {
+            assert!(run.join(kept).is_file(), "{outcome}: {kept}");
+        }
+        worker.stops();
+    }
+}
+
+#[test]
+fn a_run_that_completed_is_not_asked_to_discard_its_build_output() {
+    // The checkout is made undeletable, so what a completed run does is left to be seen:
+    // it tries to delete the checkout and says so, and never goes to discard the build
+    // output, which would be a second complaint and would take what it could.
+    let rig = Rig::new("build-output-completed");
+    let server = gives_once(FIRST, 1);
+    let mut worker = rig.start(
+        &server.address,
+        &Executor::BuildsThenEnds("OUTCOME_COMPLETED"),
+    );
+    server.wait_for("the record", |s| {
+        !s.to(&format!("/worker/workloads/{FIRST}/record"))
+            .is_empty()
+    });
+    let run = rig.runs.join(format!("acme-widgets/12-{FIRST}"));
+    let until = Instant::now() + Duration::from_secs(20);
+    while !worker.output().contains("could not delete the checkout") && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = worker.output();
+    let stopped = worker.stops();
+    std::fs::set_permissions(
+        run.join("work/repo"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("to restore");
+    assert!(stopped.success(), "{output}");
+    assert!(output.contains("could not delete the checkout"), "{output}");
+    assert!(!output.contains("could not remove"), "{output}");
 }

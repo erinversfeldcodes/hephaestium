@@ -117,6 +117,9 @@ impl Rig {
              prev=''\n\
              for a in \"$@\"; do [ \"$prev\" = '--work-dir' ] && work=\"$a\"; prev=\"$a\"; done\n\
              [ -n \"$work\" ] && mkdir -p \"$work/repo\" && echo checkout > \"$work/repo/file\"\n\
+             [ -n \"$work\" ] && for b in target _build deps node_modules; do mkdir -p \"$work/repo/$b\" && echo built > \"$work/repo/$b/object\"; done\n\
+             [ -n \"$work\" ] && mkdir -p \"$work/.tool-home\" && echo cache > \"$work/.tool-home/cache\"\n\
+             [ -f $d/undeletable ] && chmod 500 \"$work/repo\"\n\
              [ -n \"$rec\" ] && cp $d/record.canned \"$rec\"\n\
              cat $d/stderr.canned >&2\n\
              cat $d/events.canned\n\
@@ -1048,4 +1051,68 @@ fn a_record_with_no_steps_prints_no_step_lines() {
         shown.contains("cost: $0.125, 144096 tokens\npull request: "),
         "the summary changed:\n{shown}"
     );
+}
+
+#[test]
+fn a_run_that_failed_timed_out_or_was_blocked_loses_its_build_output_and_keeps_the_rest() {
+    for outcome in ["OUTCOME_FAILED", "OUTCOME_TIMED_OUT", "OUTCOME_BLOCKED"] {
+        let rig = rig(&format!("build-output-{}", outcome.to_lowercase()));
+        rig.token_file("github-token");
+        rig.write_executor(0, "", &events(), &record(outcome, "it did not complete"));
+
+        let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{outcome}: {}",
+            stderr(&output)
+        );
+        let directory = rig.run_directory().expect("one run directory");
+        assert!(
+            directory.join("work/repo/file").exists(),
+            "{outcome}: source"
+        );
+        for built in ["target", "_build", "deps", "node_modules"] {
+            assert!(
+                !directory.join("work/repo").join(built).exists(),
+                "{outcome}: {built}"
+            );
+        }
+        assert!(
+            !directory.join("work/.tool-home").exists(),
+            "{outcome}: .tool-home"
+        );
+        for kept in [
+            "workload.json",
+            "events.jsonl",
+            "executor.log",
+            "record.json",
+        ] {
+            assert!(directory.join(kept).exists(), "{outcome}: {kept}");
+        }
+    }
+}
+
+#[test]
+fn a_run_that_completed_is_not_asked_to_discard_its_build_output() {
+    // The checkout is made undeletable, so what a completed run does is left to be seen:
+    // it tries to delete the checkout and says so. Discarding the build output would
+    // find the same directories unremovable and add a second complaint, so the absence
+    // of that complaint is what shows it was never asked. This is a behavioural check of
+    // the dispatch on a real tree; what survives a failed deletion is left unasserted
+    // because it depends on the order the platform removes entries in.
+    let rig = rig("build-output-completed");
+    rig.token_file("github-token");
+    std::fs::write(rig.home.0.join("executor-dir/undeletable"), "").expect("a marker");
+
+    let output = rig.run(&["12", "--repo", "acme/widgets"], &[]);
+
+    let directory = rig.run_directory().expect("one run directory");
+    let inner = directory.join("work/repo");
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).expect("to restore");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let shown = stderr(&output);
+    assert!(shown.contains("could not delete the checkout"), "{shown}");
+    assert!(!shown.contains("could not remove"), "{shown}");
 }
