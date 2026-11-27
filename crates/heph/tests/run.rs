@@ -1097,8 +1097,11 @@ fn a_run_that_failed_timed_out_or_was_blocked_loses_its_build_output_and_keeps_t
 #[test]
 fn a_run_that_completed_is_not_asked_to_discard_its_build_output() {
     // The checkout is made undeletable, so what a completed run does is left to be seen:
-    // it tries to delete the checkout and says so, and never goes to discard the build
-    // output, which would be a second complaint and would take what it could.
+    // it tries to delete the checkout and says so. Discarding the build output would
+    // find the same directories unremovable and add a second complaint, so the absence
+    // of that complaint is what shows it was never asked. This is a behavioural check of
+    // the dispatch on a real tree; what survives a failed deletion is left unasserted
+    // because it depends on the order the platform removes entries in.
     let rig = rig("build-output-completed");
     rig.token_file("github-token");
     std::fs::write(rig.home.0.join("executor-dir/undeletable"), "").expect("a marker");
@@ -1112,5 +1115,4 @@ fn a_run_that_completed_is_not_asked_to_discard_its_build_output() {
     let shown = stderr(&output);
     assert!(shown.contains("could not delete the checkout"), "{shown}");
     assert!(!shown.contains("could not remove"), "{shown}");
-    assert!(inner.join("target/object").is_file(), "{shown}");
 }
