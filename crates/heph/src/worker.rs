@@ -511,18 +511,32 @@ fn slot(
     slots: usize,
     stop: &dyn Fn() -> bool,
 ) -> Result<(), String> {
+    slot_reading(
+        client,
+        options,
+        slots,
+        stop,
+        &|| free_bytes(&run::runs_dir(options.runs_dir.as_deref())?),
+        &mut std::io::stderr(),
+    )
+}
+
+/// As `slot`, with the free-space reading and the log given, so that a test can stub the
+/// reading and read what was said.
+fn slot_reading(
+    client: &Client,
+    options: &Options,
+    slots: usize,
+    stop: &dyn Fn() -> bool,
+    reading: &dyn Fn() -> Result<u64, String>,
+    log: &mut dyn std::io::Write,
+) -> Result<(), String> {
     let mut failures: u32 = 0;
     let mut refusing = false;
     while !stop() {
         stop_what_finished_runs_left(options);
         // Looked at when the worker would next ask for work, on the pace it already keeps.
-        let runs = run::runs_dir(options.runs_dir.as_deref())?;
-        if !has_room(
-            &|| free_bytes(&runs),
-            options.min_free,
-            &mut refusing,
-            &mut std::io::stderr(),
-        ) {
+        if !has_room(reading, options.min_free, &mut refusing, log) {
             pause(SHORTEST_POLL, stop);
             continue;
         }
@@ -1133,6 +1147,55 @@ mod tests {
         assert!(line.contains("claiming again"), "{line}");
         let (room, line) = said(9_000, 5_000, &mut refusing);
         assert!(room && line.is_empty());
+    }
+
+    // A claim server on this machine that answers "no work" and counts the claims it was
+    // asked for.
+    fn counting_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = format!("http://{}", listener.local_addr().expect("address"));
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buffer = [0_u8; 4096];
+                let _ = stream.read(&mut buffer);
+                seen.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (address, count)
+    }
+
+    // The free-space reading is stubbed; the slot, the claim and the server are real.
+    #[test]
+    fn a_slot_asks_for_no_work_under_the_floor_and_asks_at_or_above_it() {
+        let runs = std::env::temp_dir().join(format!("heph-slot-room-{}", std::process::id()));
+        std::fs::create_dir_all(&runs).expect("runs");
+        for (free, floor, asks) in [(4_999_u64, 5_000_u64, false), (5_000, 5_000, true)] {
+            let (address, count) = counting_server();
+            let client = Client::new(&address, Token::new("t".to_owned())).expect("client");
+            let mut options = options_for(&runs);
+            options.min_free = floor;
+            let began = Instant::now();
+            let stop = || began.elapsed() > Duration::from_millis(600);
+            let mut log = Vec::new();
+            slot_reading(&client, &options, 1, &stop, &|| Ok(free), &mut log).expect("slot");
+            let asked = count.load(Ordering::SeqCst);
+            let said = String::from_utf8(log).expect("utf8");
+            assert_eq!(asked > 0, asks, "free {free}, floor {floor}: asked {asked}");
+            if asks {
+                assert!(said.is_empty(), "{said}");
+            } else {
+                assert!(
+                    said.contains("4999") && said.contains("5000") && said.contains("not claiming"),
+                    "{said}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&runs);
     }
 
     #[test]
