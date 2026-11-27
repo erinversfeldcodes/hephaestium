@@ -302,6 +302,24 @@ defmodule ControlPlane.SettleTest do
     assert length(StandInGitHub.writes(gh)) == writes
   end
 
+  test "a label the ticket does not have is not a failed write, so the comment is posted once",
+       %{gh: gh, id: id} do
+    StandInGitHub.respond(gh, @pull, pull(%{"state" => "closed", "merged" => true}))
+
+    StandInGitHub.fail_write(
+      gh,
+      "DELETE",
+      @issue <> "/labels/heph%3Arunning",
+      "gh: Label does not exist (HTTP 404)"
+    )
+
+    Settle.run()
+    Settle.run()
+
+    assert length(comments(gh)) == 1
+    assert Workloads.get(id).settled_at
+  end
+
   test "labels that could not be written leave it unsettled to try again", %{gh: gh, id: id} do
     StandInGitHub.fail_write(gh, "POST", @issue <> "/labels", "gh: HTTP 403")
 
