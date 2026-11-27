@@ -62,19 +62,26 @@ pub const BUILD_OUTPUT: [&str; 5] = ["target", "_build", "deps", "node_modules",
 ///
 /// What the file system said, naming the directory.
 pub fn discard_build_output(run: &Path) -> Result<usize, String> {
-    discard_in(&run.join("work"))
+    discard_in(&run.join("work"), true)
 }
 
-fn discard_in(directory: &Path) -> Result<usize, String> {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return Ok(0);
+fn discard_in(directory: &Path, top: bool) -> Result<usize, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        // A run with no checkout has nothing to discard.
+        Err(error) if top && error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(format!("could not read {}: {error}", directory.display()));
+        }
     };
     let mut removed = 0;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("could not read in {}: {error}", directory.display()))?;
         let path = entry.path();
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
+        let kind = entry
+            .file_type()
+            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let built = BUILD_OUTPUT.contains(&name.as_ref());
@@ -87,7 +94,7 @@ fn discard_in(directory: &Path) -> Result<usize, String> {
                 .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
             removed += 1;
         } else if kind.is_dir() && name != ".git" {
-            removed += discard_in(&path)?;
+            removed += discard_in(&path, false)?;
         }
     }
     Ok(removed)
@@ -377,5 +384,19 @@ mod tests {
     fn a_run_with_no_checkout_has_nothing_to_discard() {
         let dir = Scratch::new("empty");
         assert_eq!(discard_build_output(dir.path()), Ok(0));
+    }
+
+    #[test]
+    fn a_subdirectory_that_cannot_be_read_is_reported() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = Scratch::new("unreadable");
+        let locked = dir.path().join("work/repo/locked");
+        fs::create_dir_all(&locked).expect("to create");
+        fs::create_dir_all(dir.path().join("work/repo/target")).expect("to create");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("to lock");
+        let result = discard_build_output(dir.path());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("to unlock");
+        let error = result.expect_err("an unreadable directory to be reported");
+        assert!(error.contains("locked"), "{error}");
     }
 }
