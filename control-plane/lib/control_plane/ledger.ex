@@ -59,7 +59,7 @@ defmodule ControlPlane.Ledger do
             not exists(
               from e in SpendEntry, where: e.workload_id == parent_as(:workload).id, select: 1
             ),
-          order_by: w.inserted_at
+          order_by: [w.inserted_at, w.id]
       )
 
     Enum.count(unwritten, fn workload -> record(workload) > 0 end)
