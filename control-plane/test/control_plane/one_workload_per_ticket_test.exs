@@ -27,6 +27,11 @@ defmodule ControlPlane.OneWorkloadPerTicketTest do
     record.id
   end
 
+  # Guards the rule that a ticket's branch is held by one workload at a time. It was shown to fail
+  # by planting the violation in `Workloads.branch_free/0` (a second workload's in-flight check
+  # made always false): the first and third tests then failed because a second claim returned a
+  # workload instead of `:none` / `:ticket_busy`. With the plant removed they pass. The race of two
+  # live workloads is covered by the claim lock but not reproduced end to end here.
   test "a second workload of a ticket waits while the first is under way, then is given", %{
     token: token
   } do
