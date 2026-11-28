@@ -30,11 +30,11 @@ const ALLOWED_TOOLS: &str = "Read Edit Write Glob Grep Bash";
 /// share a machine, so a pattern that names a run's own tests names every other run's, and
 /// stopping them ends runs that did nothing wrong. A process the agent started it stops by the
 /// id it was given.
+const REFUSED_COMMANDS: [&str; 2] = ["pkill", "killall"];
+
 /// What the description must hold for each test, because the reviewers refuse a claim that
 /// is only said to be shown. One wording for a first run, a revision and a pre-push fix.
 const PROOF: &str = "For each new or changed test, paste in a fenced block the command and the failing lines without the change, and the passing lines with it; a sentence saying it failed is not proof. A test that can only pass is shown failing against a deliberately broken version of what it guards. Do the same for tests added while fixing a reviewer's finding.";
-
-const REFUSED_COMMANDS: [&str; 2] = ["pkill", "killall"];
 
 /// Why a command is refused, said where the agent reads its instructions.
 const REFUSED_BECAUSE: &str = "Never run `pkill`, `killall` or `kill` by name or pattern; stop only a process id you started. Other runs share this machine, and a pattern that matches your processes matches theirs, and stops their work. `pkill` and `killall` are refused here for that reason.";
