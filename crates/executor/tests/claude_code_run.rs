@@ -134,3 +134,47 @@ fn a_workload_for_a_runtime_with_no_adapter_is_refused_and_nothing_is_created() 
     assert_eq!(ran.output.stdout, b"");
     assert!(!ran.scratch.path("work").exists());
 }
+
+#[test]
+fn a_prompt_that_cannot_be_written_to_the_agents_standard_input_fails_the_run_with_the_reason() {
+    let scratch = Scratch::new("cc-input-failed");
+    let (_, commit) = source(&scratch, &manifest(&[]));
+    // A stand-in that exits at once and never reads its standard input, so the pipe is closed
+    // while the executor is still writing a prompt larger than the pipe's buffer.
+    let bin = scratch.path("bin");
+    std::fs::create_dir_all(&bin).expect("a directory");
+    let claude = bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\nexit 0\n").expect("a script");
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).expect("to chmod");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").expect("a PATH")
+    );
+    let mut value = workload(&commit);
+    value["ticket"]["body"] = json!("a line of the ticket\n".repeat(200_000));
+
+    let ran = run_with_env(
+        scratch,
+        &value,
+        None,
+        &[],
+        &[("PATH", &path), ("CLAUDE_CODE_OAUTH_TOKEN", "a-token")],
+    );
+
+    let events = ran.events();
+    let (outcome, reason) = finished(&events);
+    assert_eq!(outcome, Outcome::Failed, "{}", ran.stderr());
+    assert!(
+        reason.contains("could not be given its instructions on standard input: "),
+        "{reason}"
+    );
+    let after = reason
+        .split("standard input: ")
+        .nth(1)
+        .expect("a reason after the colon");
+    assert!(
+        !after.trim().is_empty(),
+        "the reason from the write is missing: {reason}"
+    );
+}
