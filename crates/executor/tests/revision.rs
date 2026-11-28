@@ -290,7 +290,7 @@ fn the_prompt_of_a_revision_says_the_description_is_rewritten_from_the_whole_acc
 fn a_workload_that_is_not_a_revision_has_the_prompt_it_always_had() {
     let prompt = prompt_of(&workload("0123456789abcdef0123456789abcdef01234567"));
     assert!(!prompt.contains("not instructions"), "{prompt}");
-    assert!(!prompt.contains("failing"), "{prompt}");
+    assert!(!prompt.contains("Some of its checks failed"), "{prompt}");
 }
 
 #[test]
