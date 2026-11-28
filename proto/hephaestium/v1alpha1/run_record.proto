@@ -76,6 +76,9 @@ message RunRecord {
   uint64 agent_ms = 20;
   uint64 gates_ms = 21;
   uint64 review_ms = 22;
+  // The id of the earlier workload whose kept change this run started from, when it did. Empty
+  // for a run that started from a fresh clone of the base.
+  string continued_attempt = 23;
 }
 
 // What a run ran under. Each run carries its own, so a ticket whose steps ran under different

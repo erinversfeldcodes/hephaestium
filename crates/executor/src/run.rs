@@ -347,6 +347,35 @@ fn reviewed(
     review::verdict(workspace, commit, &review.lens)
 }
 
+/// Apply the change an earlier attempt left to the fresh clone, as a patch and nothing else.
+/// Returns that attempt's id when it applied. A patch that does not apply cleanly leaves the
+/// clone as it was, and the run starts from the base, which the log says.
+fn apply_earlier_change(
+    options: &Options,
+    workspace: &Path,
+    tick: &mut Tick<'_>,
+) -> Option<String> {
+    let (patch, attempt) = options.continue_from.as_ref()?;
+    let patch = patch.display().to_string();
+    match git_ticking(
+        &["apply", "--binary", "--whitespace=nowarn", "--", &patch],
+        workspace,
+        "could not apply the earlier attempt's change",
+        Some(tick.reborrow()),
+    ) {
+        Ok(()) => {
+            say(&format!("continuing the change left by attempt {attempt}"));
+            Some(attempt.clone())
+        }
+        Err(reason) => {
+            say(&format!(
+                "starting from the base: the change left by attempt {attempt} does not apply: {reason}"
+            ));
+            None
+        }
+    }
+}
+
 /// End a workload that failed before its agent could run, writing its record.
 fn finish_failed(
     stream: Stream<'_, impl Write>,
@@ -372,8 +401,9 @@ fn prepare<W: Write>(
 ) -> Result<(Manifest, String, Option<Merge>), String> {
     // The clone and the merge of the base can take minutes on a large repository, and the
     // bootstrap steps longer, so each is waited for with a heartbeat written at the interval.
-    let (commit, conflict) = beating(options.heartbeat, stream, |tick| {
+    let (commit, conflict, continued) = beating(options.heartbeat, stream, |tick| {
         clone(options, secrets, workload, workspace, tick)?;
+        let continued = apply_earlier_change(options, workspace, tick);
         let conflict = bring_in_base(workload, workspace, tick)?;
         // A review of a pushed commit works in a fresh clone, which does not hold the file the
         // implementer wrote their account in, so the account is read from the pull request.
@@ -407,9 +437,13 @@ fn prepare<W: Write>(
                 .trim()
                 .to_owned(),
             conflict,
+            continued,
         ))
     })
     .map_err(|e| format!("the event could not be written: {e}"))??;
+    if let Some(attempt) = &continued {
+        stream.continued(attempt);
+    }
     stream
         .emit(Kind::WorkspaceReady(WorkspaceReady {
             path: workspace.display().to_string(),

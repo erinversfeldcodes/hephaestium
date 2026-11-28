@@ -247,6 +247,186 @@ fn is_run_name(name: &str) -> bool {
         })
 }
 
+/// The change an earlier attempt at the same ticket left on this worker, as a patch file.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Continuation {
+    /// The earlier workload's id.
+    pub attempt: String,
+    /// The patch, written in the new run's directory.
+    pub patch: std::path::PathBuf,
+}
+
+/// Find the newest earlier run of the same ticket in this run's repository directory that
+/// ended failed or timed out and still has its checkout, and write the change it left as
+/// `continued.patch` in `run`. `Ok(None)` is no such run on this worker: another worker has
+/// it, or the checkout is gone, and the run starts from the base. `Err` says why a run that
+/// was found could not be continued.
+///
+/// Nothing from the old checkout is run or copied. The change is read with git's own
+/// plumbing, with external diff and text conversion off, and only after the checkout's git
+/// configuration is seen to hold nothing that names a program for git to run. It is read
+/// through a temporary index, so the old checkout is not changed.
+///
+/// # Errors
+///
+/// Why the change of a found attempt could not be taken.
+pub fn earlier_change(run: &Path, own_id: &str) -> Result<Option<Continuation>, String> {
+    let (Some(repository), Some(name)) = (run.parent(), run.file_name().and_then(|n| n.to_str()))
+    else {
+        return Ok(None);
+    };
+    let Some((ticket, _)) = name.split_once('-') else {
+        return Ok(None);
+    };
+    let Some((earlier, id)) = newest_unfinished(repository, ticket, own_id) else {
+        return Ok(None);
+    };
+    let base_of = |dir: &Path| -> Option<String> {
+        let text = fs::read_to_string(dir.join("workload.json")).ok()?;
+        let value: Value = serde_json::from_str(&text).ok()?;
+        value["repository"]["baseCommit"]
+            .as_str()
+            .or_else(|| value["repository"]["base_commit"].as_str())
+            .map(str::to_owned)
+    };
+    let (Some(then), Some(now)) = (base_of(&earlier), base_of(run)) else {
+        return Err(format!(
+            "attempt {id} or this run does not name its base commit"
+        ));
+    };
+    if then != now {
+        return Err(format!(
+            "the base has moved since attempt {id}, so its change may be stale"
+        ));
+    }
+    let patch = run.join("continued.patch");
+    let bytes = change_since(&earlier.join("work").join(&id), &then)
+        .map_err(|why| format!("attempt {id}'s change could not be taken: {why}"))?;
+    if bytes.is_empty() {
+        return Err(format!("attempt {id} left no change"));
+    }
+    fs::write(&patch, bytes).map_err(|e| format!("could not write {}: {e}", patch.display()))?;
+    Ok(Some(Continuation { attempt: id, patch }))
+}
+
+/// The newest earlier run of `ticket` in `repository` that ended failed or timed out and still
+/// has its checkout, with its workload id.
+fn newest_unfinished(
+    repository: &Path,
+    ticket: &str,
+    own_id: &str,
+) -> Option<(std::path::PathBuf, String)> {
+    let mut found: Vec<(SystemTime, std::path::PathBuf, String)> = Vec::new();
+    for earlier in directories(repository) {
+        let Some(earlier_name) = earlier.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some((earlier_ticket, id)) = earlier_name.split_once('-') else {
+            continue;
+        };
+        if !is_run_name(earlier_name) || earlier_ticket != ticket || id == own_id {
+            continue;
+        }
+        let record = earlier.join("record.json");
+        let Ok(metadata) = fs::symlink_metadata(&record) else {
+            continue;
+        };
+        let ended_unfinished = metadata.file_type().is_file()
+            && fs::read_to_string(&record)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|value| value["outcome"].as_str().map(str::to_owned))
+                .is_some_and(|o| o == "OUTCOME_FAILED" || o == "OUTCOME_TIMED_OUT");
+        let checkout = earlier.join("work").join(id);
+        let is_checkout = fs::symlink_metadata(&checkout).is_ok_and(|m| m.is_dir());
+        if ended_unfinished
+            && is_checkout
+            && let Ok(modified) = metadata.modified()
+        {
+            let id = id.to_owned();
+            found.push((modified, earlier.clone(), id));
+        }
+    }
+    found.sort();
+    found.pop().map(|(_, earlier, id)| (earlier, id))
+}
+
+/// Makes the names of the temporary indexes one process uses differ.
+static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// What a checkout holds beyond `base`: commits, edits and new files, as a binary patch.
+fn change_since(checkout: &Path, base: &str) -> Result<Vec<u8>, String> {
+    let git = |args: &[&str], index: Option<&Path>| {
+        let mut command = std::process::Command::new("git");
+        command
+            .arg("-C")
+            .arg(checkout)
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0");
+        if let Some(index) = index {
+            command.env("GIT_INDEX_FILE", index);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("could not run git: {e}"))?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+        }
+    };
+    let config = git(&["config", "--local", "--list"], None)?;
+    for line in String::from_utf8_lossy(&config).lines() {
+        let key = line.split('=').next().unwrap_or_default().to_lowercase();
+        let runs_a_program = key.starts_with("filter.")
+            || key.starts_with("diff.")
+            || key.starts_with("include")
+            || key.starts_with("core.fsmonitor")
+            || key.starts_with("core.hookspath")
+            || key.starts_with("core.attributesfile")
+            || key.starts_with("core.pager")
+            || key.starts_with("core.sshcommand")
+            || key.starts_with("core.gitproxy");
+        if runs_a_program {
+            return Err(format!("its git configuration names a program ({key})"));
+        }
+    }
+    let scratch = std::env::temp_dir().join(format!(
+        "heph-index-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    // A scratch index left from an earlier process with this name would be read, not
+    // overwritten, by add; a failed removal means it did not exist.
+    let _ = fs::remove_file(&scratch);
+    let result = git(&["read-tree", "HEAD"], Some(&scratch))
+        .and_then(|_| git(&["add", "-A", "--", "."], Some(&scratch)))
+        .and_then(|_| {
+            git(
+                &[
+                    "diff",
+                    "--cached",
+                    "--binary",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    base,
+                ],
+                Some(&scratch),
+            )
+        });
+    // A scratch index left in the temporary directory costs nothing and is of no use to anyone.
+    let _ = fs::remove_file(&scratch);
+    result
+}
+
 /// A run's checkout that has gone unwritten for longer than a worker keeps one, and
 /// that a control plane may still need.
 #[derive(Debug, PartialEq, Eq)]
@@ -355,21 +535,21 @@ pub fn show_size(bytes: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A new empty directory of its own, under the system's temporary directory.
-    struct Scratch(std::path::PathBuf);
+    pub(crate) struct Scratch(std::path::PathBuf);
 
     impl Scratch {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             let path =
                 std::env::temp_dir().join(format!("heph-workspaces-{}-{name}", std::process::id()));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("a directory");
             Self(path)
         }
-        fn path(&self) -> &Path {
+        pub(crate) fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -380,7 +560,7 @@ mod tests {
         }
     }
 
-    fn write(path: &Path, text: &str) {
+    pub(crate) fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().expect("a parent")).expect("directories");
         fs::write(path, text).expect("a file");
     }
@@ -540,5 +720,150 @@ mod tests {
 
         assert_eq!(swept.deleted, 0);
         assert!(run.join("work/repo/file").exists());
+    }
+
+    pub(crate) const EARLIER: &str = "512-0b0e8f5e-5b8a-4c53-9a0e-3f1f2f0d9a11";
+    pub(crate) const LATER: &str = "512-1c1f9a6f-6c9b-4d64-8b1f-4a2a3a1e0b22";
+
+    fn git(directory: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// A repository's runs directory holding an earlier run of ticket 512 that ended as
+    /// `outcome`, whose checkout holds a committed change and an untracked file, and a later
+    /// run's directory. Returns the later run's directory, the source and the base commit.
+    pub(crate) fn earlier_run(
+        dir: &Scratch,
+        outcome: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let source = dir.path().join("source");
+        write(&source.join("README.md"), "base\n");
+        git(dir.path(), &["init", "-q", source.to_str().expect("utf8")]);
+        git(&source, &["add", "."]);
+        git(&source, &["commit", "-q", "-m", "base"]);
+        let base = git(&source, &["rev-parse", "HEAD"]);
+
+        let repository = dir.path().join("runs/owner-name");
+        let earlier = repository.join(EARLIER);
+        let checkout = earlier.join("work").join(&EARLIER[4..]);
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                source.to_str().expect("utf8"),
+                checkout.to_str().expect("utf8"),
+            ],
+        );
+        write(&checkout.join("committed.txt"), "committed\n");
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["commit", "-q", "-m", "refused by a lens"]);
+        write(&checkout.join("untracked.txt"), "untracked\n");
+        write(
+            &earlier.join("record.json"),
+            &format!(r#"{{"outcome":"{outcome}"}}"#),
+        );
+        let workload = format!(r#"{{"repository":{{"baseCommit":"{base}"}}}}"#);
+        write(&earlier.join("workload.json"), &workload);
+
+        let later = repository.join(LATER);
+        write(&later.join("workload.json"), &workload);
+        (later, source, base)
+    }
+
+    #[test]
+    fn a_second_workload_on_the_same_worker_after_a_refusal_carries_the_earlier_change() {
+        let dir = Scratch::new("continue");
+        let (later, source, base) = earlier_run(&dir, "OUTCOME_FAILED");
+
+        let continued = earlier_change(&later, &LATER[4..])
+            .expect("to find the change")
+            .expect("an earlier attempt");
+
+        assert_eq!(continued.attempt, EARLIER[4..]);
+        // Applied to a fresh clone at the base, it brings both the commit and the new file.
+        let fresh = dir.path().join("fresh");
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                source.to_str().expect("utf8"),
+                fresh.to_str().expect("utf8"),
+            ],
+        );
+        git(&fresh, &["checkout", "-q", "--detach", &base]);
+        git(&fresh, &["apply", continued.patch.to_str().expect("utf8")]);
+        assert_eq!(
+            fs::read_to_string(fresh.join("committed.txt")).expect("the commit"),
+            "committed\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fresh.join("untracked.txt")).expect("the new file"),
+            "untracked\n"
+        );
+    }
+
+    #[test]
+    fn a_retry_on_another_worker_finds_no_earlier_change_and_starts_fresh() {
+        let dir = Scratch::new("elsewhere");
+        let (_, _, _) = earlier_run(&dir, "OUTCOME_FAILED");
+        // Another worker's runs directory holds only this run.
+        let other = dir.path().join("other/owner-name").join(LATER);
+        write(&other.join("workload.json"), "{}");
+
+        assert_eq!(earlier_change(&other, &LATER[4..]), Ok(None));
+        assert!(!other.join("continued.patch").exists());
+    }
+
+    #[test]
+    fn a_completed_earlier_run_is_not_continued() {
+        let dir = Scratch::new("completed");
+        let (later, _, _) = earlier_run(&dir, "OUTCOME_COMPLETED");
+        assert_eq!(earlier_change(&later, &LATER[4..]), Ok(None));
+    }
+
+    #[test]
+    fn a_timed_out_earlier_run_is_continued() {
+        let dir = Scratch::new("timed-out");
+        let (later, _, _) = earlier_run(&dir, "OUTCOME_TIMED_OUT");
+        let found = earlier_change(&later, &LATER[4..]);
+        assert!(matches!(found, Ok(Some(_))), "{found:?}");
+    }
+
+    #[test]
+    fn a_base_that_has_moved_starts_fresh_and_says_why() {
+        let dir = Scratch::new("stale");
+        let (later, _, _) = earlier_run(&dir, "OUTCOME_FAILED");
+        write(
+            &later.join("workload.json"),
+            r#"{"repository":{"baseCommit":"0000000000000000000000000000000000000000"}}"#,
+        );
+        let error = earlier_change(&later, &LATER[4..]).expect_err("a stale base");
+        assert!(error.contains("base has moved"), "{error}");
+    }
+
+    #[test]
+    fn a_checkout_whose_git_configuration_names_a_program_is_not_read() {
+        let dir = Scratch::new("filter");
+        let (later, _, _) = earlier_run(&dir, "OUTCOME_FAILED");
+        let checkout = dir
+            .path()
+            .join("runs/owner-name")
+            .join(EARLIER)
+            .join("work")
+            .join(&EARLIER[4..]);
+        git(&checkout, &["config", "filter.x.clean", "touch ran"]);
+        let error = earlier_change(&later, &LATER[4..]).expect_err("a program to be refused");
+        assert!(error.contains("names a program"), "{error}");
+        assert!(!checkout.join("ran").exists());
     }
 }

@@ -27,6 +27,8 @@ outcome, whatever it was, 1 if it could not be run, and 2 on a usage error.
                       branch and open the pull request. Needs HEPH_GITHUB_TOKEN,
                       or HEPH_GITHUB_TOKEN_FILE naming a file only you can read;
                       only this step ever holds it.
+  --continue-patch FILE --continued-attempt ID  start from the change an earlier attempt
+                      left, applied to the clone as a patch
   --gh PROGRAM        the GitHub command-line tool to use [default: gh]
   --heartbeat-seconds N  how often a heartbeat is written while the agent runs
                       [default: 30]
@@ -45,6 +47,9 @@ pub struct Options {
     pub heartbeat: Duration,
     pub deliver: bool,
     pub gh: String,
+    /// A patch of the change an earlier attempt left, and that attempt's workload id, to apply
+    /// to the fresh clone.
+    pub continue_from: Option<(PathBuf, String)>,
 }
 
 /// How often a heartbeat is written when nothing says otherwise.
@@ -73,6 +78,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
     let mut heartbeat = DEFAULT_HEARTBEAT;
     let mut deliver = false;
     let mut gh = "gh".to_owned();
+    let mut continue_patch = None;
+    let mut continued_attempt = None;
     while let Some(option) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match option.as_str() {
@@ -93,6 +100,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             }
             "--deliver" => deliver = true,
             "--gh" => gh = value("--gh")?,
+            "--continue-patch" => continue_patch = Some(PathBuf::from(value("--continue-patch")?)),
+            "--continued-attempt" => continued_attempt = Some(value("--continued-attempt")?),
             "--agent-env" => agent_env.push(value("--agent-env")?),
             "--heartbeat-seconds" => {
                 let text = value("--heartbeat-seconds")?;
@@ -124,5 +133,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
         heartbeat,
         deliver,
         gh,
+        continue_from: match (continue_patch, continued_attempt) {
+            (Some(patch), Some(attempt)) => Some((patch, attempt)),
+            (None, None) => None,
+            _ => {
+                return Err(
+                    "--continue-patch and --continued-attempt are given together".to_owned(),
+                );
+            }
+        },
     })
 }
