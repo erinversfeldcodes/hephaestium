@@ -598,8 +598,12 @@ defmodule ControlPlane.Settle do
     |> Enum.join("\n")
   end
 
-  defp write(workload, {:failed, names, extra, :review}, _notes),
-    do: write_to(Tickets.settled(workload, {:review_failed, names, extra}))
+  # A refusal leaves the workload completed, so the findings would otherwise reach only the
+  # ticket's comment. They are kept on the workload too, for the next attempt to be told.
+  defp write(workload, {:failed, names, extra, :review}, _notes) do
+    :ok = Workloads.keep_refusal(workload.id, extra)
+    write_to(Tickets.settled(workload, {:review_failed, names, extra}))
+  end
 
   defp write(workload, verdict, notes), do: write_to(Tickets.settled(workload, verdict, notes))
 

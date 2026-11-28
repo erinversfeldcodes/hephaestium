@@ -394,6 +394,20 @@ defmodule ControlPlane.Workloads do
   end
 
   @doc """
+  Keep why a completed workload's pull request was refused, as its reason: it stays completed,
+  and the next attempt at the ticket is told the reason.
+  """
+  @spec keep_refusal(Ecto.UUID.t(), String.t()) :: :ok
+  def keep_refusal(id, reason) do
+    Repo.update_all(
+      from(w in Workload, where: w.id == ^id and w.state == "completed"),
+      set: [reason: ControlPlane.Clean.deep(reason), updated_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
+
+  @doc """
   End a workload as not needed, with the reason: it had nothing left to do, which is no
   failure. It may replace a failure that was only a symptom of that (a revision that could not
   check out a branch that merged and was deleted), but never an end that was real.

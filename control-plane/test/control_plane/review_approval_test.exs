@@ -179,6 +179,25 @@ defmodule ControlPlane.ReviewApprovalTest do
       %{"user" => %{"login" => @bot, "type" => "Bot"}, "state" => "APPROVED", "commit_id" => sha}
     ]
 
+  describe "what a refused pull request tells the next implementation" do
+    test "a settle pass that refuses the pull request leaves its findings in the next request",
+         %{id: id} do
+      Application.put_env(:control_plane, :settle, reviews: [@repo], athenaeum_ref: @ref)
+      approve(id, Enum.take(@packs, 4))
+      ended(id, "typescript", "completed", said("typescript", "needs_revision", [finding(true)]))
+
+      assert {:failed, ["typescript"], _} = result(id)
+
+      assert [%{"ended" => ended, "why" => why}] =
+               ControlPlane.EarlierAttempts.add(%{}, @repo, 12)["earlierAttempts"]
+
+      assert ended =~ "lens"
+      assert why =~ "A finding"
+      assert why =~ "src/lib.rs:12"
+      assert why =~ "Fix it."
+    end
+  end
+
   describe "every lens that blocks approved the head commit" do
     test "the review App approves that commit, once, and the pass waits for GitHub to count it",
          %{gh: gh, id: id} do
