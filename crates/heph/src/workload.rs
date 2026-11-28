@@ -285,6 +285,7 @@ pub fn build(request: &Request<'_>, local_head: Option<&str>) -> Result<Built, C
         lenses: Vec::new(),
         prepush_rounds: 0,
         answers: Vec::new(),
+        earlier_attempts: Vec::new(),
     };
     Ok(Built { workload, warnings })
 }

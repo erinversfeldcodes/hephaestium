@@ -58,6 +58,17 @@ message Workload {
   // with, oldest first. Every later workload is given them, so a question a person settled is
   // not asked again.
   repeated Answer answers = 15;
+  // Why earlier attempts at this ticket ended, newest first. The agent is shown them as data
+  // about what happened, so it does not repeat what failed. Empty: this is the first attempt.
+  repeated EarlierAttempt earlier_attempts = 16;
+}
+
+// How an earlier attempt at the ticket ended, and why.
+message EarlierAttempt {
+  // How it ended, in words: a lens refusal, a failed gate, a timeout.
+  string ended = 1;
+  // The text of why.
+  string why = 2;
 }
 
 // A question an agent asked and the answer a person gave to it on the dashboard.
