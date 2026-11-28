@@ -660,7 +660,15 @@ fn serve_in(
         options.executor.as_deref(),
         this_program.as_deref().and_then(Path::parent),
     );
-    let mut command = run::executor_command(&executor, &workload_file, &work, &record, offered);
+    let continued = earlier_change_of(directory, &claim.id);
+    let mut command = run::executor_command(
+        &executor,
+        &workload_file,
+        &work,
+        &record,
+        offered,
+        continued.as_ref(),
+    );
     // The executor, and the agent and the scripts under it, are not given the token that
     // speaks for this machine to the control plane.
     command
@@ -745,19 +753,48 @@ fn serve_in(
             return Ok(());
         }
     }
+    clean_up_after(&claim.id, &value, directory);
+    Ok(())
+}
+
+/// Say how the run ended and keep or drop what it left, by how it ended.
+fn clean_up_after(id: &str, value: &Value, directory: &Path) {
     let outcome = value["outcome"]
         .as_str()
         .unwrap_or("OUTCOME_UNSPECIFIED")
         .trim_start_matches("OUTCOME_")
         .to_lowercase();
-    println!("workload {}: {outcome}", claim.id);
+    println!("workload {id}: {outcome}");
     if outcome == "completed"
         && let Err(warning) = workspaces::delete_checkout(directory)
     {
         eprintln!("heph: warning: {warning}");
     }
     discard_build_output_of_an_unfinished_run(&outcome, directory);
-    Ok(())
+}
+
+/// The change an earlier attempt left on this worker, said on the console when it is used or
+/// when one was found and could not be.
+fn earlier_change_of(directory: &Path, id: &str) -> Option<workspaces::Continuation> {
+    match workspaces::earlier_change(directory, id) {
+        Ok(Some(continued)) => {
+            println!(
+                "workload {id}: continuing the change attempt {} left",
+                continued.attempt
+            );
+            Some(continued)
+        }
+        Ok(None) => {
+            println!("workload {id}: no earlier change on this worker, starting from the base");
+            None
+        }
+        Err(why) => {
+            println!(
+                "workload {id}: starting from the base, not from an earlier attempt's change: {why}"
+            );
+            None
+        }
+    }
 }
 
 /// A run that ended without completing keeps its source to be looked at, and drops its
@@ -1450,5 +1487,60 @@ mod tests {
         assert_eq!(safe(".."), None);
         assert_eq!(safe("a/b"), None);
         assert_eq!(safe(""), None);
+    }
+
+    fn arguments(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn command_for(directory: &Path, id: &str) -> std::process::Command {
+        let continued = earlier_change_of(directory, id);
+        run::executor_command(
+            Path::new("executor"),
+            &directory.join("workload.json"),
+            &directory.join("work"),
+            &directory.join("record.json"),
+            Vec::new(),
+            continued.as_ref(),
+        )
+    }
+
+    #[test]
+    fn a_second_workload_on_the_same_worker_is_given_the_earlier_change_to_the_executor() {
+        let dir = workspaces::tests::Scratch::new("worker-same");
+        let (later, _, _) = workspaces::tests::earlier_run(&dir, "OUTCOME_FAILED");
+        let id = &workspaces::tests::LATER[4..];
+
+        let args = arguments(&command_for(&later, id));
+
+        let at = args
+            .iter()
+            .position(|a| a == "--continue-patch")
+            .expect("a patch");
+        assert!(Path::new(&args[at + 1]).is_file());
+        let at = args
+            .iter()
+            .position(|a| a == "--continued-attempt")
+            .expect("an attempt");
+        assert_eq!(args[at + 1], workspaces::tests::EARLIER[4..]);
+    }
+
+    #[test]
+    fn a_retry_on_another_worker_is_given_nothing_so_the_executor_starts_fresh() {
+        let dir = workspaces::tests::Scratch::new("worker-other");
+        let _ = workspaces::tests::earlier_run(&dir, "OUTCOME_FAILED");
+        let other = dir
+            .path()
+            .join("other/owner-name")
+            .join(workspaces::tests::LATER);
+        workspaces::tests::write(&other.join("workload.json"), "{}");
+
+        let args = arguments(&command_for(&other, &workspaces::tests::LATER[4..]));
+
+        assert!(!args.iter().any(|a| a == "--continue-patch"));
+        assert!(!args.iter().any(|a| a == "--continued-attempt"));
     }
 }

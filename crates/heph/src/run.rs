@@ -124,6 +124,7 @@ pub(crate) fn executor_command(
     work: &Path,
     record: &Path,
     offered: Vec<(String, PathBuf)>,
+    continued: Option<&crate::workspaces::Continuation>,
 ) -> Command {
     let mut command = Command::new(executor);
     command
@@ -138,6 +139,13 @@ pub(crate) fn executor_command(
         .envs(offered)
         .stdin(Stdio::null())
         .stdout(Stdio::piped());
+    if let Some(continued) = continued {
+        command
+            .arg("--continue-patch")
+            .arg(&continued.patch)
+            .arg("--continued-attempt")
+            .arg(&continued.attempt);
+    }
     command
 }
 
@@ -203,7 +211,7 @@ pub fn run(options: &Options) -> Result<Ended, String> {
 
     let log_file = std::fs::File::create(&log)
         .map_err(|e| format!("could not make {}: {e}", log.display()))?;
-    let mut command = executor_command(&executor, &workload_file, &work, &record, offered);
+    let mut command = executor_command(&executor, &workload_file, &work, &record, offered, None);
     command.stderr(Stdio::from(log_file));
     let mut child = command.spawn().map_err(|error| {
         format!(

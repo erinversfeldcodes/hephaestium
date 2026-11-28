@@ -94,6 +94,8 @@ pub struct Stream<'a, W: Write> {
     redactor: Redactor,
     // How long each phase has taken, summed over every time it ran.
     spent_time: [Duration; 3],
+    // The earlier workload whose change this run started from.
+    continued_attempt: String,
 }
 
 impl<'a, W: Write> Stream<'a, W> {
@@ -112,6 +114,7 @@ impl<'a, W: Write> Stream<'a, W> {
             question: String::new(),
             redactor: Redactor::default(),
             spent_time: [Duration::ZERO; 3],
+            continued_attempt: String::new(),
         }
     }
 
@@ -141,6 +144,11 @@ impl<'a, W: Write> Stream<'a, W> {
     pub fn redacting(mut self, redactor: Redactor) -> Self {
         self.redactor = redactor;
         self
+    }
+
+    /// Record that the run started from the change an earlier workload left.
+    pub fn continued(&mut self, attempt: &str) {
+        attempt.clone_into(&mut self.continued_attempt);
     }
 
     /// What has been spent so far, for each unit and source, so that what a step spent is
@@ -287,6 +295,7 @@ impl<'a, W: Write> Stream<'a, W> {
             agent_ms: millis(self.spent_time[Phase::Agent as usize]),
             gates_ms: millis(self.spent_time[Phase::Gates as usize]),
             review_ms: millis(self.spent_time[Phase::Review as usize]),
+            continued_attempt: self.continued_attempt,
         })
     }
 }
