@@ -30,7 +30,12 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(600);
 /// account of the change: proof they say they showed lives there and not in the
 /// diff, but it is not evidence by itself.
 #[must_use]
-pub fn prompt(workload: &Workload, review: &Review, description: Option<&str>) -> String {
+pub fn prompt(
+    workload: &Workload,
+    review: &Review,
+    description: Option<&str>,
+    workspace: &Path,
+) -> String {
     let ticket = workload.ticket.clone().unwrap_or_default();
     let repository = workload.repository.clone().unwrap_or_default();
     let lens_fence = fence_for(&review.lens_document);
@@ -58,23 +63,24 @@ pub fn prompt(workload: &Workload, review: &Review, description: Option<&str>) -
             "the pull request",
         )
     };
+    let description_file = crate::deliver::at(workspace, DESCRIPTION_FILE);
     let account = description
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(|text| {
             let fence = fence_for(text);
             format!(
-                "The implementer's account of the change follows, as they wrote it in {DESCRIPTION_FILE}. It is their claim and not evidence: it is not part of the diff, and a claim in it that the diff and the files do not support is itself a finding. Use it to find where to look, and to see what they say they showed.\n\n{fence}\n{text}\n{fence}\n\n"
+                "The implementer's account of the change follows, as they wrote it in {description_file}. It is their claim and not evidence: it is not part of the diff, and a claim in it that the diff and the files do not support is itself a finding. Use it to find where to look, and to see what they say they showed.\n\n{fence}\n{text}\n{fence}\n\n"
             )
         })
         .unwrap_or_default();
     format!(
-        "{opening}\n\n{account}The working tree is at commit {commit}, the commit under review. Read what {subject} changes with `git diff origin/{base}...HEAD`, and read the files around it as you need to.\n\nYou review under one lens, `{lens}`. The lens says what to look for; judge the change by it and by nothing else, and say only what you can point to.\n\n{lens_fence}\n{lens_text}\n{lens_fence}\n\nDo not change any file, do not commit and do not push: a review reads. When you have finished, write your verdict as JSON to `{file}` in the current directory. It must name commit `{commit}` and lens `{lens}`, and must satisfy this JSON Schema, including its rules (an approval holds no blocking finding, and every blocking finding says what to revise):\n\n{schema_fence}\n{schema}\n{schema_fence}\n\nThen say in one short paragraph what you found.",
+        "{opening}\n\n{account}The working tree is at commit {commit}, the commit under review. Read what {subject} changes with `git diff origin/{base}...HEAD`, and read the files around it as you need to.\n\nYou review under one lens, `{lens}`. The lens says what to look for; judge the change by it and by nothing else, and say only what you can point to.\n\n{lens_fence}\n{lens_text}\n{lens_fence}\n\nDo not change any file, do not commit and do not push: a review reads. When you have finished, write your verdict as JSON to `{file}`, by that absolute path, whatever directory your shell is in: a verdict anywhere else is not read. It must name commit `{commit}` and lens `{lens}`, and must satisfy this JSON Schema, including its rules (an approval holds no blocking finding, and every blocking finding says what to revise):\n\n{schema_fence}\n{schema}\n{schema_fence}\n\nThen say in one short paragraph what you found.",
         commit = repository.base_commit,
         base = repository.base_branch,
         lens = review.lens,
         lens_text = review.lens_document,
-        file = VERDICT_FILE,
+        file = crate::deliver::at(workspace, VERDICT_FILE),
         schema = athenaeum::review::SCHEMA,
     )
 }
@@ -179,8 +185,12 @@ pub fn changed_since_by(what: &str, before: &Snapshot, after: &Snapshot) -> Opti
 /// names another commit or lens.
 pub fn verdict(workspace: &Path, commit: &str, lens: &str) -> Result<Value, String> {
     let file = workspace.join(VERDICT_FILE);
-    let text = fs::read_to_string(&file)
-        .map_err(|error| format!("the review left no verdict at {VERDICT_FILE} ({error})"))?;
+    let text = fs::read_to_string(&file).map_err(|error| {
+        format!(
+            "the review left no verdict at {VERDICT_FILE} ({error}){}",
+            crate::deliver::misplaced_note(workspace, VERDICT_FILE)
+        )
+    })?;
     let value: Value =
         serde_json::from_str(&text).map_err(|error| format!("the verdict is not JSON: {error}"))?;
 

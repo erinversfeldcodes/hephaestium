@@ -407,7 +407,7 @@ fn the_prompt_permits_writing_the_step_file_as_the_one_change() {
     let prompt = prompt_of(&gap_of("0123456789abcdef0123456789abcdef01234567"));
 
     assert!(
-        prompt.contains("The one change you may make to the working directory is to write your step to `.heph-gap.md`"),
+        prompt.contains("The one change you may make to the working directory is to write your step to `/work/w/.heph-gap.md`"),
         "{prompt}"
     );
     assert!(
