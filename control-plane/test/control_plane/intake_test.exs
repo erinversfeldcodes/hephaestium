@@ -299,6 +299,26 @@ defmodule ControlPlane.IntakeTest do
     assert length(Repo.all(ControlPlane.Workload)) == 2
   end
 
+  test "a new implementation's request carries why the ticket's earlier attempt failed", %{gh: gh} do
+    assert [%{result: :started}] = results()
+    [first] = Repo.all(ControlPlane.Workload)
+    refute Map.has_key?(first.workload, "earlierAttempts")
+
+    first
+    |> Ecto.Changeset.change(state: "failed", reason: "the gate said no")
+    |> Repo.update!()
+
+    again = "2026-11-18T09:00:00Z"
+    labelled(gh, 12, [{"maint", @approved_at}, {"maint", again}])
+    StandInGitHub.heph_prints(gh, built(12, "maint", again))
+
+    assert [%{result: :started}] = results()
+    second = Repo.get_by!(ControlPlane.Workload, state: "queued")
+
+    assert [%{"why" => why}] = second.workload["earlierAttempts"]
+    assert why =~ "the gate said no"
+  end
+
   describe "something GitHub or heph cannot say" do
     test "is not an approval, and says why", %{gh: gh} do
       StandInGitHub.fail(

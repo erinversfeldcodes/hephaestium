@@ -17,6 +17,7 @@ defmodule ControlPlane.Intake do
   alias ControlPlane.{
     Answers,
     CodeHost,
+    EarlierAttempts,
     Evaluations,
     Prepush,
     Programs,
@@ -149,7 +150,13 @@ defmodule ControlPlane.Intake do
          :ok <- WaitingTickets.put(repo, number, approval.login, approval.at, title(workload)),
          :ok <- unblocked(workload),
          {:ok, workload} <-
-           Prepush.add(workload |> Answers.add(repo, number) |> judged_afterwards(repo), repo),
+           Prepush.add(
+             workload
+             |> Answers.add(repo, number)
+             |> EarlierAttempts.add(repo, number)
+             |> judged_afterwards(repo),
+             repo
+           ),
          {:ok, record} <- create(workload),
          :ok <- WaitingTickets.clear(repo, number),
          {:ok, _job} <- Runner.enqueue(record.id) do
