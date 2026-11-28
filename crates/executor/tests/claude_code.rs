@@ -634,3 +634,55 @@ fn the_prompt_says_when_the_time_ends_and_not_to_wait_on_processes_by_name() {
     assert!(prompt.contains("second copy"), "{prompt}");
     assert!(prompt.contains("what was not run"), "{prompt}");
 }
+
+fn proof_is_required(prompt: &str, times: usize) {
+    let prompt = &prompt.to_lowercase();
+    assert_eq!(
+        prompt.matches("paste in a fenced block").count(),
+        times,
+        "the requirement is said once in the closing instructions and once in a revision's own: {prompt}"
+    );
+    for phrase in [
+        "for each new or changed test, paste in a fenced block the command and the failing lines without the change, and the passing lines with it",
+        "a sentence saying it failed is not proof",
+        "a test that can only pass is shown failing against a deliberately broken version of what it guards",
+        "tests added while fixing a reviewer's finding",
+    ] {
+        assert!(
+            prompt.contains(phrase),
+            "the prompt must hold `{phrase}`: {prompt}"
+        );
+    }
+}
+
+fn with_revision(pull_request_number: &str) -> Workload {
+    a_workload(|value| {
+        value["revision"] = json!({
+            "pullRequestNumber": pull_request_number,
+            "pullRequestUrl": "https://github.com/o/r/pull/52",
+            "branch": "heph/1",
+            "attempt": 1,
+            "failures": [{"name": "spec", "result": "refused", "excerpt": "not shown failing"}]
+        });
+    })
+}
+
+#[test]
+fn a_first_run_prompt_requires_the_failing_and_passing_output_in_the_description() {
+    let plan = ClaudeCode.plan(&a_workload(|_| {}), Path::new("/work/run-1"));
+    proof_is_required(&plan.stdin, 1);
+}
+
+#[test]
+fn a_revision_prompt_requires_the_failing_and_passing_output_in_the_description() {
+    let plan = ClaudeCode.plan(&with_revision("52"), Path::new("/work/run-1"));
+    assert!(plan.stdin.contains("already open"), "{}", plan.stdin);
+    proof_is_required(&plan.stdin, 2);
+}
+
+#[test]
+fn a_prepush_fix_prompt_requires_the_failing_and_passing_output_in_the_description() {
+    let plan = ClaudeCode.plan(&with_revision("0"), Path::new("/work/run-1"));
+    assert!(plan.stdin.contains("has not been pushed"), "{}", plan.stdin);
+    proof_is_required(&plan.stdin, 2);
+}

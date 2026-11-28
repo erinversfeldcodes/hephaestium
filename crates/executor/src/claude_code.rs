@@ -30,6 +30,10 @@ const ALLOWED_TOOLS: &str = "Read Edit Write Glob Grep Bash";
 /// share a machine, so a pattern that names a run's own tests names every other run's, and
 /// stopping them ends runs that did nothing wrong. A process the agent started it stops by the
 /// id it was given.
+/// What the description must hold for each test, because the reviewers refuse a claim that
+/// is only said to be shown. One wording for a first run, a revision and a pre-push fix.
+const PROOF: &str = "For each new or changed test, paste in a fenced block the command and the failing lines without the change, and the passing lines with it; a sentence saying it failed is not proof. A test that can only pass is shown failing against a deliberately broken version of what it guards. Do the same for tests added while fixing a reviewer's finding.";
+
 const REFUSED_COMMANDS: [&str; 2] = ["pkill", "killall"];
 
 /// Why a command is refused, said where the agent reads its instructions.
@@ -121,10 +125,11 @@ fn prompt(workload: &Workload, workspace: &Path) -> String {
     text.push_str("\n\n");
     let _ = write!(
         text,
-        "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `{message}`, by that absolute path: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body. Also write the pull request's description to `{description}`, by that absolute path, in these sections and no others: `## What the ticket asked for`, a brief summary of what the ticket required of this change; `## What this changes`, what this pull request introduces, each claim with how it was shown (a named test, or a command and its result); and `## Risks and shortcomings`, any known risk, and anything you could not confirm or did not check (leave this section out if there is none). Keep it brief, and do not write a section for what remains: the runtime writes `## What remains` from `{resolution}`. Also write `{resolution}`, by that absolute path,: the single word `complete` if your change resolves everything the ticket asks, done and shown to work and not only passing the checks, or `partial: ` followed by what remains. A pull request that says `complete` closes its ticket when it merges, and a ticket is closed only when every item that affects it is resolved, so say `complete` only if it is true. Then say in one short paragraph what you changed.",
+        "Make the change the ticket asks for in this working tree. Do not commit, push or open a pull request: the runtime does that after it has run the repository's checks. When you are done, write a conventional commit message to `{message}`, by that absolute path: a subject line such as `fix: make the reset spec wait for hydration` (a type of feat, fix, docs, chore, ci, test, refactor, perf, build or style, then a colon and a short description), and optionally a blank line and a short body. Also write the pull request's description to `{description}`, by that absolute path, in these sections and no others: `## What the ticket asked for`, a brief summary of what the ticket required of this change; `## What this changes`, what this pull request introduces, each claim with how it was shown (a named test, or a command and its result); and `## Risks and shortcomings`, any known risk, and anything you could not confirm or did not check (leave this section out if there is none). {proof} Keep it brief, and do not write a section for what remains: the runtime writes `## What remains` from `{resolution}`. Also write `{resolution}`, by that absolute path,: the single word `complete` if your change resolves everything the ticket asks, done and shown to work and not only passing the checks, or `partial: ` followed by what remains. A pull request that says `complete` closes its ticket when it merges, and a ticket is closed only when every item that affects it is resolved, so say `complete` only if it is true. Then say in one short paragraph what you changed.",
         resolution = crate::deliver::at(workspace, crate::deliver::RESOLUTION_FILE),
         message = crate::deliver::at(workspace, crate::deliver::MESSAGE_FILE),
         description = crate::deliver::at(workspace, crate::deliver::DESCRIPTION_FILE),
+        proof = PROOF,
     );
     text
 }
@@ -264,10 +269,11 @@ fn revision_section(revision: &contracts::v1alpha1::Revision, workspace: &Path) 
     }
     let _ = write!(
         text,
-        "When you finish, the pull request's title is rewritten from `{message}`'s subject, and its description from `{description}` and `{resolution}`, and what they said before is replaced. Write the description again as the whole account of the change as it now stands, not only what this revision changed, in the same sections: `## What the ticket asked for`, `## What this changes` (each claim with how it was shown) and `## Risks and shortcomings` (what could not be confirmed, and any known risk). What is still owed comes from `{resolution}`, as `## What remains`. The reviews read the description as the change's own account, and a description that says less than the last one loses what the earlier revisions found.\n\n",
+        "When you finish, the pull request's title is rewritten from `{message}`'s subject, and its description from `{description}` and `{resolution}`, and what they said before is replaced. Write the description again as the whole account of the change as it now stands, not only what this revision changed, in the same sections: `## What the ticket asked for`, `## What this changes` (each claim with how it was shown) and `## Risks and shortcomings` (what could not be confirmed, and any known risk). {proof} What is still owed comes from `{resolution}`, as `## What remains`. The reviews read the description as the change's own account, and a description that says less than the last one loses what the earlier revisions found.\n\n",
         resolution = crate::deliver::at(workspace, crate::deliver::RESOLUTION_FILE),
         message = crate::deliver::at(workspace, crate::deliver::MESSAGE_FILE),
         description = crate::deliver::at(workspace, crate::deliver::DESCRIPTION_FILE),
+        proof = PROOF,
     );
     text
 }
@@ -302,10 +308,11 @@ fn prepush_section(revision: &contracts::v1alpha1::Revision, workspace: &Path) -
     text.push_str(&failures_text(&revision.failures));
     let _ = write!(
         text,
-        "When you finish, the commit is rewritten from `{message}`, and the pull request's description is made from `{description}` and `{resolution}`. Write them again as the whole account of the change as it now stands, not only what this round changed, in the same sections: `## What the ticket asked for`, `## What this changes` (each claim with how it was shown) and `## Risks and shortcomings` (what could not be confirmed, and any known risk). What is still owed comes from `{resolution}`, as `## What remains`.\n\n",
+        "When you finish, the commit is rewritten from `{message}`, and the pull request's description is made from `{description}` and `{resolution}`. Write them again as the whole account of the change as it now stands, not only what this round changed, in the same sections: `## What the ticket asked for`, `## What this changes` (each claim with how it was shown) and `## Risks and shortcomings` (what could not be confirmed, and any known risk). {proof} What is still owed comes from `{resolution}`, as `## What remains`.\n\n",
         resolution = crate::deliver::at(workspace, crate::deliver::RESOLUTION_FILE),
         message = crate::deliver::at(workspace, crate::deliver::MESSAGE_FILE),
         description = crate::deliver::at(workspace, crate::deliver::DESCRIPTION_FILE),
+        proof = PROOF,
     );
     text
 }
