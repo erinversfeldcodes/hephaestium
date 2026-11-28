@@ -251,7 +251,7 @@ fn a_reader_is_not_told_of_a_pull_request_or_of_anyone_elses_verdict() {
 
     let asked = prepush::as_review(&local.workload, &lens("rust"), &local.commit);
     let review = asked.review.as_ref().expect("a read is a review");
-    let prompt = executor::review::prompt(&asked, review, None);
+    let prompt = executor::review::prompt(&asked, review, None, std::path::Path::new("/work/w"));
 
     // What the executor writes, before the contract's own text, which has words of its own.
     let ours = prompt

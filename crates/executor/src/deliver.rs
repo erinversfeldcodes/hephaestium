@@ -37,6 +37,72 @@ pub const DESCRIPTION_FILE: &str = ".heph-description.md";
 /// would choose and why. The run ends blocked with it, for a person to answer.
 pub const QUESTION_FILE: &str = ".heph-question";
 
+/// The absolute path of a file the agent is told to write in the workspace. The agent's
+/// shell keeps its directory between calls, so a name relative to "the current directory"
+/// lands wherever it last changed to; an absolute path cannot.
+#[must_use]
+pub fn at(workspace: &std::path::Path, name: &str) -> String {
+    let root = std::path::absolute(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    root.join(name).display().to_string()
+}
+
+/// How deep below the workspace root a misplaced file is looked for. An agent that changed
+/// into a component directory (`control-plane/`, `crates/executor/`) and wrote there is at
+/// most a few levels down; going deeper would walk dependency trees for nothing.
+const SEARCH_DEPTH: usize = 4;
+
+/// Directories that hold fetched or built files, never an agent's own output.
+const SKIPPED_DIRECTORIES: [&str; 5] = [".git", "node_modules", "target", "_build", "deps"];
+
+/// Where a file called `name` was left below the workspace root instead of at it, if
+/// anywhere. It is only named, never read: a verdict from the wrong place is not one the
+/// agent was asked for.
+#[must_use]
+pub fn misplaced(workspace: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    fn walk(
+        dir: &std::path::Path,
+        name: &str,
+        depth: usize,
+        top: bool,
+    ) -> Option<std::path::PathBuf> {
+        let mut subdirectories = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if !SKIPPED_DIRECTORIES.iter().any(|s| entry.file_name() == **s) {
+                    subdirectories.push(path);
+                }
+            } else if !top && entry.file_name() == name {
+                return Some(path);
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        subdirectories.sort();
+        subdirectories
+            .into_iter()
+            .find_map(|sub| walk(&sub, name, depth - 1, false))
+    }
+    walk(workspace, name, SEARCH_DEPTH, true)
+}
+
+/// What to add to a "left no verdict" reason: where the file was found if it is somewhere
+/// other than the workspace root.
+#[must_use]
+pub fn misplaced_note(workspace: &std::path::Path, name: &str) -> String {
+    misplaced(workspace, name).map_or_else(String::new, |found| {
+        format!(
+            "; a file of that name was found at {}, which was not read: it must be at {}",
+            found.display(),
+            at(workspace, name)
+        )
+    })
+}
+
 /// How long one git or gh command may take.
 const TIMEOUT: Duration = Duration::from_secs(600);
 
